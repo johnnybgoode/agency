@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -75,6 +76,19 @@ func ProjectConfigPath(projectDir string) string {
 	return projectDir + "/.tool/config.toml"
 }
 
+// SessionConfigPath returns the path to the session-local config file inside a worktree.
+func SessionConfigPath(worktreePath string) string {
+	return filepath.Join(worktreePath, ".tool", "config.toml")
+}
+
+// EnforceGlobalConfigPerms chmod 0600s the global config file if it exists.
+func EnforceGlobalConfigPerms(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	}
+	return os.Chmod(path, 0600)
+}
+
 // Load reads configuration from the given paths in order, merging each into
 // the defaults. Paths that do not exist are silently skipped. Credential
 // fields in any path after the first trigger a warning to stderr.
@@ -82,6 +96,16 @@ func Load(paths ...string) (*Config, error) {
 	base := DefaultConfig()
 
 	for i, path := range paths {
+		// For the global config (first path), check file permissions.
+		if i == 0 {
+			if info, err := os.Stat(path); err == nil {
+				perm := info.Mode().Perm()
+				if perm&0177 != 0 {
+					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions %04o, should be 0600\n", path, perm)
+				}
+			}
+		}
+
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {

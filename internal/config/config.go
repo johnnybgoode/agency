@@ -104,5 +104,13 @@ func Load(paths ...string) (*Config, error) {
 		base = Merge(base, &override)
 	}
 
+	// Fall back to host environment variables for unset credentials.
+	if base.Credentials.AnthropicAPIKey == "" {
+		base.Credentials.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if base.Credentials.GithubToken == "" {
+		base.Credentials.GithubToken = os.Getenv("GITHUB_TOKEN")
+	}
+
 	return base, nil
 }

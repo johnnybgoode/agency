@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,7 +42,7 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 
 	s, err := state.Read(statePath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			s = state.Default(projectName, filepath.Join(projectDir, ".bare"))
 			// Persist immediately so subsequent reads don't re-default.
 			_ = state.Write(statePath, s)
@@ -91,6 +93,18 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	// Pre-check: validate branch name.
+	if strings.TrimSpace(branch) == "" {
+		return nil, fmt.Errorf("branch name cannot be empty")
+	}
+
+	// Pre-check: reject duplicate branches across existing sessions (before inserting).
+	for _, existing := range m.State.Sessions {
+		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
+			return nil, fmt.Errorf("branch %q already has an active session (%s)", branch, existing.ID)
+		}
+	}
+
 	m.State.Sessions[id] = sess
 	if err := m.SaveState(); err != nil {
 		return nil, fmt.Errorf("saving initial state: %w", err)
@@ -98,18 +112,13 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 
 	fail := func(err error) (*state.Session, error) {
 		msg := err.Error()
+		fromState := string(sess.State)
+		sess.FailedFrom = &fromState
 		sess.State = state.StateFailed
 		sess.Error = &msg
 		sess.UpdatedAt = time.Now().UTC()
 		_ = m.SaveState()
 		return sess, err
-	}
-
-	// Pre-check: reject duplicate branches across existing sessions.
-	for _, existing := range m.State.Sessions {
-		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
-			return fail(fmt.Errorf("branch %q already has an active session (%s)", branch, existing.ID))
-		}
 	}
 
 	// Step 1: create git worktree.
@@ -151,10 +160,10 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 		configMount = cfgPath
 	}
 
-	// Step 5: create container.
+	// Step 5: create container. Use session ID in the name for uniqueness.
 	containerID, err := m.Sandbox.Create(ctx, sandbox.CreateOpts{
 		Image:         m.Cfg.Sandbox.Image,
-		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(branch),
+		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(branch) + "-" + id,
 		WorktreeMount: sess.WorktreePath,
 		ConfigMount:   configMount,
 		Env:           env,
@@ -265,55 +274,102 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 
 	wg.Wait()
 
-	// Build lookup maps.
+	// Build lookup maps only if the corresponding query succeeded.
+	// If a query failed, we skip checks that depend on it to avoid
+	// making destructive state changes based on incomplete data.
 	windowSet := make(map[string]bool, len(res.windows))
-	for _, w := range res.windows {
-		windowSet[w.ID] = true
+	if res.windowsErr == nil {
+		for _, w := range res.windows {
+			windowSet[w.ID] = true
+		}
 	}
 
-	containerMap := make(map[string]sandbox.ContainerInfo, len(res.containers))
-	for _, c := range res.containers {
-		containerMap[c.Name] = c
+	containerIDSet := make(map[string]bool, len(res.containers))
+	if res.contsErr == nil {
+		for _, c := range res.containers {
+			containerIDSet[c.ID] = true
+		}
 	}
 
 	worktreeSet := make(map[string]bool, len(res.worktrees))
-	for _, wt := range res.worktrees {
-		worktreeSet[wt.Path] = true
+	if res.wtErr == nil {
+		for _, wt := range res.worktrees {
+			worktreeSet[wt.Path] = true
+		}
+	}
+
+	markFailed := func(sess *state.Session, reason string) {
+		fromState := string(sess.State)
+		sess.FailedFrom = &fromState
+		sess.State = state.StateFailed
+		sess.Error = &reason
+		sess.UpdatedAt = time.Now().UTC()
 	}
 
 	changed := false
 	toDelete := []string{}
 
 	for id, sess := range m.State.Sessions {
-		containerName := "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(sess.Branch)
-
 		switch sess.State {
 		case state.StateRunning:
-			if _, inContainerMap := containerMap[containerName]; !inContainerMap {
-				msg := "sandbox disappeared"
-				sess.State = state.StateFailed
-				sess.Error = &msg
+			// Only check container presence if the Docker query succeeded.
+			if res.contsErr == nil && sess.SandboxID != "" {
+				if !containerIDSet[sess.SandboxID] {
+					markFailed(sess, "sandbox disappeared")
+					changed = true
+					continue
+				}
+			}
+			// Recreate missing tmux window if the sandbox is alive.
+			if res.windowsErr == nil && sess.TmuxWindow != "" && !windowSet[sess.TmuxWindow] {
+				if newWin, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch)); err == nil {
+					_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", sess.SandboxID))
+					sess.TmuxWindow = newWin
+					sess.UpdatedAt = time.Now().UTC()
+					changed = true
+				}
+			}
+
+		case state.StateProvisioning:
+			if res.contsErr == nil && sess.SandboxID != "" {
+				if containerIDSet[sess.SandboxID] {
+					sess.State = state.StateRunning
+					sess.UpdatedAt = time.Now().UTC()
+					changed = true
+				} else {
+					markFailed(sess, "sandbox not found during reconciliation")
+					changed = true
+				}
+			} else if res.contsErr == nil {
+				// No sandbox ID recorded — provisioning never got that far.
+				markFailed(sess, "sandbox not found during reconciliation")
+				changed = true
+			}
+
+		case state.StateCreating:
+			// Session stuck in creating means the tool crashed during worktree creation.
+			if sess.WorktreePath == "" {
+				markFailed(sess, "session stuck in creating state")
+				changed = true
+			}
+
+		case state.StateCompleting:
+			// If sandbox is gone, transition to done.
+			if res.contsErr == nil && (sess.SandboxID == "" || !containerIDSet[sess.SandboxID]) {
+				sess.State = state.StateDone
 				sess.UpdatedAt = time.Now().UTC()
 				changed = true
 			}
-			// If tmux window is gone but sandbox still exists, leave as running;
-			// the window can be recreated.
 
-		case state.StateProvisioning:
-			if _, inContainerMap := containerMap[containerName]; inContainerMap {
-				sess.State = state.StateRunning
-				sess.UpdatedAt = time.Now().UTC()
-				changed = true
-			} else {
-				msg := "sandbox not found during reconciliation"
-				sess.State = state.StateFailed
-				sess.Error = &msg
-				sess.UpdatedAt = time.Now().UTC()
+		case state.StatePaused:
+			// Verify that the worktree still exists for paused sessions.
+			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
+				markFailed(sess, "worktree disappeared while paused")
 				changed = true
 			}
 
 		case state.StateDone:
-			if sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
+			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
 				toDelete = append(toDelete, id)
 				changed = true
 			}

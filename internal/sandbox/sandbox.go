@@ -83,6 +83,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (string, error) {
 
 	args = append(args, "--name", opts.Name)
 	args = append(args, "--tty", "--interactive")
+	args = append(args, "--workdir", "/app")
 	args = append(args, "--security-opt", "no-new-privileges:true")
 
 	for _, cap := range capDrop {
@@ -110,7 +111,15 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (string, error) {
 	// Entrypoint command: bash -c claude
 	args = append(args, "bash", "-c", "claude")
 
-	return m.docker(ctx, args...)
+	// Use stdout-only output for docker create to avoid stderr warnings
+	// polluting the container ID.
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		// Include stderr in the error for diagnostics.
+		return "", fmt.Errorf("docker create: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Start starts a previously created (stopped) container.

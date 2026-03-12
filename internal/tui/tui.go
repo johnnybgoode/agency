@@ -43,8 +43,15 @@ func Run() error {
 			if state.IsProcessAlive(s.PID) {
 				return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
 			}
+			// PID is dead — stale lock. Force-remove and retry.
+			os.Remove(lockPath)
+			lock, err = state.AcquireLock(lockPath)
+			if err != nil {
+				return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
+			}
+		} else {
+			return fmt.Errorf("acquiring lock: %w", err)
 		}
-		return fmt.Errorf("acquiring lock: %w", err)
 	}
 	defer lock.Release() //nolint:errcheck
 

@@ -229,12 +229,13 @@ func (m listModel) View() string {
 	} else {
 		for i, sess := range m.sessions {
 			cursor := "  "
-			var idStr string
 			if i == m.cursor {
 				cursor = "> "
-				idStr = selectedStyle.Render(sess.ID)
-			} else {
-				idStr = sess.ID
+			}
+
+			id := sess.ID
+			if i == m.cursor {
+				id = selectedStyle.Render(id)
 			}
 
 			branch := sess.Branch
@@ -242,16 +243,21 @@ func (m listModel) View() string {
 				branch = branch[:24]
 			}
 
-			statusStr := styledStatus(sess.State)
+			// Pad plain-text fields to fixed widths before applying ANSI styles.
+			// This avoids invisible escape codes breaking fmt %-width padding.
+			idPad := fmt.Sprintf("%-16s", sess.ID)
+			branchPad := fmt.Sprintf("%-26s", branch)
+			statusPad := fmt.Sprintf("%-12s", string(sess.State))
+
+			// Now style the padded fields — the padding is already baked in.
+			if i == m.cursor {
+				idPad = selectedStyle.Render(idPad)
+			}
+			statusPad = styledStatus(sess.State) + strings.Repeat(" ", 12-len(string(sess.State)))
+
 			relTime := relativeTime(sess.CreatedAt)
 
-			line := fmt.Sprintf("%s%-16s  %-26s  %-12s  %s",
-				cursor,
-				idStr,
-				branch,
-				statusStr,
-				relTime,
-			)
+			line := fmt.Sprintf("%s%s  %s  %s  %s", cursor, idPad, branchPad, statusPad, relTime)
 			b.WriteString("  " + line + "\n")
 		}
 	}

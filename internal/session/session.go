@@ -42,6 +42,8 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 	if err != nil {
 		if os.IsNotExist(err) {
 			s = state.Default(projectName, filepath.Join(projectDir, ".bare"))
+			// Persist immediately so subsequent reads don't re-default.
+			_ = state.Write(statePath, s)
 		} else {
 			return nil, fmt.Errorf("loading state: %w", err)
 		}

@@ -10,6 +10,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/session"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
 // Run is the entrypoint for the interactive TUI. It locates the project
@@ -19,6 +20,13 @@ func Run() error {
 	projectDir, err := findProjectDir()
 	if err != nil {
 		return err
+	}
+
+	// Auto-init .tool/ if missing (e.g. bare repo exists but tool dir was never created).
+	if !isDir(filepath.Join(projectDir, ".tool")) {
+		if err := worktree.Init(projectDir, ""); err != nil {
+			return fmt.Errorf("initializing project: %w", err)
+		}
 	}
 
 	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))

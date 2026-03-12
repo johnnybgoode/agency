@@ -3,9 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tui"
+	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
 var rootCmd = &cobra.Command{
@@ -29,7 +32,25 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new agency project",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("initializing project...")
+		remote, _ := cmd.Flags().GetString("remote")
+
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting working directory: %w", err)
+		}
+
+		if err := worktree.Init(cwd, remote); err != nil {
+			return err
+		}
+
+		projectName := filepath.Base(cwd)
+		statePath := filepath.Join(cwd, ".tool", "state.json")
+		s := state.Default(projectName, filepath.Join(cwd, ".bare"))
+		if err := state.Write(statePath, s); err != nil {
+			return fmt.Errorf("writing initial state: %w", err)
+		}
+
+		fmt.Printf("Initialized agency project: %s\n", projectName)
 		return nil
 	},
 }

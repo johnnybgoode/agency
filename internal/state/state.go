@@ -69,6 +69,9 @@ func Read(path string) (*State, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing state file %s: %w", path, err)
 	}
+	if s.Sessions == nil {
+		s.Sessions = make(map[string]*Session)
+	}
 	return &s, nil
 }
 

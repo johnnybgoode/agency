@@ -138,6 +138,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sess := m.sessions[m.cursor]
 				if sess.TmuxWindow != "" {
 					_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
+					return m, tea.Quit
 				}
 			}
 

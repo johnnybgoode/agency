@@ -133,17 +133,23 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 		return fail(fmt.Errorf("saving provisioning state: %w", err))
 	}
 
-	// Step 2: require sandbox.
+	// Step 2: load session-local config overlay if present.
+	cfg := m.Cfg
+	if localCfg, err := config.Load(config.SessionConfigPath(wtPath)); err == nil {
+		cfg = config.Merge(m.Cfg, localCfg)
+	}
+
+	// Step 2b: require sandbox.
 	if m.Sandbox == nil {
 		return fail(fmt.Errorf("docker is not available"))
 	}
 
 	// Step 3: build environment variables.
 	env := []string{}
-	if key := m.Cfg.Credentials.AnthropicAPIKey; key != "" {
+	if key := cfg.Credentials.AnthropicAPIKey; key != "" {
 		env = append(env, "ANTHROPIC_API_KEY="+key)
 	}
-	if tok := m.Cfg.Credentials.GithubToken; tok != "" {
+	if tok := cfg.Credentials.GithubToken; tok != "" {
 		env = append(env, "GITHUB_TOKEN="+tok)
 	}
 	if v := os.Getenv("GIT_USER"); v != "" {
@@ -162,7 +168,7 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 
 	// Step 5: create container. Use session ID in the name for uniqueness.
 	containerID, err := m.Sandbox.Create(ctx, sandbox.CreateOpts{
-		Image:         m.Cfg.Sandbox.Image,
+		Image:         cfg.Sandbox.Image,
 		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(branch) + "-" + id,
 		WorktreeMount: sess.WorktreePath,
 		ConfigMount:   configMount,
@@ -381,8 +387,45 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 
 	if changed {
-		return m.SaveState()
+		if err := m.SaveState(); err != nil {
+			return err
+		}
 	}
+
+	// Orphan detection: find worktrees and containers not referenced by any session.
+
+	// Build a set of known worktree paths from state.
+	knownWorktrees := make(map[string]bool, len(m.State.Sessions))
+	for _, sess := range m.State.Sessions {
+		if sess.WorktreePath != "" {
+			knownWorktrees[sess.WorktreePath] = true
+		}
+	}
+
+	// Check for orphan worktrees.
+	if res.wtErr == nil {
+		for _, wt := range res.worktrees {
+			if !knownWorktrees[wt.Path] {
+				fmt.Fprintf(os.Stderr, "[reconcile] orphan worktree: %s\n", wt.Path)
+			}
+		}
+	}
+
+	// Check for orphan containers if sandbox is available.
+	if m.Sandbox != nil && res.contsErr == nil {
+		knownSandboxIDs := make(map[string]bool, len(m.State.Sessions))
+		for _, sess := range m.State.Sessions {
+			if sess.SandboxID != "" {
+				knownSandboxIDs[sess.SandboxID] = true
+			}
+		}
+		for _, c := range res.containers {
+			if !knownSandboxIDs[c.ID] {
+				fmt.Fprintf(os.Stderr, "[reconcile] orphan container: %s\n", c.Name)
+			}
+		}
+	}
+
 	return nil
 }
 

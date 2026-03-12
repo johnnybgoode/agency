@@ -64,8 +64,15 @@ func Run() error {
 
 	model := newListModel(mgr)
 	p := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
+	result, err := p.Run()
+	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	// If the user selected a session, attach to the tmux session so they
+	// land in the correct window rather than falling back to the shell.
+	if lm, ok := result.(listModel); ok && lm.selectedWindow != "" {
+		return mgr.Tmux.Attach()
 	}
 
 	return nil

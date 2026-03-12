@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -49,16 +50,17 @@ type reconcileDoneMsg struct {
 
 // listModel is the top-level Bubble Tea model for the session list view.
 type listModel struct {
-	manager    *session.Manager
-	sessions   []*state.Session
-	cursor     int
-	width      int
-	height     int
-	err        error
-	creating   bool
-	createForm createModel
-	confirming bool
-	confirmID  string
+	manager        *session.Manager
+	sessions       []*state.Session
+	cursor         int
+	width          int
+	height         int
+	err            error
+	creating       bool
+	createForm     createModel
+	confirming     bool
+	confirmID      string
+	selectedWindow string // set when user presses Enter; triggers tmux attach after quit
 }
 
 // newListModel constructs the list model, pre-populating the session list.
@@ -138,6 +140,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				sess := m.sessions[m.cursor]
 				if sess.TmuxWindow != "" {
 					_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
+					m.selectedWindow = sess.TmuxWindow
 					return m, tea.Quit
 				}
 			}
@@ -170,7 +173,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions = m.manager.List()
 		m.creating = false
 		if msg.err != nil {
-			m.err = msg.err
+			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
 		}
@@ -182,7 +185,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case sessionRemovedMsg:
 		m.sessions = m.manager.List()
 		if msg.err != nil {
-			m.err = msg.err
+			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
 		}
@@ -294,5 +297,40 @@ func relativeTime(t time.Time) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	default:
 		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
+}
+
+// friendlyError translates common internal/git errors into user-friendly
+// messages. Unknown errors are returned with their raw message stripped of
+// noisy git output.
+func friendlyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+
+	switch {
+	case strings.Contains(msg, "already has an active session"):
+		return errors.New("that branch already has an active session — choose a different branch name")
+	case strings.Contains(msg, "already checked out"):
+		return errors.New("that branch already has an active worktree — choose a different branch name")
+	case strings.Contains(msg, "already exists"):
+		return errors.New("a worktree for that branch already exists — choose a different branch name")
+	case strings.Contains(msg, "not a valid branch name"):
+		return errors.New("invalid branch name — use only alphanumeric characters, dashes, underscores, and slashes")
+	case strings.Contains(msg, "docker is not available"):
+		return errors.New("docker is not running — start Docker Desktop and try again")
+	case strings.Contains(msg, "docker daemon is not running"):
+		return errors.New("docker daemon is not reachable — start Docker Desktop and try again")
+	case strings.Contains(msg, "No such image"):
+		return fmt.Errorf("sandbox image not found — run 'docker pull' for your configured image first")
+	case strings.Contains(msg, "Conflict") && strings.Contains(msg, "name"):
+		return errors.New("a container with that name already exists — delete the old session first or choose a different branch")
+	default:
+		// Strip multi-line git output noise; keep only the first line.
+		if idx := strings.Index(msg, "\n"); idx > 0 {
+			msg = msg[:idx]
+		}
+		return errors.New(msg)
 	}
 }

@@ -105,6 +105,13 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 		return sess, err
 	}
 
+	// Pre-check: reject duplicate branches across existing sessions.
+	for _, existing := range m.State.Sessions {
+		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
+			return fail(fmt.Errorf("branch %q already has an active session (%s)", branch, existing.ID))
+		}
+	}
+
 	// Step 1: create git worktree.
 	wtPath, err := worktree.Create(m.State.BarePath, m.ProjectName, branch)
 	if err != nil {

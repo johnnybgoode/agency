@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/johnnybgoode/agency/internal/tui"
 )
 
 var rootCmd = &cobra.Command{
@@ -12,8 +13,7 @@ var rootCmd = &cobra.Command{
 	Short:        "Coding agent session manager",
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("launching TUI...")
-		return nil
+		return tui.Run()
 	},
 }
 

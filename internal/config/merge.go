@@ -48,7 +48,7 @@ func Merge(base, override *Config) *Config {
 	if override.Worktree.BranchPrefix != "" {
 		result.Worktree.BranchPrefix = override.Worktree.BranchPrefix
 	}
-	if override.Worktree.AutoPush {
+	if override.Worktree.AutoPush != nil {
 		result.Worktree.AutoPush = override.Worktree.AutoPush
 	}
 

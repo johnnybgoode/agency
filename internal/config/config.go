@@ -40,7 +40,7 @@ type CredentialsConfig struct {
 // WorktreeConfig holds git worktree configuration.
 type WorktreeConfig struct {
 	BranchPrefix string `toml:"branch_prefix"`
-	AutoPush     bool   `toml:"auto_push"`
+	AutoPush     *bool  `toml:"auto_push,omitempty"`
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

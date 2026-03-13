@@ -11,13 +11,13 @@ import (
 // createModel is the Bubble Tea model for the "new session" form.
 // It has two fields: Name and Branch (with Branch auto-derived from Name).
 type createModel struct {
-	nameInput     textinput.Model
-	branchInput   textinput.Model
-	focusedField  int  // 0 = name, 1 = branch
-	branchEdited  bool // true once the user manually edits the branch field
-	projectName   string
-	submitted     bool
-	canceled      bool
+	nameInput    textinput.Model
+	branchInput  textinput.Model
+	focusedField int  // 0 = name, 1 = branch
+	branchEdited bool // true once the user manually edits the branch field
+	projectName  string
+	submitted    bool
+	canceled     bool
 }
 
 // newCreateModel initializes the two-field create form.

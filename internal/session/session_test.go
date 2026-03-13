@@ -18,7 +18,7 @@ import (
 //     is not installed, causing all tmux calls to return errors that the
 //     Manager ignores (they are wrapped with _ =).
 //   - Sandbox is nil, which the Manager explicitly handles.
-//   - State is pre-initialised with an empty Sessions map.
+//   - State is pre-initialized with an empty Sessions map.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 
@@ -391,7 +391,7 @@ func TestGenerateID_Format(t *testing.T) {
 		t.Errorf("generateID prefix: got %q, want %q", id[:5], "sess-")
 	}
 	for _, ch := range id[5:] {
-		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
 			t.Errorf("generateID contains non-hex character %q in suffix %q", ch, id[5:])
 		}
 	}

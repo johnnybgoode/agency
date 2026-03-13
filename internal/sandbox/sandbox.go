@@ -70,7 +70,7 @@ var defaultCapAdd = []string{
 
 // Create runs `docker create` with the provided options and returns the
 // container ID assigned by the daemon.
-func (m *Manager) Create(ctx context.Context, opts CreateOpts) (string, error) {
+func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) {
 	capDrop := opts.CapDrop
 	if len(capDrop) == 0 {
 		capDrop = defaultCapDrop

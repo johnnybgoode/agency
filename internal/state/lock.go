@@ -27,7 +27,7 @@ func AcquireLock(path string) (*Lock, error) {
 		return nil, fmt.Errorf("opening lock file %s: %w", path, err)
 	}
 
-	fd := int(f.Fd())
+	fd := int(f.Fd()) //nolint:gosec // file descriptor fits in int on all supported platforms
 	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
 		if err == syscall.EWOULDBLOCK {
@@ -41,7 +41,7 @@ func AcquireLock(path string) (*Lock, error) {
 
 // Release unlocks and closes the lock file.
 func (l *Lock) Release() error {
-	fd := int(l.f.Fd())
+	fd := int(l.f.Fd()) //nolint:gosec // file descriptor fits in int on all supported platforms
 	if err := syscall.Flock(fd, syscall.LOCK_UN); err != nil {
 		return fmt.Errorf("releasing lock %s: %w", l.path, err)
 	}

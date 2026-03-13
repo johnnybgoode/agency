@@ -205,7 +205,7 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Find orphan worktrees.
-		var orphanWorktrees []worktree.WorktreeInfo
+		var orphanWorktrees []worktree.Info
 		if wts, err := worktree.List(barePath); err == nil {
 			for _, wt := range wts {
 				if !knownWorktrees[wt.Path] {

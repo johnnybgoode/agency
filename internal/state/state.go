@@ -27,7 +27,7 @@ const (
 // Session holds the runtime state of a single agent session.
 type Session struct {
 	ID           string       `json:"id"`
-	Name         string       `json:"name"`        // user-defined display name
+	Name         string       `json:"name"` // user-defined display name
 	State        SessionState `json:"state"`
 	Branch       string       `json:"branch"`
 	WorktreePath string       `json:"worktree_path"`
@@ -47,7 +47,7 @@ type State struct {
 	Project         string              `json:"project"`
 	BarePath        string              `json:"bare_path"`
 	TmuxSession     string              `json:"tmux_session"`
-	MainWindowID    string              `json:"main_window_id"`   // ID of the Agency main window (sidebar lives here)
+	MainWindowID    string              `json:"main_window_id"`    // ID of the Agency main window (sidebar lives here)
 	ActiveSessionID string              `json:"active_session_id"` // session ID whose pane is currently joined on the right
 	PID             int                 `json:"pid"`
 	UpdatedAt       time.Time           `json:"updated_at"`

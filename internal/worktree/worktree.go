@@ -12,8 +12,8 @@ import (
 	"strings"
 )
 
-// WorktreeInfo holds metadata about a single git worktree.
-type WorktreeInfo struct {
+// Info holds metadata about a single git worktree.
+type Info struct {
 	Path   string
 	Branch string
 	HEAD   string
@@ -63,15 +63,15 @@ func Create(bareDir, projectName, branch string) (string, error) {
 
 // List returns all worktrees registered with the bare repository at bareDir,
 // excluding the bare repo entry itself.
-func List(bareDir string) ([]WorktreeInfo, error) {
+func List(bareDir string) ([]Info, error) {
 	cmd := exec.Command("git", "-C", bareDir, "worktree", "list", "--porcelain")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
-	var results []WorktreeInfo
-	var current WorktreeInfo
+	var results []Info
+	var current Info
 	isBare := false
 
 	for _, line := range strings.Split(string(out), "\n") {
@@ -81,7 +81,7 @@ func List(bareDir string) ([]WorktreeInfo, error) {
 			if current.Path != "" && !isBare {
 				results = append(results, current)
 			}
-			current = WorktreeInfo{Path: strings.TrimPrefix(line, "worktree ")}
+			current = Info{Path: strings.TrimPrefix(line, "worktree ")}
 			isBare = false
 
 		case strings.HasPrefix(line, "HEAD "):

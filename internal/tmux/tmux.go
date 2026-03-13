@@ -143,6 +143,12 @@ func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
 	return panes, nil
 }
 
+// ResizePane resizes the pane identified by paneID to the given width (columns).
+func (c *Client) ResizePane(paneID string, width int) error {
+	_, err := c.run("resize-pane", "-t", c.SessionName+":"+paneID, "-x", fmt.Sprintf("%d", width))
+	return err
+}
+
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
 	if c.tmuxPath == "" {

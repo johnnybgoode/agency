@@ -144,10 +144,14 @@ func Run() error {
 		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", err)
 	}
 
-	// If there is an active session, join its pane into the main window.
+	// If there is an active session, join its pane into the main window only if
+	// it is not already there (guards against double-join after an unclean exit).
 	if mgr.State.ActiveSessionID != "" && mgr.State.MainWindowID != "" {
 		if sess, ok := mgr.State.Sessions[mgr.State.ActiveSessionID]; ok && sess.PaneID != "" {
-			_ = mgr.Tmux.JoinPane(sess.PaneID, mgr.State.MainWindowID)
+			existingPanes, _ := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
+			if !paneInWindow(existingPanes, sess.PaneID) {
+				_ = mgr.Tmux.JoinPane(sess.PaneID, mgr.State.MainWindowID)
+			}
 		}
 	}
 
@@ -189,8 +193,17 @@ func ensureMainWindow(mgr *session.Manager) error {
 	mgr.State.MainWindowID = winID
 
 	// Split it vertically — the right pane starts empty.
-	// We discard the pane ID here; it will be replaced when the user selects a session.
+	// We discard the new right pane ID; it will be replaced when the user selects a session.
 	_, _ = mgr.Tmux.SplitWindowVertical(winID)
+
+	// Resize the left pane (original/first pane) to the configured sidebar width.
+	if panes, err := mgr.Tmux.GetWindowPanes(winID); err == nil && len(panes) > 0 {
+		w := mgr.Cfg.TUI.SidebarWidth
+		if w <= 0 {
+			w = 24
+		}
+		_ = mgr.Tmux.ResizePane(panes[0], w)
+	}
 
 	return mgr.SaveState()
 }
@@ -226,4 +239,14 @@ func findProjectDir() (string, error) {
 func isDir(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// paneInWindow reports whether paneID is present in the given slice of pane IDs.
+func paneInWindow(panes []string, paneID string) bool {
+	for _, p := range panes {
+		if p == paneID {
+			return true
+		}
+	}
+	return false
 }

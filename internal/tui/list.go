@@ -210,13 +210,17 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// sidebarWidth returns the effective sidebar width: config value or a default.
+// sidebarWidth returns the effective sidebar total width (including the right │).
+// Defaults to 22 if neither the config nor m.width are set.
 func (m listModel) sidebarWidth() int {
+	// Prefer the explicitly set terminal width if available.
+	if m.width > 0 {
+		return m.width
+	}
 	w := m.manager.Cfg.TUI.SidebarWidth
 	if w <= 0 {
-		w = 24
+		w = 22
 	}
-	// Inner content width = border width - 2 (for the border chars).
 	return w
 }
 
@@ -233,37 +237,63 @@ func truncate(s string, max int) string {
 }
 
 // View renders the sidebar TUI.
+//
+// Layout (w = sidebarWidth, inner = w-1):
+//
+//	───── Agency ────────╮   <- top rule with embedded title, right corner
+//	                     │   <- content rows: inner cols + "│"
+//	─────────────────────╯   <- bottom rule with right corner
 func (m listModel) View() string {
-	innerWidth := m.sidebarWidth()
-
-	// Helper: pad/truncate a line to innerWidth.
-	line := func(s string) string {
-		runes := []rune(s)
-		if len(runes) > innerWidth {
-			runes = []rune(truncate(s, innerWidth))
-		}
-		padded := string(runes) + strings.Repeat(" ", innerWidth-len([]rune(string(runes))))
-		return "│" + padded + "│"
+	w := m.sidebarWidth()
+	// inner is the number of content columns before the right "│".
+	inner := w - 1
+	if inner < 1 {
+		inner = 1
 	}
 
-	blank := line("")
+	// row pads content to inner columns then appends the right border char.
+	// It uses lipgloss.Width so that ANSI escape sequences are not counted.
+	row := func(content string) string {
+		visWidth := lipgloss.Width(content)
+		if visWidth > inner {
+			// Hard-truncate visible characters — strip styled content to fit.
+			content = truncate(content, inner)
+			visWidth = lipgloss.Width(content)
+		}
+		pad := inner - visWidth
+		if pad < 0 {
+			pad = 0
+		}
+		return content + strings.Repeat(" ", pad) + "│"
+	}
+
+	blank := row("")
 
 	activeID := m.manager.State.ActiveSessionID
 	projectName := m.manager.State.Project
 
-	var rows []string
+	// Top rule: "───── Agency " + remaining dashes + "╮"
+	title := "───── Agency "
+	titleLen := len([]rune(title)) // pure ASCII, rune count == byte count
+	dashCount := inner - titleLen
+	if dashCount < 0 {
+		dashCount = 0
+	}
+	top := title + strings.Repeat("─", dashCount) + "╮"
 
-	// Border top + title.
-	rows = append(rows, "┌"+strings.Repeat("─", innerWidth)+"┐")
-	rows = append(rows, line(titleStyle.Render("Agency")))
+	// Bottom rule.
+	bottom := strings.Repeat("─", inner) + "╯"
+
+	var rows []string
+	rows = append(rows, top)
 	rows = append(rows, blank)
-	rows = append(rows, line(headerStyle.Render("Project:")))
-	rows = append(rows, line(" "+truncate(projectName+"/", innerWidth-1)))
+	rows = append(rows, row(" Project:"))
+	rows = append(rows, row("   "+truncate(projectName+"/", inner-3)))
 	rows = append(rows, blank)
-	rows = append(rows, line(headerStyle.Render("Sessions:")))
+	rows = append(rows, row(" Sessions:"))
 
 	if len(m.sessions) == 0 {
-		rows = append(rows, line("  (none)"))
+		rows = append(rows, row("  (none)"))
 	} else {
 		for i, sess := range m.sessions {
 			name := sess.Name
@@ -274,29 +304,32 @@ func (m listModel) View() string {
 			if sess.ID == activeID {
 				indicator = "◉"
 			}
-			label := indicator + " " + truncate(name, innerWidth-2)
+			// Leading space + indicator + space + name; truncate name to fit.
+			// Total prefix visible width: 1 (space) + 1 (indicator) + 1 (space) = 3.
+			truncName := truncate(name, inner-3)
+			label := " " + indicator + " " + truncName
 			if i == m.cursor {
-				label = selectedStyle.Render(indicator) + " " + truncate(name, innerWidth-2)
+				label = selectedStyle.Render(" " + indicator + " " + truncName)
 			}
-			rows = append(rows, line(label))
+			rows = append(rows, row(label))
 		}
 	}
 
 	// Error line if any.
 	if m.err != nil {
 		rows = append(rows, blank)
-		rows = append(rows, line(errorStyle.Render(truncate("! "+m.err.Error(), innerWidth))))
+		rows = append(rows, row(errorStyle.Render(truncate("! "+m.err.Error(), inner))))
 	}
 
-	// Fill remaining space above help — compute how many blank lines we need.
-	// We need: border top + title + blank + "Project:" + project + blank + "Sessions:" + sessions + maybe error + ... + "Help:" + hint + border bottom
-	helpLines := 2 // "Help:" header + hint line
+	// Fill remaining space above help section.
+	// Fixed rows at bottom: blank + " Help:" + hint + bottom border = 4 lines.
+	helpLines := 3 // " Help:" + hint + blank before help
 	fixedRows := len(rows)
 	totalRows := m.height
 	if totalRows <= 0 {
 		totalRows = 24
 	}
-	// bottom border + help section = helpLines + 1
+	// Reserve: helpLines rows + 1 bottom border row.
 	fillCount := totalRows - fixedRows - helpLines - 1
 	if fillCount < 0 {
 		fillCount = 0
@@ -306,7 +339,8 @@ func (m listModel) View() string {
 	}
 
 	// Help section.
-	rows = append(rows, line(headerStyle.Render("Help:")))
+	rows = append(rows, blank)
+	rows = append(rows, row(" Help:"))
 
 	var hint string
 	switch {
@@ -321,7 +355,7 @@ func (m listModel) View() string {
 				break
 			}
 		}
-		hint = errorStyle.Render(fmt.Sprintf(`Del "%s"? [y/n]`, truncate(confirmSess, innerWidth-14)))
+		hint = errorStyle.Render(fmt.Sprintf(`Del "%s"? [y/n]`, truncate(confirmSess, inner-14)))
 	case len(m.sessions) == 0:
 		hint = " [n] new session"
 	default:
@@ -332,10 +366,10 @@ func (m listModel) View() string {
 			hint = " [⏎] switch  [n] [d]"
 		}
 	}
-	rows = append(rows, line(hint))
+	rows = append(rows, row(hint))
 
-	// Border bottom.
-	rows = append(rows, "└"+strings.Repeat("─", innerWidth)+"┘")
+	// Bottom border.
+	rows = append(rows, bottom)
 
 	return strings.Join(rows, "\n")
 }

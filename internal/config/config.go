@@ -111,7 +111,7 @@ func Load(paths ...string) (*Config, error) {
 			if info, err := os.Stat(path); err == nil {
 				perm := info.Mode().Perm()
 				if perm&0o177 != 0 {
-					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions %04o, should be 0o600\n", path, perm)
+					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions 0o%o, should be 0o600\n", path, perm)
 				}
 			}
 		}

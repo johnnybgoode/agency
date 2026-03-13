@@ -102,7 +102,7 @@ func TestReadInitializesNilSessions(t *testing.T) {
 
 	// Write JSON without a "sessions" key to simulate missing sessions field.
 	raw := `{"version":1,"project":"p","bare_path":"/bare","tmux_session":"agency-p","pid":0,"updated_at":"2024-01-01T00:00:00Z"}`
-	if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 

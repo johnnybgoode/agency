@@ -28,7 +28,7 @@ func TestDoubleAcquireFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first AcquireLock failed: %v", err)
 	}
-	defer lock1.Release() //nolint:errcheck
+	defer lock1.Release()
 
 	_, err = AcquireLock(lockPath)
 	if err == nil {
@@ -72,5 +72,5 @@ func TestAcquireCreatesParentDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLock with nonexistent parent dir failed: %v", err)
 	}
-	defer lock.Release() //nolint:errcheck
+	lock.Release()
 }

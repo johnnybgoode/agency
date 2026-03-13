@@ -8,9 +8,9 @@ import (
 
 func TestSlugify(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  string
-		want   string
+		name  string
+		input string
+		want  string
 	}{
 		{
 			name:  "already lowercase alphanumeric",

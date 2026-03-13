@@ -1,3 +1,4 @@
+// Package tui implements the terminal user interface using bubbletea.
 package tui
 
 import (
@@ -10,10 +11,10 @@ import (
 type createModel struct {
 	input     textinput.Model
 	submitted bool
-	cancelled bool
+	canceled  bool
 }
 
-// newCreateModel initialises a create form with the given branch prefix
+// newCreateModel initializes a create form with the given branch prefix
 // pre-filled in the input field.
 func newCreateModel(branchPrefix string) createModel {
 	ti := textinput.New()
@@ -40,7 +41,7 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 			m.submitted = true
 			return m, nil
 		case "esc":
-			m.cancelled = true
+			m.canceled = true
 			return m, nil
 		}
 	}

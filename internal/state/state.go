@@ -1,3 +1,4 @@
+// Package state manages persistent application state and file locking.
 package state
 
 import (
@@ -12,6 +13,7 @@ import (
 // SessionState represents the lifecycle state of a session.
 type SessionState string
 
+// Session state constants represent the lifecycle of a session.
 const (
 	StateCreating     SessionState = "creating"
 	StateProvisioning SessionState = "provisioning"
@@ -85,12 +87,12 @@ func Write(path string, s *State) error {
 		return fmt.Errorf("marshaling state: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("creating state directory: %w", err)
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("writing state temp file: %w", err)
 	}
 

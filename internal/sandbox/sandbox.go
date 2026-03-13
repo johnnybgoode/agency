@@ -1,3 +1,4 @@
+// Package sandbox manages Docker containers for isolated agent sessions.
 package sandbox
 
 import (
@@ -81,10 +82,7 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (string, error) {
 
 	args := []string{"create"}
 
-	args = append(args, "--name", opts.Name)
-	args = append(args, "--tty", "--interactive")
-	args = append(args, "--workdir", "/app")
-	args = append(args, "--security-opt", "no-new-privileges:true")
+	args = append(args, "--name", opts.Name, "--tty", "--interactive", "--workdir", "/app", "--security-opt", "no-new-privileges:true")
 
 	for _, cap := range capDrop {
 		args = append(args, "--cap-drop", cap)
@@ -106,10 +104,8 @@ func (m *Manager) Create(ctx context.Context, opts CreateOpts) (string, error) {
 		args = append(args, "-e", env)
 	}
 
-	args = append(args, opts.Image)
-
 	// Entrypoint command: bash -c claude
-	args = append(args, "bash", "-c", "claude")
+	args = append(args, opts.Image, "bash", "-c", "claude")
 
 	// Use stdout-only output for docker create to avoid stderr warnings
 	// polluting the container ID.

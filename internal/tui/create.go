@@ -5,26 +5,39 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
 // createModel is the Bubble Tea model for the "new session" form.
+// It has two fields: Name and Branch (with Branch auto-derived from Name).
 type createModel struct {
-	input     textinput.Model
-	submitted bool
-	canceled  bool
+	nameInput     textinput.Model
+	branchInput   textinput.Model
+	focusedField  int  // 0 = name, 1 = branch
+	branchEdited  bool // true once the user manually edits the branch field
+	projectName   string
+	submitted     bool
+	canceled      bool
 }
 
-// newCreateModel initializes a create form with the given branch prefix
-// pre-filled in the input field.
-func newCreateModel(branchPrefix string) createModel {
-	ti := textinput.New()
-	ti.Placeholder = "branch-name"
-	ti.SetValue(branchPrefix)
-	// Position the cursor at the end of the pre-filled value.
-	ti.CursorEnd()
-	ti.Focus()
+// newCreateModel initializes the two-field create form.
+func newCreateModel(projectName string) createModel {
+	nameInput := textinput.New()
+	nameInput.Placeholder = "My Feature"
+	nameInput.Focus()
 
-	return createModel{input: ti}
+	branchInput := textinput.New()
+	branchInput.Placeholder = "project-name/my-feature"
+	if projectName != "" {
+		branchInput.SetValue(projectName + "/")
+	}
+
+	return createModel{
+		nameInput:    nameInput,
+		branchInput:  branchInput,
+		focusedField: 0,
+		projectName:  projectName,
+	}
 }
 
 // Init returns the blink command so the text-input cursor animates.
@@ -43,19 +56,70 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		case "esc":
 			m.canceled = true
 			return m, nil
+		case "tab", "shift+tab":
+			if m.focusedField == 0 {
+				m.focusedField = 1
+				m.nameInput.Blur()
+				m.branchInput.Focus()
+			} else {
+				m.focusedField = 0
+				m.branchInput.Blur()
+				m.nameInput.Focus()
+			}
+			return m, textinput.Blink
 		}
 	}
 
 	var cmd tea.Cmd
-	m.input, cmd = m.input.Update(msg)
+	if m.focusedField == 0 {
+		prevName := m.nameInput.Value()
+		m.nameInput, cmd = m.nameInput.Update(msg)
+		newName := m.nameInput.Value()
+		// Auto-fill branch if user hasn't manually edited it.
+		if !m.branchEdited && newName != prevName {
+			slug := worktree.Slugify(newName)
+			prefix := m.projectName
+			if prefix != "" {
+				m.branchInput.SetValue(prefix + "/" + slug)
+			} else {
+				m.branchInput.SetValue(slug)
+			}
+		}
+	} else {
+		prevBranch := m.branchInput.Value()
+		m.branchInput, cmd = m.branchInput.Update(msg)
+		if m.branchInput.Value() != prevBranch {
+			m.branchEdited = true
+		}
+	}
+
 	return m, cmd
+}
+
+// Name returns the name field value.
+func (m createModel) Name() string {
+	return m.nameInput.Value()
+}
+
+// Branch returns the branch field value.
+func (m createModel) Branch() string {
+	return m.branchInput.Value()
 }
 
 // View renders the create form.
 func (m createModel) View() string {
 	formTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("New Session")
 
+	nameLabel := "  Name:   "
+	branchLabel := "  Branch: "
+	if m.focusedField == 1 {
+		branchLabel = lipgloss.NewStyle().Bold(true).Render(branchLabel)
+	} else {
+		nameLabel = lipgloss.NewStyle().Bold(true).Render(nameLabel)
+	}
+
 	return "\n  " + formTitle + "\n\n" +
-		"  Branch: " + m.input.View() + "\n\n" +
-		helpStyle.Render("  enter: create  esc: cancel") + "\n"
+		nameLabel + m.nameInput.View() + "\n" +
+		branchLabel + m.branchInput.View() + "\n\n" +
+		helpStyle.Render("  tab: next field   enter: create   esc: cancel") + "\n"
 }

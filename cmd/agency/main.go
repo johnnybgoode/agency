@@ -63,6 +63,9 @@ var initCmd = &cobra.Command{
 		}
 
 		fmt.Printf("Initialized agency project: %s\n", projectName)
+		fmt.Println()
+		fmt.Println("To set up the tmux popup keybinding, add this to your tmux.conf:")
+		fmt.Println("  bind n run-shell \"tmux display-popup -E -w 60 -h 10 'agency new --popup'\"")
 		return nil
 	},
 }
@@ -72,21 +75,55 @@ var sessionCmd = &cobra.Command{
 	Short: "Manage agent sessions",
 }
 
-var newCmd = &cobra.Command{
-	Use:   "new <branch>",
-	Short: "Create a new session for a branch",
-	Args:  cobra.ExactArgs(1),
+// topLevelNewCmd is the top-level "agency new" command that creates a session.
+// With --popup it runs the interactive TUI create form (suitable for tmux popups).
+// Without --popup it accepts name and branch as positional arguments.
+var topLevelNewCmd = &cobra.Command{
+	Use:   "new [name] [branch]",
+	Short: "Create a new agent session (interactive with --popup)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		branch := args[0]
+		popup, _ := cmd.Flags().GetBool("popup")
+		if popup {
+			return tui.RunPopup()
+		}
+
+		// Non-popup: require name and branch args.
+		if len(args) < 2 {
+			return fmt.Errorf("usage: agency new <name> <branch>  (or agency new --popup)")
+		}
+		name := args[0]
+		branch := args[1]
+
 		mgr, err := loadManager()
 		if err != nil {
 			return err
 		}
-		sess, err := mgr.Create(context.Background(), branch)
+		sess, err := mgr.Create(context.Background(), name, branch)
 		if err != nil {
 			return fmt.Errorf("creating session: %w", err)
 		}
-		fmt.Printf("Created session %s for branch %s\n", sess.ID, branch)
+		fmt.Printf("Created session %s (%s) for branch %s\n", sess.ID, sess.Name, sess.Branch)
+		return nil
+	},
+}
+
+// sessionNewCmd is the "session new" subcommand kept for backwards compat.
+var sessionNewCmd = &cobra.Command{
+	Use:   "new <name> <branch>",
+	Short: "Create a new session for a branch",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		branch := args[1]
+		mgr, err := loadManager()
+		if err != nil {
+			return err
+		}
+		sess, err := mgr.Create(context.Background(), name, branch)
+		if err != nil {
+			return fmt.Errorf("creating session: %w", err)
+		}
+		fmt.Printf("Created session %s (%s) for branch %s\n", sess.ID, sess.Name, sess.Branch)
 		return nil
 	},
 }
@@ -104,11 +141,12 @@ var listCmd = &cobra.Command{
 			fmt.Println("No sessions found.")
 			return nil
 		}
-		fmt.Printf("%-20s  %-30s  %-12s  %s\n", "ID", "BRANCH", "STATE", "CREATED")
-		fmt.Println(strings.Repeat("-", 80))
+		fmt.Printf("%-20s  %-20s  %-30s  %-12s  %s\n", "ID", "NAME", "BRANCH", "STATE", "CREATED")
+		fmt.Println(strings.Repeat("-", 100))
 		for _, s := range sessions {
-			fmt.Printf("%-20s  %-30s  %-12s  %s\n",
+			fmt.Printf("%-20s  %-20s  %-30s  %-12s  %s\n",
 				s.ID,
+				s.Name,
 				s.Branch,
 				string(s.State),
 				s.CreatedAt.Format("2006-01-02 15:04:05"),
@@ -306,9 +344,10 @@ func isDir(path string) bool {
 func init() {
 	initCmd.Flags().String("remote", "", "Remote repository URL")
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
+	topLevelNewCmd.Flags().Bool("popup", false, "Run interactive create form (for use in tmux popup)")
 
-	rootCmd.AddCommand(versionCmd, initCmd, sessionCmd, gcCmd)
-	sessionCmd.AddCommand(newCmd, listCmd, rmCmd)
+	rootCmd.AddCommand(versionCmd, initCmd, sessionCmd, gcCmd, topLevelNewCmd)
+	sessionCmd.AddCommand(sessionNewCmd, listCmd, rmCmd)
 }
 
 func main() {

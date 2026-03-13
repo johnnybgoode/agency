@@ -13,9 +13,79 @@ import (
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
+// RunPopup runs just the create form (for use in a tmux popup). It finds the
+// project directory, loads config, creates a session manager, presents the
+// two-field form, and submits the session on enter.
+func RunPopup() error {
+	projectDir, err := findProjectDir()
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	mgr, err := session.NewManager(projectDir, cfg)
+	if err != nil {
+		return fmt.Errorf("initializing session manager: %w", err)
+	}
+
+	form := newCreateModel(mgr.ProjectName)
+	p := tea.NewProgram(popupWrapper{form: form, mgr: mgr})
+	_, err = p.Run()
+	return err
+}
+
+// popupWrapper is a thin bubbletea model that wraps the create form for popup mode.
+type popupWrapper struct {
+	form createModel
+	mgr  *session.Manager
+	done bool
+	err  error
+}
+
+func (pw popupWrapper) Init() tea.Cmd { return pw.form.Init() }
+
+func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	pw.form, cmd = pw.form.Update(msg)
+
+	if pw.form.canceled {
+		return pw, tea.Quit
+	}
+
+	if pw.form.submitted {
+		name := pw.form.Name()
+		branch := pw.form.Branch()
+		mgr := pw.mgr
+		pw.done = true
+		return pw, func() tea.Msg {
+			_, err := mgr.Create(context.Background(), name, branch)
+			return popupDoneMsg{err: err}
+		}
+	}
+
+	return pw, cmd
+}
+
+func (pw popupWrapper) View() string {
+	if pw.done {
+		if pw.err != nil {
+			return errorStyle.Render("Error: "+pw.err.Error()) + "\n"
+		}
+		return ""
+	}
+	return pw.form.View()
+}
+
+// popupDoneMsg is sent when the async create call completes in popup mode.
+type popupDoneMsg struct{ err error }
+
 // Run is the entrypoint for the interactive TUI. It locates the project
 // directory, acquires an exclusive lock, reconciles session state, then hands
-// control to Bubble Tea.
+// control to Bubble Tea running the sidebar (no alt-screen).
 func Run() error {
 	projectDir, err := findProjectDir()
 	if err != nil {
@@ -44,7 +114,7 @@ func Run() error {
 				return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
 			}
 			// PID is dead — stale lock. Force-remove and retry.
-			os.Remove(lockPath)
+			os.Remove(lockPath) //nolint:errcheck
 			lock, err = state.AcquireLock(lockPath)
 			if err != nil {
 				return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
@@ -69,20 +139,60 @@ func Run() error {
 		fmt.Fprintf(os.Stderr, "warning: reconcile failed: %v\n", err)
 	}
 
+	// Ensure the main window is set up (sidebar lives here).
+	if err := ensureMainWindow(mgr); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", err)
+	}
+
+	// If there is an active session, join its pane into the main window.
+	if mgr.State.ActiveSessionID != "" && mgr.State.MainWindowID != "" {
+		if sess, ok := mgr.State.Sessions[mgr.State.ActiveSessionID]; ok && sess.PaneID != "" {
+			_ = mgr.Tmux.JoinPane(sess.PaneID, mgr.State.MainWindowID)
+		}
+	}
+
+	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)
-	p := tea.NewProgram(model, tea.WithAltScreen())
-	result, err := p.Run()
+	p := tea.NewProgram(model)
+	_, err = p.Run()
 	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
-	// If the user selected a session, attach to the tmux session so they
-	// land in the correct window rather than falling back to the shell.
-	if lm, ok := result.(listModel); ok && lm.selectedWindow != "" {
-		return mgr.Tmux.Attach()
+	return nil
+}
+
+// ensureMainWindow verifies that State.MainWindowID points to a real tmux window.
+// If it is empty or the window is gone, a new window is created, split
+// vertically, and the state is saved.
+func ensureMainWindow(mgr *session.Manager) error {
+	mainID := mgr.State.MainWindowID
+
+	if mainID != "" {
+		// Verify it still exists.
+		windows, err := mgr.Tmux.ListWindows()
+		if err == nil {
+			for _, w := range windows {
+				if w.ID == mainID {
+					// Already good.
+					return nil
+				}
+			}
+		}
 	}
 
-	return nil
+	// Create a new window to serve as the main (sidebar) window.
+	winID, err := mgr.Tmux.NewWindow("agency")
+	if err != nil {
+		return fmt.Errorf("creating main window: %w", err)
+	}
+	mgr.State.MainWindowID = winID
+
+	// Split it vertically — the right pane starts empty.
+	// We discard the pane ID here; it will be replaced when the user selects a session.
+	_, _ = mgr.Tmux.SplitWindowVertical(winID)
+
+	return mgr.SaveState()
 }
 
 // findProjectDir walks up from the current working directory looking for a

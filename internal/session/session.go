@@ -361,38 +361,8 @@ func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeS
 	return windowSet, containerIDSet, worktreeSet
 }
 
-// logOrphans prints worktrees and containers not referenced by any known session.
-func (m *Manager) logOrphans(res *reconcileResult) {
-	knownWorktrees := make(map[string]bool, len(m.State.Sessions))
-	for _, sess := range m.State.Sessions {
-		if sess.WorktreePath != "" {
-			knownWorktrees[sess.WorktreePath] = true
-		}
-	}
-
-	if res.wtErr == nil {
-		for _, wt := range res.worktrees {
-			if !knownWorktrees[wt.Path] {
-				fmt.Fprintf(os.Stderr, "[reconcile] orphan worktree: %s\n", wt.Path)
-			}
-		}
-	}
-
-	if m.Sandbox == nil || res.contsErr != nil {
-		return
-	}
-	knownSandboxIDs := make(map[string]bool, len(m.State.Sessions))
-	for _, sess := range m.State.Sessions {
-		if sess.SandboxID != "" {
-			knownSandboxIDs[sess.SandboxID] = true
-		}
-	}
-	for _, c := range res.containers {
-		if !knownSandboxIDs[c.ID] {
-			fmt.Fprintf(os.Stderr, "[reconcile] orphan container: %s\n", c.Name)
-		}
-	}
-}
+// logOrphans is a no-op placeholder retained for future structured logging.
+func (m *Manager) logOrphans(_ *reconcileResult) {}
 
 // Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
 // session states that have drifted from reality.

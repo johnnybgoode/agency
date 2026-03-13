@@ -108,6 +108,19 @@ func (c *Client) SendKeys(windowID, keys string) error {
 	return err
 }
 
+// SendKeysToPane sends keystrokes directly to a pane by pane ID and presses Enter.
+// Pane IDs (e.g. "%5") are globally unique within the tmux server.
+func (c *Client) SendKeysToPane(paneID, keys string) error {
+	_, err := c.run("send-keys", "-t", paneID, keys, "Enter")
+	return err
+}
+
+// SelectPane makes the given pane the active pane in its window.
+func (c *Client) SelectPane(paneID string) error {
+	_, err := c.run("select-pane", "-t", paneID)
+	return err
+}
+
 // SplitWindowVertical creates a vertical (horizontal split) pane in windowID
 // and returns the new right pane ID.
 func (c *Client) SplitWindowVertical(windowID string) (string, error) {
@@ -117,7 +130,7 @@ func (c *Client) SplitWindowVertical(windowID string) (string, error) {
 // JoinPane moves a pane from its current location into targetWindowID as the
 // right pane.
 func (c *Client) JoinPane(srcPaneID, targetWindowID string) error {
-	_, err := c.run("join-pane", "-s", c.SessionName+":"+srcPaneID, "-t", c.SessionName+":"+targetWindowID, "-h")
+	_, err := c.run("join-pane", "-s", srcPaneID, "-t", c.SessionName+":"+targetWindowID, "-h")
 	return err
 }
 
@@ -145,7 +158,19 @@ func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
 
 // ResizePane resizes the pane identified by paneID to the given width (columns).
 func (c *Client) ResizePane(paneID string, width int) error {
-	_, err := c.run("resize-pane", "-t", c.SessionName+":"+paneID, "-x", fmt.Sprintf("%d", width))
+	_, err := c.run("resize-pane", "-t", paneID, "-x", fmt.Sprintf("%d", width))
+	return err
+}
+
+// DisplayPopup runs cmd in a tmux display-popup overlay.
+// The popup is sized to width columns × height rows.
+func (c *Client) DisplayPopup(cmd string, width, height int) error {
+	_, err := c.run(
+		"display-popup", "-E",
+		"-w", fmt.Sprintf("%d", width),
+		"-h", fmt.Sprintf("%d", height),
+		cmd,
+	)
 	return err
 }
 

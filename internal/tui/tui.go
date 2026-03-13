@@ -85,15 +85,71 @@ func (pw popupWrapper) View() string { //nolint:gocritic // bubbletea model must
 // popupDoneMsg is sent when the async create call completes in popup mode.
 type popupDoneMsg struct{ err error }
 
-// Run is the entrypoint for the interactive TUI. It locates the project
-// directory, acquires an exclusive lock, reconciles session state, then hands
-// control to Bubble Tea running the sidebar (no alt-screen).
+// Run is the entrypoint for the interactive TUI. If the current process is not
+// already inside a tmux session, it bootstraps the tmux session and main window,
+// launches the sidebar inside the left pane, then attaches — so the user lands
+// directly in the sidebar and display-popup has a live client for the 'n' key.
+// If already inside tmux (TMUX env set), the sidebar runs directly in the
+// current pane.
 func Run() error {
 	projectDir, err := findProjectDir()
 	if err != nil {
 		return err
 	}
 
+	if os.Getenv("TMUX") == "" {
+		return runAndAttach(projectDir)
+	}
+	return runSidebar(projectDir)
+}
+
+// runAndAttach sets up the tmux session and main window, launches the sidebar
+// inside the left pane, then attaches the current terminal to the session.
+// It does not acquire the lock — the sidebar process inside the pane does that.
+func runAndAttach(projectDir string) error {
+	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	mgr, err := session.NewManager(projectDir, cfg)
+	if err != nil {
+		return fmt.Errorf("initializing session manager: %w", err)
+	}
+
+	if err := mgr.Tmux.EnsureSession(); err != nil {
+		return fmt.Errorf("ensuring tmux session: %w", err)
+	}
+
+	// Check if the sidebar is already running (live PID in state).
+	alreadyRunning := false
+	if s, err := state.Read(mgr.StatePath); err == nil && s.PID > 0 && state.IsProcessAlive(s.PID) {
+		alreadyRunning = true
+	}
+
+	if !alreadyRunning {
+		leftPaneID, winErr := ensureMainWindow(mgr)
+		if winErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", winErr)
+		} else {
+			exe, exeErr := os.Executable()
+			if exeErr != nil {
+				exe = "agency"
+			}
+			cmd := fmt.Sprintf("cd %q && exec %q", projectDir, exe)
+			if err := mgr.Tmux.SendKeysToPane(leftPaneID, cmd); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not start sidebar in pane: %v\n", err)
+			}
+			// Focus the left pane so the user lands there after attach.
+			_ = mgr.Tmux.SelectPane(leftPaneID)
+		}
+	}
+
+	return mgr.Tmux.Attach()
+}
+
+// runSidebar is the full sidebar TUI flow, run when already inside tmux.
+func runSidebar(projectDir string) error {
 	// Auto-init .tool/ if missing (e.g. bare repo exists but tool dir was never created).
 	if !isDir(filepath.Join(projectDir, ".tool")) {
 		if err := worktree.Init(projectDir, ""); err != nil {
@@ -142,7 +198,7 @@ func Run() error {
 	}
 
 	// Ensure the main window is set up (sidebar lives here).
-	if err := ensureMainWindow(mgr); err != nil {
+	if _, err := ensureMainWindow(mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", err)
 	}
 
@@ -170,8 +226,8 @@ func Run() error {
 
 // ensureMainWindow verifies that State.MainWindowID points to a real tmux window.
 // If it is empty or the window is gone, a new window is created, split
-// vertically, and the state is saved.
-func ensureMainWindow(mgr *session.Manager) error {
+// vertically, and the state is saved. Returns the left pane ID.
+func ensureMainWindow(mgr *session.Manager) (string, error) {
 	mainID := mgr.State.MainWindowID
 
 	if mainID != "" {
@@ -180,8 +236,11 @@ func ensureMainWindow(mgr *session.Manager) error {
 		if err == nil {
 			for _, w := range windows {
 				if w.ID == mainID {
-					// Already good.
-					return nil
+					// Already good — return the left pane ID.
+					if panes, err := mgr.Tmux.GetWindowPanes(mainID); err == nil && len(panes) > 0 {
+						return panes[0], nil
+					}
+					return "", nil
 				}
 			}
 		}
@@ -190,24 +249,27 @@ func ensureMainWindow(mgr *session.Manager) error {
 	// Create a new window to serve as the main (sidebar) window.
 	winID, err := mgr.Tmux.NewWindow("agency")
 	if err != nil {
-		return fmt.Errorf("creating main window: %w", err)
+		return "", fmt.Errorf("creating main window: %w", err)
 	}
 	mgr.State.MainWindowID = winID
 
 	// Split it vertically — the right pane starts empty.
-	// We discard the new right pane ID; it will be replaced when the user selects a session.
 	_, _ = mgr.Tmux.SplitWindowVertical(winID)
 
-	// Resize the left pane (original/first pane) to the configured sidebar width.
-	if panes, err := mgr.Tmux.GetWindowPanes(winID); err == nil && len(panes) > 0 {
-		w := mgr.Cfg.TUI.SidebarWidth
-		if w <= 0 {
-			w = 24
-		}
-		_ = mgr.Tmux.ResizePane(panes[0], w)
+	// Get panes and resize the left pane to the configured sidebar width.
+	panes, err := mgr.Tmux.GetWindowPanes(winID)
+	if err != nil || len(panes) == 0 {
+		_ = mgr.SaveState()
+		return "", fmt.Errorf("getting window panes: %w", err)
 	}
 
-	return mgr.SaveState()
+	w := mgr.Cfg.TUI.SidebarWidth
+	if w <= 0 {
+		w = 24
+	}
+	_ = mgr.Tmux.ResizePane(panes[0], w)
+
+	return panes[0], mgr.SaveState()
 }
 
 // findProjectDir walks up from the current working directory looking for a

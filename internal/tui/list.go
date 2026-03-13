@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -58,13 +59,19 @@ type listModel struct {
 	err        error
 	confirming bool // inline delete confirm (shown in help area)
 	confirmID  string
+	agencyBin  string // absolute path to the agency binary for popup invocation
 }
 
 // newListModel constructs the list model, pre-populating the session list.
 func newListModel(mgr *session.Manager) listModel {
+	bin := "agency"
+	if exe, err := os.Executable(); err == nil {
+		bin = exe
+	}
 	return listModel{
-		manager:  mgr,
-		sessions: mgr.List(),
+		manager:   mgr,
+		sessions:  mgr.List(),
+		agencyBin: bin,
 	}
 }
 
@@ -107,9 +114,12 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		return m, tea.Quit
 
 	case "n":
-		// Print hint to run agency new --popup; in popup mode the create form runs separately.
-		fmt.Print("\r\n  Run: agency new --popup\r\n")
-		return m, nil
+		tmuxClient := m.manager.Tmux
+		agencyBin := m.agencyBin
+		return m, func() tea.Msg {
+			_ = tmuxClient.DisplayPopup(agencyBin+" new --popup", 60, 10)
+			return tickMsg{} // refresh session list after the popup closes
+		}
 
 	case "enter":
 		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
@@ -228,15 +238,11 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// sidebarWidth returns the effective sidebar total width (including the right │).
-// Defaults to 22 if neither the config nor m.width are set.
+// sidebarWidth returns the configured sidebar total width (including the right │).
+// Defaults to 22 if not set in config.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
-	// Prefer the explicitly set terminal width if available.
-	if m.width > 0 {
-		return m.width
-	}
 	w := m.manager.Cfg.TUI.SidebarWidth
 	if w <= 0 {
 		w = 22
@@ -370,7 +376,7 @@ func (m listModel) View() string {
 				break
 			}
 		}
-		hint = errorStyle.Render(fmt.Sprintf("Del %q? [y/n]", truncate(confirmSess, inner-14)))
+		hint = errorStyle.Render(fmt.Sprintf(" del %s [y/n]", truncate(confirmSess, inner-11)))
 	case len(m.sessions) == 0:
 		hint = " [n] new session"
 	default:

@@ -308,11 +308,10 @@ func TestJoinPane(t *testing.T) {
 			}
 
 			args := readArgs(t, argsFile)
-			srcTarget := "test-session:" + tt.srcPaneID
 			dstTarget := "test-session:" + tt.targetWindowID
 
-			if !argsContainSequence(args, "join-pane", "-s", srcTarget) {
-				t.Errorf("JoinPane args = %v, want [join-pane -s %s ...]", args, srcTarget)
+			if !argsContainSequence(args, "join-pane", "-s", tt.srcPaneID) {
+				t.Errorf("JoinPane args = %v, want [join-pane -s %s ...]", args, tt.srcPaneID)
 			}
 			if !argsContainSequence(args, "-t", dstTarget) {
 				t.Errorf("JoinPane args = %v, want [-t %s ...]", args, dstTarget)

@@ -27,11 +27,13 @@ const (
 // Session holds the runtime state of a single agent session.
 type Session struct {
 	ID           string       `json:"id"`
+	Name         string       `json:"name"`        // user-defined display name
 	State        SessionState `json:"state"`
 	Branch       string       `json:"branch"`
 	WorktreePath string       `json:"worktree_path"`
 	SandboxID    string       `json:"sandbox_id"`
-	TmuxWindow   string       `json:"tmux_window"`
+	TmuxWindow   string       `json:"tmux_window"` // window ID (e.g. "@3")
+	PaneID       string       `json:"pane_id"`     // pane ID within that window (e.g. "%5")
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
 	PauseMode    *string      `json:"pause_mode"`
@@ -41,13 +43,15 @@ type Session struct {
 
 // State holds the persisted state for an agency project.
 type State struct {
-	Version     int                 `json:"version"`
-	Project     string              `json:"project"`
-	BarePath    string              `json:"bare_path"`
-	TmuxSession string              `json:"tmux_session"`
-	PID         int                 `json:"pid"`
-	UpdatedAt   time.Time           `json:"updated_at"`
-	Sessions    map[string]*Session `json:"sessions"`
+	Version         int                 `json:"version"`
+	Project         string              `json:"project"`
+	BarePath        string              `json:"bare_path"`
+	TmuxSession     string              `json:"tmux_session"`
+	MainWindowID    string              `json:"main_window_id"`   // ID of the Agency main window (sidebar lives here)
+	ActiveSessionID string              `json:"active_session_id"` // session ID whose pane is currently joined on the right
+	PID             int                 `json:"pid"`
+	UpdatedAt       time.Time           `json:"updated_at"`
+	Sessions        map[string]*Session `json:"sessions"`
 }
 
 // Default returns a new State with sensible defaults for the given project.

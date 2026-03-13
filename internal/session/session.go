@@ -79,15 +79,16 @@ func generateID() string {
 	return "sess-" + hex.EncodeToString(b)
 }
 
-// Create provisions a full session for the given branch: worktree → sandbox →
+// Create provisions a full session for the given name and branch: worktree → sandbox →
 // tmux window. On any error after the initial state entry is written the
 // session is marked as failed before returning the error.
-func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, error) {
+func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Session, error) {
 	id := generateID()
 
 	now := time.Now().UTC()
 	sess := &state.Session{
 		ID:        id,
+		Name:      name,
 		State:     state.StateCreating,
 		Branch:    branch,
 		CreatedAt: now,
@@ -190,6 +191,11 @@ func (m *Manager) Create(ctx context.Context, branch string) (*state.Session, er
 		return fail(fmt.Errorf("creating tmux window: %w", err))
 	}
 	sess.TmuxWindow = windowID
+
+	// Capture pane ID for the new window.
+	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
+		sess.PaneID = panes[0]
+	}
 
 	// Step 8: launch the agent inside the container.
 	if err := m.Tmux.SendKeys(windowID, fmt.Sprintf("docker exec -it %s bash -c claude", containerID)); err != nil {
@@ -310,6 +316,15 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		delete(m.State.Sessions, id)
 	}
 
+	// Clear ActiveSessionID if it refers to a session that no longer exists or is not running.
+	if m.State.ActiveSessionID != "" {
+		activeSess, ok := m.State.Sessions[m.State.ActiveSessionID]
+		if !ok || activeSess.State != state.StateRunning {
+			m.State.ActiveSessionID = ""
+			changed = true
+		}
+	}
+
 	if changed {
 		if err := m.SaveState(); err != nil {
 			return err
@@ -380,8 +395,28 @@ func (m *Manager) reconcileSessions(res reconcileResult, windowSet, containerIDS
 				if newWin, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch)); err == nil {
 					_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", sess.SandboxID))
 					sess.TmuxWindow = newWin
+					// Capture new pane ID.
+					if panes, err := m.Tmux.GetWindowPanes(newWin); err == nil && len(panes) > 0 {
+						sess.PaneID = panes[0]
+					}
 					sess.UpdatedAt = time.Now().UTC()
 					changed = true
+				}
+			} else if res.windowsErr == nil && sess.TmuxWindow != "" && windowSet[sess.TmuxWindow] && sess.PaneID != "" {
+				// Verify pane still exists in the window; if not, re-capture.
+				if panes, err := m.Tmux.GetWindowPanes(sess.TmuxWindow); err == nil {
+					paneFound := false
+					for _, p := range panes {
+						if p == sess.PaneID {
+							paneFound = true
+							break
+						}
+					}
+					if !paneFound && len(panes) > 0 {
+						sess.PaneID = panes[0]
+						sess.UpdatedAt = time.Now().UTC()
+						changed = true
+					}
 				}
 			}
 

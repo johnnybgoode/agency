@@ -29,6 +29,9 @@ var (
 
 // --- Messages ---
 
+// tickMsg is emitted on the polling interval to reload session state.
+type tickMsg struct{}
+
 // sessionCreatedMsg is emitted after an async Create call completes.
 type sessionCreatedMsg struct {
 	sess *state.Session
@@ -48,19 +51,16 @@ type reconcileDoneMsg struct {
 
 // --- Model ---
 
-// listModel is the top-level Bubble Tea model for the session list view.
+// listModel is the top-level Bubble Tea model for the sidebar session list view.
 type listModel struct {
-	manager        *session.Manager
-	sessions       []*state.Session
-	cursor         int
-	width          int
-	height         int
-	err            error
-	creating       bool
-	createForm     createModel
-	confirming     bool
-	confirmID      string
-	selectedWindow string // set when user presses Enter; triggers tmux attach after quit
+	manager    *session.Manager
+	sessions   []*state.Session
+	cursor     int
+	width      int
+	height     int
+	err        error
+	confirming bool   // inline delete confirm (shown in help area)
+	confirmID  string
 }
 
 // newListModel constructs the list model, pre-populating the session list.
@@ -71,35 +71,16 @@ func newListModel(mgr *session.Manager) listModel {
 	}
 }
 
-// Init returns no initial command.
+// Init returns the polling tick command.
 func (m listModel) Init() tea.Cmd {
-	return nil
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return tickMsg{}
+	})
 }
 
 // Update handles all incoming messages and key presses.
 func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Delegate to create form when it is active.
-	if m.creating {
-		var cmd tea.Cmd
-		m.createForm, cmd = m.createForm.Update(msg)
-
-		if m.createForm.submitted {
-			branch := m.createForm.input.Value()
-			m.creating = false
-			mgr := m.manager
-			return m, func() tea.Msg {
-				sess, err := mgr.Create(context.Background(), branch)
-				return sessionCreatedMsg{sess: sess, err: err}
-			}
-		}
-		if m.createForm.canceled {
-			m.creating = false
-			return m, nil
-		}
-		return m, cmd
-	}
-
-	// Handle delete confirmation dialog.
+	// Handle delete confirmation first.
 	if m.confirming {
 		if key, ok := msg.(tea.KeyMsg); ok {
 			switch key.String() {
@@ -117,10 +98,25 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.confirmID = ""
 			}
 		}
+		// Still schedule the next tick while confirming.
+		if _, ok := msg.(tickMsg); ok {
+			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
+		}
 		return m, nil
 	}
 
 	switch msg := msg.(type) {
+	case tickMsg:
+		// Reload sessions from state file on each tick.
+		if s, err := state.Read(m.manager.StatePath); err == nil {
+			m.manager.State = s
+			m.sessions = m.manager.List()
+			if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
+				m.cursor = len(m.sessions) - 1
+			}
+		}
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -131,17 +127,28 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case "n":
-			m.creating = true
-			m.createForm = newCreateModel(m.manager.Cfg.Worktree.BranchPrefix)
-			return m, m.createForm.Init()
+			// Print hint to run agency new --popup; in popup mode the create form runs separately.
+			fmt.Print("\r\n  Run: agency new --popup\r\n")
+			return m, nil
 
 		case "enter":
 			if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
 				sess := m.sessions[m.cursor]
-				if sess.TmuxWindow != "" {
+				activeID := m.manager.State.ActiveSessionID
+				mainWindowID := m.manager.State.MainWindowID
+				if sess.PaneID != "" && mainWindowID != "" {
+					if activeID == sess.ID {
+						// Already active — focus the pane by selecting the main window.
+						_ = m.manager.Tmux.SelectWindow(mainWindowID)
+					} else {
+						// Join the session pane into the main window as the right pane.
+						_ = m.manager.Tmux.JoinPane(sess.PaneID, mainWindowID)
+						m.manager.State.ActiveSessionID = sess.ID
+						_ = m.manager.SaveState()
+					}
+				} else if sess.TmuxWindow != "" {
+					// Fallback: just select the window.
 					_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
-					m.selectedWindow = sess.TmuxWindow
-					return m, tea.Quit
 				}
 			}
 
@@ -171,13 +178,11 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionCreatedMsg:
 		m.sessions = m.manager.List()
-		m.creating = false
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
 		}
-		// Keep cursor in bounds.
 		if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
 			m.cursor = len(m.sessions) - 1
 		}
@@ -205,68 +210,134 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// View renders the full TUI screen.
+// sidebarWidth returns the effective sidebar width: config value or a default.
+func (m listModel) sidebarWidth() int {
+	w := m.manager.Cfg.TUI.SidebarWidth
+	if w <= 0 {
+		w = 24
+	}
+	// Inner content width = border width - 2 (for the border chars).
+	return w
+}
+
+// truncate shortens s to max runes, appending ".." if truncated.
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	if max <= 2 {
+		return s[:max]
+	}
+	return string(runes[:max-2]) + ".."
+}
+
+// View renders the sidebar TUI.
 func (m listModel) View() string {
-	if m.creating {
-		return m.createForm.View()
+	innerWidth := m.sidebarWidth()
+
+	// Helper: pad/truncate a line to innerWidth.
+	line := func(s string) string {
+		runes := []rune(s)
+		if len(runes) > innerWidth {
+			runes = []rune(truncate(s, innerWidth))
+		}
+		padded := string(runes) + strings.Repeat(" ", innerWidth-len([]rune(string(runes))))
+		return "│" + padded + "│"
 	}
 
-	if m.confirming {
-		return "\n  " + errorStyle.Render(fmt.Sprintf("Delete session %s? (y/n)", m.confirmID)) + "\n"
-	}
+	blank := line("")
 
-	var b strings.Builder
+	activeID := m.manager.State.ActiveSessionID
+	projectName := m.manager.State.Project
 
-	// Title
-	b.WriteString("\n  " + titleStyle.Render("agency — session manager") + "\n\n")
+	var rows []string
 
-	// Column headers
-	b.WriteString("  " + headerStyle.Render(fmt.Sprintf("%-16s  %-26s  %-12s  %s", "ID", "BRANCH", "STATUS", "CREATED")) + "\n")
-	b.WriteString("  " + headerStyle.Render(strings.Repeat("─", 68)) + "\n")
+	// Border top + title.
+	rows = append(rows, "┌"+strings.Repeat("─", innerWidth)+"┐")
+	rows = append(rows, line(titleStyle.Render("Agency")))
+	rows = append(rows, blank)
+	rows = append(rows, line(headerStyle.Render("Project:")))
+	rows = append(rows, line(" "+truncate(projectName+"/", innerWidth-1)))
+	rows = append(rows, blank)
+	rows = append(rows, line(headerStyle.Render("Sessions:")))
 
 	if len(m.sessions) == 0 {
-		b.WriteString("\n  No sessions. Press 'n' to create one.\n")
+		rows = append(rows, line("  (none)"))
 	} else {
 		for i, sess := range m.sessions {
-			cursor := "  "
+			name := sess.Name
+			if name == "" {
+				name = sess.Branch
+			}
+			indicator := "◯"
+			if sess.ID == activeID {
+				indicator = "◉"
+			}
+			label := indicator + " " + truncate(name, innerWidth-2)
 			if i == m.cursor {
-				cursor = "> "
+				label = selectedStyle.Render(indicator) + " " + truncate(name, innerWidth-2)
 			}
-
-			branch := sess.Branch
-			if len(branch) > 24 {
-				branch = branch[:24]
-			}
-
-			// Pad plain-text fields to fixed widths before applying ANSI styles.
-			// This avoids invisible escape codes breaking fmt %-width padding.
-			idPad := fmt.Sprintf("%-16s", sess.ID)
-			branchPad := fmt.Sprintf("%-26s", branch)
-
-			// Now style the padded fields — the padding is already baked in.
-			if i == m.cursor {
-				idPad = selectedStyle.Render(idPad)
-			}
-			statusPad := styledStatus(sess.State) + strings.Repeat(" ", 12-len(string(sess.State)))
-
-			relTime := relativeTime(sess.CreatedAt)
-
-			line := fmt.Sprintf("%s%s  %s  %s  %s", cursor, idPad, branchPad, statusPad, relTime)
-			b.WriteString("  " + line + "\n")
+			rows = append(rows, line(label))
 		}
 	}
 
-	b.WriteString("\n")
-
-	// Error line.
+	// Error line if any.
 	if m.err != nil {
-		b.WriteString("  " + errorStyle.Render("error: "+m.err.Error()) + "\n\n")
+		rows = append(rows, blank)
+		rows = append(rows, line(errorStyle.Render(truncate("! "+m.err.Error(), innerWidth))))
 	}
 
-	// Help footer.
-	b.WriteString("  " + helpStyle.Render("n: new  enter: switch  d: delete  r: refresh  q: quit") + "\n")
+	// Fill remaining space above help — compute how many blank lines we need.
+	// We need: border top + title + blank + "Project:" + project + blank + "Sessions:" + sessions + maybe error + ... + "Help:" + hint + border bottom
+	helpLines := 2 // "Help:" header + hint line
+	fixedRows := len(rows)
+	totalRows := m.height
+	if totalRows <= 0 {
+		totalRows = 24
+	}
+	// bottom border + help section = helpLines + 1
+	fillCount := totalRows - fixedRows - helpLines - 1
+	if fillCount < 0 {
+		fillCount = 0
+	}
+	for i := 0; i < fillCount; i++ {
+		rows = append(rows, blank)
+	}
 
-	return b.String()
+	// Help section.
+	rows = append(rows, line(headerStyle.Render("Help:")))
+
+	var hint string
+	switch {
+	case m.confirming:
+		confirmSess := m.confirmID
+		for _, sess := range m.sessions {
+			if sess.ID == m.confirmID {
+				confirmSess = sess.Name
+				if confirmSess == "" {
+					confirmSess = sess.Branch
+				}
+				break
+			}
+		}
+		hint = errorStyle.Render(fmt.Sprintf(`Del "%s"? [y/n]`, truncate(confirmSess, innerWidth-14)))
+	case len(m.sessions) == 0:
+		hint = " [n] new session"
+	default:
+		sess := m.sessions[m.cursor]
+		if sess.ID == activeID {
+			hint = " [⏎] focus  [n] [d]"
+		} else {
+			hint = " [⏎] switch  [n] [d]"
+		}
+	}
+	rows = append(rows, line(hint))
+
+	// Border bottom.
+	rows = append(rows, "└"+strings.Repeat("─", innerWidth)+"┘")
+
+	return strings.Join(rows, "\n")
 }
 
 // styledStatus returns a colored string representation of a SessionState.

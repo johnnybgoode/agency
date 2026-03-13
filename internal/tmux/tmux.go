@@ -108,6 +108,41 @@ func (c *Client) SendKeys(windowID, keys string) error {
 	return err
 }
 
+// SplitWindowVertical creates a vertical (horizontal split) pane in windowID
+// and returns the new right pane ID.
+func (c *Client) SplitWindowVertical(windowID string) (string, error) {
+	return c.run("split-window", "-h", "-t", c.SessionName+":"+windowID, "-P", "-F", "#{pane_id}")
+}
+
+// JoinPane moves a pane from its current location into targetWindowID as the
+// right pane.
+func (c *Client) JoinPane(srcPaneID, targetWindowID string) error {
+	_, err := c.run("join-pane", "-s", c.SessionName+":"+srcPaneID, "-t", c.SessionName+":"+targetWindowID, "-h")
+	return err
+}
+
+// BreakPane moves a pane out of its current window into a new detached window.
+// Returns the new window ID.
+func (c *Client) BreakPane(windowID, paneID string) (string, error) {
+	return c.run("break-pane", "-s", c.SessionName+":"+windowID+"."+paneID, "-d", "-P", "-F", "#{window_id}")
+}
+
+// GetWindowPanes returns all pane IDs for a window.
+func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
+	out, err := c.run("list-panes", "-t", c.SessionName+":"+windowID, "-F", "#{pane_id}")
+	if err != nil {
+		return nil, err
+	}
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			panes = append(panes, line)
+		}
+	}
+	return panes, nil
+}
+
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
 	if c.tmuxPath == "" {

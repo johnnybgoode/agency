@@ -15,6 +15,7 @@ type Config struct {
 	Sandbox     SandboxConfig     `toml:"sandbox"`
 	Credentials CredentialsConfig `toml:"credentials"`
 	Worktree    WorktreeConfig    `toml:"worktree"`
+	TUI         TUIConfig         `toml:"tui"`
 }
 
 // AgentConfig holds agent-specific configuration.
@@ -45,6 +46,11 @@ type WorktreeConfig struct {
 	AutoPush     *bool  `toml:"auto_push,omitempty"`
 }
 
+// TUIConfig holds TUI-specific configuration.
+type TUIConfig struct {
+	SidebarWidth int `toml:"sidebar_width"`
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -58,7 +64,10 @@ func DefaultConfig() *Config {
 			CPUs:   2,
 		},
 		Worktree: WorktreeConfig{
-			BranchPrefix: "agent/",
+			BranchPrefix: "",
+		},
+		TUI: TUIConfig{
+			SidebarWidth: 24,
 		},
 	}
 }

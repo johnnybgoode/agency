@@ -15,8 +15,6 @@ import (
 
 // Lipgloss styles used across the list view and create form.
 var (
-	titleStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	headerStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("8"))
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
 	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
 	failedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
@@ -34,8 +32,7 @@ type tickMsg struct{}
 
 // sessionCreatedMsg is emitted after an async Create call completes.
 type sessionCreatedMsg struct {
-	sess *state.Session
-	err  error
+	err error
 }
 
 // sessionRemovedMsg is emitted after an async Remove call completes.
@@ -59,7 +56,7 @@ type listModel struct {
 	width      int
 	height     int
 	err        error
-	confirming bool   // inline delete confirm (shown in help area)
+	confirming bool // inline delete confirm (shown in help area)
 	confirmID  string
 }
 
@@ -72,31 +69,104 @@ func newListModel(mgr *session.Manager) listModel {
 }
 
 // Init returns the polling tick command.
+//
+//nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) Init() tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg{}
 	})
 }
 
+// handleConfirmKey handles key presses when a delete confirmation is in progress.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		id := m.confirmID
+		m.confirming = false
+		m.confirmID = ""
+		mgr := m.manager
+		return m, func() tea.Msg {
+			err := mgr.Remove(context.Background(), id)
+			return sessionRemovedMsg{id: id, err: err}
+		}
+	case "n", "esc":
+		m.confirming = false
+		m.confirmID = ""
+	}
+	return m, nil
+}
+
+// handleNormalKey handles key presses in normal (non-confirming) mode.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
+	switch msg.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+
+	case "n":
+		// Print hint to run agency new --popup; in popup mode the create form runs separately.
+		fmt.Print("\r\n  Run: agency new --popup\r\n")
+		return m, nil
+
+	case "enter":
+		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+			sess := m.sessions[m.cursor]
+			activeID := m.manager.State.ActiveSessionID
+			mainWindowID := m.manager.State.MainWindowID
+			if sess.PaneID != "" && mainWindowID != "" {
+				if activeID == sess.ID {
+					// Already active — focus the pane by selecting the main window.
+					_ = m.manager.Tmux.SelectWindow(mainWindowID)
+				} else {
+					// Join the session pane into the main window as the right pane.
+					_ = m.manager.Tmux.JoinPane(sess.PaneID, mainWindowID)
+					m.manager.State.ActiveSessionID = sess.ID
+					_ = m.manager.SaveState()
+				}
+			} else if sess.TmuxWindow != "" {
+				// Fallback: just select the window.
+				_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
+			}
+		}
+
+	case "d":
+		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+			m.confirming = true
+			m.confirmID = m.sessions[m.cursor].ID
+		}
+
+	case "r":
+		mgr := m.manager
+		return m, func() tea.Msg {
+			err := mgr.Reconcile(context.Background())
+			return reconcileDoneMsg{err: err}
+		}
+
+	case "j", "down":
+		if m.cursor < len(m.sessions)-1 {
+			m.cursor++
+		}
+
+	case "k", "up":
+		if m.cursor > 0 {
+			m.cursor--
+		}
+	}
+
+	return m, nil
+}
+
 // Update handles all incoming messages and key presses.
+//
+//nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle delete confirmation first.
 	if m.confirming {
 		if key, ok := msg.(tea.KeyMsg); ok {
-			switch key.String() {
-			case "y":
-				id := m.confirmID
-				m.confirming = false
-				m.confirmID = ""
-				mgr := m.manager
-				return m, func() tea.Msg {
-					err := mgr.Remove(context.Background(), id)
-					return sessionRemovedMsg{id: id, err: err}
-				}
-			case "n", "esc":
-				m.confirming = false
-				m.confirmID = ""
-			}
+			return m.handleConfirmKey(key)
 		}
 		// Still schedule the next tick while confirming.
 		if _, ok := msg.(tickMsg); ok {
@@ -122,59 +192,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "q", "ctrl+c":
-			return m, tea.Quit
-
-		case "n":
-			// Print hint to run agency new --popup; in popup mode the create form runs separately.
-			fmt.Print("\r\n  Run: agency new --popup\r\n")
-			return m, nil
-
-		case "enter":
-			if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
-				sess := m.sessions[m.cursor]
-				activeID := m.manager.State.ActiveSessionID
-				mainWindowID := m.manager.State.MainWindowID
-				if sess.PaneID != "" && mainWindowID != "" {
-					if activeID == sess.ID {
-						// Already active — focus the pane by selecting the main window.
-						_ = m.manager.Tmux.SelectWindow(mainWindowID)
-					} else {
-						// Join the session pane into the main window as the right pane.
-						_ = m.manager.Tmux.JoinPane(sess.PaneID, mainWindowID)
-						m.manager.State.ActiveSessionID = sess.ID
-						_ = m.manager.SaveState()
-					}
-				} else if sess.TmuxWindow != "" {
-					// Fallback: just select the window.
-					_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
-				}
-			}
-
-		case "d":
-			if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
-				m.confirming = true
-				m.confirmID = m.sessions[m.cursor].ID
-			}
-
-		case "r":
-			mgr := m.manager
-			return m, func() tea.Msg {
-				err := mgr.Reconcile(context.Background())
-				return reconcileDoneMsg{err: err}
-			}
-
-		case "j", "down":
-			if m.cursor < len(m.sessions)-1 {
-				m.cursor++
-			}
-
-		case "k", "up":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		}
+		return m.handleNormalKey(msg)
 
 	case sessionCreatedMsg:
 		m.sessions = m.manager.List()
@@ -212,6 +230,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // sidebarWidth returns the effective sidebar total width (including the right │).
 // Defaults to 22 if neither the config nor m.width are set.
+//
+//nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
 	// Prefer the explicitly set terminal width if available.
 	if m.width > 0 {
@@ -224,16 +244,16 @@ func (m listModel) sidebarWidth() int {
 	return w
 }
 
-// truncate shortens s to max runes, appending ".." if truncated.
-func truncate(s string, max int) string {
+// truncate shortens s to maxLen runes, appending ".." if truncated.
+func truncate(s string, maxLen int) string {
 	runes := []rune(s)
-	if len(runes) <= max {
+	if len(runes) <= maxLen {
 		return s
 	}
-	if max <= 2 {
-		return s[:max]
+	if maxLen <= 2 {
+		return s[:maxLen]
 	}
-	return string(runes[:max-2]) + ".."
+	return string(runes[:maxLen-2]) + ".."
 }
 
 // View renders the sidebar TUI.
@@ -243,6 +263,8 @@ func truncate(s string, max int) string {
 //	───── Agency ────────╮   <- top rule with embedded title, right corner
 //	                     │   <- content rows: inner cols + "│"
 //	─────────────────────╯   <- bottom rule with right corner
+//
+//nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) View() string {
 	w := m.sidebarWidth()
 	// inner is the number of content columns before the right "│".
@@ -285,12 +307,7 @@ func (m listModel) View() string {
 	bottom := strings.Repeat("─", inner) + "╯"
 
 	var rows []string
-	rows = append(rows, top)
-	rows = append(rows, blank)
-	rows = append(rows, row(" Project:"))
-	rows = append(rows, row("   "+truncate(projectName+"/", inner-3)))
-	rows = append(rows, blank)
-	rows = append(rows, row(" Sessions:"))
+	rows = append(rows, top, blank, row(" Project:"), row("   "+truncate(projectName+"/", inner-3)), blank, row(" Sessions:"))
 
 	if len(m.sessions) == 0 {
 		rows = append(rows, row("  (none)"))
@@ -317,8 +334,7 @@ func (m listModel) View() string {
 
 	// Error line if any.
 	if m.err != nil {
-		rows = append(rows, blank)
-		rows = append(rows, row(errorStyle.Render(truncate("! "+m.err.Error(), inner))))
+		rows = append(rows, blank, row(errorStyle.Render(truncate("! "+m.err.Error(), inner))))
 	}
 
 	// Fill remaining space above help section.
@@ -339,8 +355,7 @@ func (m listModel) View() string {
 	}
 
 	// Help section.
-	rows = append(rows, blank)
-	rows = append(rows, row(" Help:"))
+	rows = append(rows, blank, row(" Help:"))
 
 	var hint string
 	switch {
@@ -355,7 +370,7 @@ func (m listModel) View() string {
 				break
 			}
 		}
-		hint = errorStyle.Render(fmt.Sprintf(`Del "%s"? [y/n]`, truncate(confirmSess, inner-14)))
+		hint = errorStyle.Render(fmt.Sprintf("Del %q? [y/n]", truncate(confirmSess, inner-14)))
 	case len(m.sessions) == 0:
 		hint = " [n] new session"
 	default:
@@ -366,10 +381,7 @@ func (m listModel) View() string {
 			hint = " [⏎] switch  [n] [d]"
 		}
 	}
-	rows = append(rows, row(hint))
-
-	// Bottom border.
-	rows = append(rows, bottom)
+	rows = append(rows, row(hint), bottom)
 
 	return strings.Join(rows, "\n")
 }

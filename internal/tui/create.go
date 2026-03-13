@@ -41,12 +41,12 @@ func newCreateModel(projectName string) createModel {
 }
 
 // Init returns the blink command so the text-input cursor animates.
-func (m createModel) Init() tea.Cmd {
+func (m createModel) Init() tea.Cmd { //nolint:gocritic // bubbletea model must use value receivers
 	return textinput.Blink
 }
 
 // Update handles keyboard events for the create form.
-func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
+func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) { //nolint:gocritic // bubbletea model must use value receivers
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -97,17 +97,17 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 }
 
 // Name returns the name field value.
-func (m createModel) Name() string {
+func (m createModel) Name() string { //nolint:gocritic // bubbletea model must use value receivers
 	return m.nameInput.Value()
 }
 
 // Branch returns the branch field value.
-func (m createModel) Branch() string {
+func (m createModel) Branch() string { //nolint:gocritic // bubbletea model must use value receivers
 	return m.branchInput.Value()
 }
 
 // View renders the create form.
-func (m createModel) View() string {
+func (m createModel) View() string { //nolint:gocritic // bubbletea model must use value receivers
 	formTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("New Session")
 
 	nameLabel := "  Name:   "

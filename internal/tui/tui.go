@@ -46,9 +46,11 @@ type popupWrapper struct {
 	err  error
 }
 
-func (pw popupWrapper) Init() tea.Cmd { return pw.form.Init() }
+func (pw popupWrapper) Init() tea.Cmd { //nolint:gocritic // bubbletea model must use value receivers
+	return pw.form.Init()
+}
 
-func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocritic // bubbletea model must use value receivers
 	var cmd tea.Cmd
 	pw.form, cmd = pw.form.Update(msg)
 
@@ -70,7 +72,7 @@ func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return pw, cmd
 }
 
-func (pw popupWrapper) View() string {
+func (pw popupWrapper) View() string { //nolint:gocritic // bubbletea model must use value receivers
 	if pw.done {
 		if pw.err != nil {
 			return errorStyle.Render("Error: "+pw.err.Error()) + "\n"
@@ -109,18 +111,18 @@ func Run() error {
 	if err != nil {
 		// Check whether the process that holds the lock is still alive.
 		statePath := filepath.Join(projectDir, ".tool", "state.json")
-		if s, readErr := state.Read(statePath); readErr == nil && s.PID > 0 {
-			if state.IsProcessAlive(s.PID) {
-				return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
-			}
-			// PID is dead — stale lock. Force-remove and retry.
-			os.Remove(lockPath) //nolint:errcheck
-			lock, err = state.AcquireLock(lockPath)
-			if err != nil {
-				return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
-			}
-		} else {
+		s, readErr := state.Read(statePath)
+		if readErr != nil || s.PID <= 0 {
 			return fmt.Errorf("acquiring lock: %w", err)
+		}
+		if state.IsProcessAlive(s.PID) {
+			return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
+		}
+		// PID is dead — stale lock. Force-remove and retry.
+		_ = os.Remove(lockPath)
+		lock, err = state.AcquireLock(lockPath)
+		if err != nil {
+			return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
 		}
 	}
 	defer lock.Release() //nolint:errcheck // lock cleanup on shutdown

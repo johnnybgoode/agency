@@ -2,12 +2,8 @@ version: "2"
 
 formatters:
   enable:
-    - gofmt         # Standard Go formatting
-    - goimports     # Import formatting and organization
     - gci           # Canonical import grouping and formatting
     - gofumpt       # Stricter gofmt with additional style rules
-
-  settings: {}
 
 linters:
   # Start with no defaults and explicitly enable linters
@@ -32,6 +28,13 @@ linters:
     - revive        # Fast, configurable, extensible linter
     - unconvert     # Remove unnecessary type conversions
 
+    # Error handling - critical for CLI/TUI tools
+    - errorlint     # Ensure proper error wrapping/unwrapping
+    - nilnil        # Detect returning both nil error and nil value
+
+    # Context usage
+    - contextcheck  # Ensure proper context usage in goroutines/HTTP
+
     # Security
     - gosec         # Security-focused linter
 
@@ -53,8 +56,13 @@ linters:
         - (*github.com/fatih/color.Color).Fprintf
 
     gocyclo:
-      # Maximum cyclomatic complexity - TUI handlers can be naturally complex
-      min-complexity: 35
+      # Maximum cyclomatic complexity - TUI handlers may be complex but should remain maintainable
+      min-complexity: 20
+
+    errorlint:
+      # Ensure proper error wrapping with fmt.Errorf(%w)
+      check-error-type-assertions: true
+      check-errors-new-uppercase: true
 
     gosec:
       # Exclude rules that are false positives for CLI tools
@@ -81,15 +89,11 @@ linters:
         - style
         - performance
       disabled-checks:
-        - paramTypeCombine       # Can be noisy for CLI flag definitions
-        - unnamedResult          # Allow unnamed results for simple functions
         - evalOrder              # Too pedantic about expression evaluation order
         - singleCaseSwitch       # Single case switch is acceptable for consistency
         - ifElseChain            # Long if-else chains can be clearer than switch
-        - builtinShadow          # Allow shadowing in test files
         - stringXbytes           # Allow string conversion for comparison
         - emptyStringTest        # Allow len(s) == 0 style
-        - hugeParam              # Allow large struct parameters
 
     revive:
       rules:
@@ -110,6 +114,9 @@ linters:
         - name: errorf
         - name: superfluous-else
         - name: unreachable-code
+        - name: package-comments  # Document all packages
+        - name: exported           # Document exported symbols
+        - name: early-return       # Reduce nesting depth
 
   exclusions:
     # Use common presets for sensible defaults
@@ -117,14 +124,20 @@ linters:
       - std-error-handling
       - common-false-positives
     rules:
-      # Exclude errcheck in test files
+      # Exclude linters in test files that are less critical
       - path: _test\.go
         linters:
           - errcheck
           - gosec
-      # Exclude staticcheck SA4006 and SA9003 in test files
+          - contextcheck
+      # Exclude staticcheck false positives in tests
       - path: _test\.go
         text: "SA4006|SA9003"
+      # Exclude package-comments and exported from test files and examples
+      - path: (_test\.go|examples/)
+        linters:
+          - revive
+        text: "package-comments|exported"
       # Exclude gocritic nestingReduce as it's stylistic
       - linters:
           - gocritic

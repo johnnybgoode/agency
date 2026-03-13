@@ -33,7 +33,7 @@ func (c *Client) run(args ...string) (string, error) {
 	if c.tmuxPath == "" {
 		return "", fmt.Errorf("tmux is not installed")
 	}
-	cmd := exec.Command(c.tmuxPath, args...)
+	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -46,7 +46,7 @@ func (c *Client) SessionExists() bool {
 	if c.tmuxPath == "" {
 		return false
 	}
-	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run()
+	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run() //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	return err == nil
 }
 
@@ -154,7 +154,7 @@ func (c *Client) Attach() error {
 	if c.tmuxPath == "" {
 		return fmt.Errorf("tmux is not installed")
 	}
-	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName)
+	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

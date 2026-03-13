@@ -12,10 +12,10 @@ import (
 //
 // The script writes all received arguments (space-joined) to argsFile, then
 // prints output to stdout. output may be empty.
-func newFakeClient(t *testing.T, output string) (*Client, string) {
+func newFakeClient(t *testing.T, output string) (client *Client, argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
-	argsFile := filepath.Join(dir, "args.txt")
+	argsFile = filepath.Join(dir, "args.txt")
 
 	// Build the fake script. It records args and echoes the caller-supplied output.
 	script := "#!/bin/sh\n" +
@@ -29,8 +29,8 @@ func newFakeClient(t *testing.T, output string) (*Client, string) {
 		t.Fatalf("write fake tmux script: %v", err)
 	}
 
-	c := &Client{SessionName: "test-session", tmuxPath: scriptPath}
-	return c, argsFile
+	client = &Client{SessionName: "test-session", tmuxPath: scriptPath}
+	return client, argsFile
 }
 
 // shellescape wraps s in single quotes so the shell treats it as a literal
@@ -92,7 +92,7 @@ outer:
 // ---------------------------------------------------------------------------
 
 func TestEnsureSession_CreatesNewSession(t *testing.T) {
-	c, argsFile := newFakeClient(t, "")
+	c, _ := newFakeClient(t, "")
 	// tmuxPath is set to the fake script, which always exits 0, so
 	// SessionExists() (has-session) will succeed and EnsureSession will return
 	// early without calling new-session.  We need SessionExists to return false
@@ -101,7 +101,7 @@ func TestEnsureSession_CreatesNewSession(t *testing.T) {
 	// Strategy: use a second fake script that exits non-zero for has-session
 	// and exits 0 for new-session, recording args on new-session.
 	dir := t.TempDir()
-	argsFile = filepath.Join(dir, "args.txt")
+	argsFile := filepath.Join(dir, "args.txt")
 
 	script := "#!/bin/sh\n" +
 		`subcmd="$1"` + "\n" +
@@ -330,10 +330,10 @@ func TestJoinPane(t *testing.T) {
 
 func TestBreakPane(t *testing.T) {
 	tests := []struct {
-		name       string
-		windowID   string
-		paneID     string
-		fakeWinID  string
+		name      string
+		windowID  string
+		paneID    string
+		fakeWinID string
 	}{
 		{name: "basic break", windowID: "@2", paneID: "%4", fakeWinID: "@9"},
 		{name: "other IDs", windowID: "@5", paneID: "%6", fakeWinID: "@12"},
@@ -424,9 +424,9 @@ func TestSessionExistsNoTmux(t *testing.T) {
 
 func TestListWindows(t *testing.T) {
 	tests := []struct {
-		name    string
-		output  string
-		want    []Window
+		name   string
+		output string
+		want   []Window
 	}{
 		{
 			name:   "two windows",

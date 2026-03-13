@@ -334,37 +334,72 @@ func (m *Manager) cleanupActiveSessionID() bool {
 	return false
 }
 
-// Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
-// session states that have drifted from reality.
-//
-//nolint:gocyclo // complexity arises from exhaustive state-machine coverage, not nested logic
-func (m *Manager) Reconcile(ctx context.Context) error {
-	res := m.gatherReconcileResources(ctx)
-
-	// Build lookup maps only if the corresponding query succeeded.
-	// If a query failed, we skip checks that depend on it to avoid
-	// making destructive state changes based on incomplete data.
-	windowSet := make(map[string]bool, len(res.windows))
+// buildLookupSets constructs boolean lookup maps for windows, container IDs, and
+// worktree paths from the reconcile result. Maps are only populated when the
+// corresponding query succeeded to avoid destructive changes on partial data.
+func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeSet map[string]bool) {
+	windowSet = make(map[string]bool, len(res.windows))
 	if res.windowsErr == nil {
 		for _, w := range res.windows {
 			windowSet[w.ID] = true
 		}
 	}
 
-	containerIDSet := make(map[string]bool, len(res.containers))
+	containerIDSet = make(map[string]bool, len(res.containers))
 	if res.contsErr == nil {
 		for _, c := range res.containers {
 			containerIDSet[c.ID] = true
 		}
 	}
 
-	worktreeSet := make(map[string]bool, len(res.worktrees))
+	worktreeSet = make(map[string]bool, len(res.worktrees))
 	if res.wtErr == nil {
 		for _, wt := range res.worktrees {
 			worktreeSet[wt.Path] = true
 		}
 	}
+	return windowSet, containerIDSet, worktreeSet
+}
 
+// logOrphans prints worktrees and containers not referenced by any known session.
+func (m *Manager) logOrphans(res *reconcileResult) {
+	knownWorktrees := make(map[string]bool, len(m.State.Sessions))
+	for _, sess := range m.State.Sessions {
+		if sess.WorktreePath != "" {
+			knownWorktrees[sess.WorktreePath] = true
+		}
+	}
+
+	if res.wtErr == nil {
+		for _, wt := range res.worktrees {
+			if !knownWorktrees[wt.Path] {
+				fmt.Fprintf(os.Stderr, "[reconcile] orphan worktree: %s\n", wt.Path)
+			}
+		}
+	}
+
+	if m.Sandbox == nil || res.contsErr != nil {
+		return
+	}
+	knownSandboxIDs := make(map[string]bool, len(m.State.Sessions))
+	for _, sess := range m.State.Sessions {
+		if sess.SandboxID != "" {
+			knownSandboxIDs[sess.SandboxID] = true
+		}
+	}
+	for _, c := range res.containers {
+		if !knownSandboxIDs[c.ID] {
+			fmt.Fprintf(os.Stderr, "[reconcile] orphan container: %s\n", c.Name)
+		}
+	}
+}
+
+// Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
+// session states that have drifted from reality.
+func (m *Manager) Reconcile(ctx context.Context) error {
+	res := m.gatherReconcileResources(ctx)
+
+	windowSet, containerIDSet, worktreeSet := buildLookupSets(&res)
 	toDelete, changed := m.reconcileSessions(&res, windowSet, containerIDSet, worktreeSet)
 
 	for _, id := range toDelete {
@@ -381,40 +416,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Orphan detection: find worktrees and containers not referenced by any session.
-
-	// Build a set of known worktree paths from state.
-	knownWorktrees := make(map[string]bool, len(m.State.Sessions))
-	for _, sess := range m.State.Sessions {
-		if sess.WorktreePath != "" {
-			knownWorktrees[sess.WorktreePath] = true
-		}
-	}
-
-	// Check for orphan worktrees.
-	if res.wtErr == nil {
-		for _, wt := range res.worktrees {
-			if !knownWorktrees[wt.Path] {
-				fmt.Fprintf(os.Stderr, "[reconcile] orphan worktree: %s\n", wt.Path)
-			}
-		}
-	}
-
-	// Check for orphan containers if sandbox is available.
-	if m.Sandbox != nil && res.contsErr == nil {
-		knownSandboxIDs := make(map[string]bool, len(m.State.Sessions))
-		for _, sess := range m.State.Sessions {
-			if sess.SandboxID != "" {
-				knownSandboxIDs[sess.SandboxID] = true
-			}
-		}
-		for _, c := range res.containers {
-			if !knownSandboxIDs[c.ID] {
-				fmt.Fprintf(os.Stderr, "[reconcile] orphan container: %s\n", c.Name)
-			}
-		}
-	}
-
+	m.logOrphans(&res)
 	return nil
 }
 

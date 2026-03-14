@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,7 +38,7 @@ func NewWithBinaryPath(sessionName, binaryPath string) *Client {
 // stdout, and wraps any error with the combined output for diagnostics.
 func (c *Client) run(args ...string) (string, error) {
 	if c.tmuxPath == "" {
-		return "", fmt.Errorf("tmux is not installed")
+		return "", errors.New("tmux is not installed")
 	}
 	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	out, err := cmd.CombinedOutput()
@@ -194,7 +195,7 @@ func (c *Client) DisplayPopup(cmd string, width, height, x int) error {
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
 	if c.tmuxPath == "" {
-		return fmt.Errorf("tmux is not installed")
+		return errors.New("tmux is not installed")
 	}
 	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	cmd.Stdin = os.Stdin

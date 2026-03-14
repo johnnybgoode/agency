@@ -43,15 +43,16 @@ type Workspace struct {
 
 // State holds the persisted state for an agency project.
 type State struct {
-	Version           int                   `json:"version"`
-	Project           string                `json:"project"`
-	BarePath          string                `json:"bare_path"`
-	TmuxSession       string                `json:"tmux_session"`
-	MainWindowID      string                `json:"main_window_id"`      // ID of the Agency main window (sidebar lives here)
-	ActiveWorkspaceID string                `json:"active_workspace_id"` // workspace ID whose pane is currently joined on the right
-	PID               int                   `json:"pid"`
-	UpdatedAt         time.Time             `json:"updated_at"`
-	Workspaces        map[string]*Workspace `json:"workspaces"`
+	Version               int                   `json:"version"`
+	Project               string                `json:"project"`
+	BarePath              string                `json:"bare_path"`
+	TmuxSession           string                `json:"tmux_session"`
+	MainWindowID          string                `json:"main_window_id"`           // ID of the Agency main window (sidebar lives here)
+	ActiveWorkspaceID     string                `json:"active_workspace_id"`      // workspace ID whose pane is currently joined on the right
+	LastActiveWorkspaceID string                `json:"last_active_workspace_id"` // previously active workspace, for fallback on removal
+	PID                   int                   `json:"pid"`
+	UpdatedAt             time.Time             `json:"updated_at"`
+	Workspaces            map[string]*Workspace `json:"workspaces"`
 }
 
 // Default returns a new State with sensible defaults for the given project.

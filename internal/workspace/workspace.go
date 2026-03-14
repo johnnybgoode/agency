@@ -260,8 +260,11 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		return fmt.Errorf("workspace %s not found", workspaceID)
 	}
 
-	// Interrupt the foreground process so it can clean up.
-	if ws.TmuxWindow != "" {
+	// Interrupt the foreground process. Target by pane ID when available so
+	// we don't accidentally send keys to the sidebar pane.
+	if ws.PaneID != "" {
+		_ = m.Tmux.SendKeysToPane(ws.PaneID, "C-c")
+	} else if ws.TmuxWindow != "" {
 		_ = m.Tmux.SendKeys(ws.TmuxWindow, "C-c")
 	}
 
@@ -276,9 +279,26 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}
 
-	// Kill the tmux window.
+	// Kill the workspace's tmux pane/window. When the workspace is the active
+	// one, its pane has been joined into the main window (ws.TmuxWindow ==
+	// MainWindowID). Killing the main window would destroy the sidebar, so
+	// break the pane back out to a throwaway window and kill that instead.
 	if ws.TmuxWindow != "" {
-		_ = m.Tmux.KillWindow(ws.TmuxWindow)
+		if ws.TmuxWindow == m.State.MainWindowID && ws.PaneID != "" {
+			if newWin, err := m.Tmux.BreakPane(m.State.MainWindowID, ws.PaneID); err == nil {
+				_ = m.Tmux.KillWindow(newWin)
+			}
+		} else {
+			_ = m.Tmux.KillWindow(ws.TmuxWindow)
+		}
+	}
+
+	// Clear active/last-active pointers if they referred to the removed workspace.
+	if m.State.ActiveWorkspaceID == workspaceID {
+		m.State.ActiveWorkspaceID = ""
+	}
+	if m.State.LastActiveWorkspaceID == workspaceID {
+		m.State.LastActiveWorkspaceID = ""
 	}
 
 	delete(m.State.Workspaces, workspaceID)
@@ -325,18 +345,26 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	return res
 }
 
-// cleanupActiveWorkspaceID clears ActiveWorkspaceID if it refers to a workspace
-// that no longer exists or is not running. Returns true if a change was made.
+// cleanupActiveWorkspaceID clears ActiveWorkspaceID and LastActiveWorkspaceID
+// if they refer to workspaces that no longer exist or are not running.
+// Returns true if a change was made.
 func (m *Manager) cleanupActiveWorkspaceID() bool {
-	if m.State.ActiveWorkspaceID == "" {
-		return false
+	changed := false
+	if m.State.ActiveWorkspaceID != "" {
+		activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]
+		if !ok || activeWS.State != state.StateRunning {
+			m.State.ActiveWorkspaceID = ""
+			changed = true
+		}
 	}
-	activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]
-	if !ok || activeWS.State != state.StateRunning {
-		m.State.ActiveWorkspaceID = ""
-		return true
+	if m.State.LastActiveWorkspaceID != "" {
+		lastWS, ok := m.State.Workspaces[m.State.LastActiveWorkspaceID]
+		if !ok || lastWS.State != state.StateRunning {
+			m.State.LastActiveWorkspaceID = ""
+			changed = true
+		}
 	}
-	return false
+	return changed
 }
 
 // buildLookupSets constructs boolean lookup maps for windows, container IDs, and
@@ -559,7 +587,9 @@ func (m *Manager) SwitchActivePane(ws *state.Workspace) {
 	if m.State.MainWindowID == "" || ws.PaneID == "" {
 		return
 	}
-	if m.State.ActiveWorkspaceID != "" {
+	if m.State.ActiveWorkspaceID != "" && m.State.ActiveWorkspaceID != ws.ID {
+		// Record previous active workspace before switching.
+		m.State.LastActiveWorkspaceID = m.State.ActiveWorkspaceID
 		if activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok && activeWS.PaneID != "" {
 			if newWinID, err := m.Tmux.BreakPane(m.State.MainWindowID, activeWS.PaneID); err == nil {
 				activeWS.TmuxWindow = newWinID
@@ -573,6 +603,22 @@ func (m *Manager) SwitchActivePane(ws *state.Workspace) {
 	if panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID); err == nil && len(panes) > 0 {
 		_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
 	}
+}
+
+// SwitchToLastActive switches the active pane to the last active workspace.
+// Returns true if the switch was performed, false if there was no suitable
+// last-active workspace (e.g. it was removed or is not in a running state).
+func (m *Manager) SwitchToLastActive() bool {
+	id := m.State.LastActiveWorkspaceID
+	if id == "" {
+		return false
+	}
+	ws, ok := m.State.Workspaces[id]
+	if !ok || ws.PaneID == "" || ws.State != state.StateRunning {
+		return false
+	}
+	m.SwitchActivePane(ws)
+	return true
 }
 
 // FindOrphanWorktrees returns worktrees registered in the project's bare repo

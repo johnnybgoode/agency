@@ -82,6 +82,12 @@ func (c *Client) SelectWindow(windowID string) error {
 	return err
 }
 
+// RenameWindow renames the window identified by windowID to newName.
+func (c *Client) RenameWindow(windowID, newName string) error {
+	_, err := c.run("rename-window", "-t", c.SessionName+":"+windowID, newName)
+	return err
+}
+
 // ListWindows returns all windows in the session.
 func (c *Client) ListWindows() ([]Window, error) {
 	out, err := c.run("list-windows", "-t", c.SessionName, "-F", "#{window_id} #{window_name}")

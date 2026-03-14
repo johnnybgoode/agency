@@ -217,7 +217,9 @@ func runSidebar(projectDir string) error {
 	rejoinActivePane(mgr)
 
 	// Apply the configured sidebar width after any rejoin that may have reset proportions.
-	if leftPaneID != "" {
+	// In zero state (no workspaces), skip resizing so the TUI occupies full terminal width
+	// and can render the welcome panel.
+	if leftPaneID != "" && len(mgr.List()) > 0 {
 		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
 	}
 

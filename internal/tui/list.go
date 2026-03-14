@@ -105,6 +105,30 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	return m, nil
 }
 
+// newWorkspaceCmd returns a tea.Cmd that opens the new-workspace popup.
+// In zero state the popup is centered over the right welcome panel.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) newWorkspaceCmd() tea.Cmd {
+	const popupWidth = 60
+	const popupHeight = 10
+	xPos := 0
+	if len(m.workspaces) == 0 && m.width > m.sidebarWidth() {
+		rightStart := m.sidebarWidth()
+		rightWidth := m.width - rightStart
+		xPos = rightStart + (rightWidth-popupWidth)/2
+		if xPos < rightStart {
+			xPos = rightStart
+		}
+	}
+	tmuxClient := m.manager.Tmux
+	agencyBin := m.agencyBin
+	return func() tea.Msg {
+		_ = tmuxClient.DisplayPopup(agencyBin+" new --popup", popupWidth, popupHeight, xPos)
+		return tickMsg{} // refresh workspace list after the popup closes
+	}
+}
+
 // handleNormalKey handles key presses in normal (non-confirming) mode.
 //
 //nolint:gocritic // bubbletea model must use value receivers
@@ -114,12 +138,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		return m, tea.Quit
 
 	case "n":
-		tmuxClient := m.manager.Tmux
-		agencyBin := m.agencyBin
-		return m, func() tea.Msg {
-			_ = tmuxClient.DisplayPopup(agencyBin+" new --popup", 60, 10)
-			return tickMsg{} // refresh workspace list after the popup closes
-		}
+		return m, m.newWorkspaceCmd()
 
 	case "enter":
 		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
@@ -271,6 +290,16 @@ func truncate(s string, maxLen int) string {
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) View() string {
+	sidebar := m.renderSidebar()
+	if len(m.workspaces) == 0 && m.width > m.sidebarWidth() {
+		right := m.renderZeroPanel(m.width-m.sidebarWidth(), m.height)
+		return lipgloss.JoinHorizontal(lipgloss.Top, sidebar, right)
+	}
+	return sidebar
+}
+
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) renderSidebar() string {
 	w := m.sidebarWidth()
 	// inner is the number of content columns before the right "│".
 	inner := w - 1
@@ -389,6 +418,29 @@ func (m listModel) View() string {
 	rows = append(rows, row(hint), bottom)
 
 	return strings.Join(rows, "\n")
+}
+
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) renderZeroPanel(width, height int) string {
+	titleStr := "Agency"
+	divStr := strings.Repeat("─", len(titleStr))
+	promptStr := "Create [n]ew workspace..."
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Render(titleStr),
+		divStr,
+		"",
+		promptStr,
+	)
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		Padding(2, 6).
+		Render(content)
+
+	// Center box in available area; reserve last line for a separator.
+	centered := lipgloss.Place(width, height-1, lipgloss.Center, lipgloss.Center, box)
+	return centered + "\n" + strings.Repeat("─", width)
 }
 
 // styledStatus returns a colored string representation of a WorkspaceState.

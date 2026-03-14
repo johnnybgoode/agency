@@ -170,13 +170,18 @@ func (c *Client) ResizePane(paneID string, width int) error {
 
 // DisplayPopup runs cmd in a tmux display-popup overlay.
 // The popup is sized to width columns × height rows.
-func (c *Client) DisplayPopup(cmd string, width, height int) error {
-	_, err := c.run(
+// If x > 0 it is passed as the -x left-edge offset of the popup.
+func (c *Client) DisplayPopup(cmd string, width, height, x int) error {
+	args := []string{
 		"display-popup", "-E",
 		"-w", fmt.Sprintf("%d", width),
 		"-h", fmt.Sprintf("%d", height),
-		cmd,
-	)
+	}
+	if x > 0 {
+		args = append(args, "-x", fmt.Sprintf("%d", x))
+	}
+	args = append(args, cmd)
+	_, err := c.run(args...)
 	return err
 }
 

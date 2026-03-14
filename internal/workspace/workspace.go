@@ -260,8 +260,11 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		return fmt.Errorf("workspace %s not found", workspaceID)
 	}
 
-	// Interrupt the foreground process so it can clean up.
-	if ws.TmuxWindow != "" {
+	// Interrupt the foreground process. Target by pane ID when available so
+	// we don't accidentally send keys to the sidebar pane.
+	if ws.PaneID != "" {
+		_ = m.Tmux.SendKeysToPane(ws.PaneID, "C-c")
+	} else if ws.TmuxWindow != "" {
 		_ = m.Tmux.SendKeys(ws.TmuxWindow, "C-c")
 	}
 
@@ -276,9 +279,23 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}
 
-	// Kill the tmux window.
+	// Kill the workspace's tmux pane/window. When the workspace is the active
+	// one, its pane has been joined into the main window (ws.TmuxWindow ==
+	// MainWindowID). Killing the main window would destroy the sidebar, so
+	// break the pane back out to a throwaway window and kill that instead.
 	if ws.TmuxWindow != "" {
-		_ = m.Tmux.KillWindow(ws.TmuxWindow)
+		if ws.TmuxWindow == m.State.MainWindowID && ws.PaneID != "" {
+			if newWin, err := m.Tmux.BreakPane(m.State.MainWindowID, ws.PaneID); err == nil {
+				_ = m.Tmux.KillWindow(newWin)
+			}
+		} else {
+			_ = m.Tmux.KillWindow(ws.TmuxWindow)
+		}
+	}
+
+	// Clear the active workspace pointer if it referred to the removed workspace.
+	if m.State.ActiveWorkspaceID == workspaceID {
+		m.State.ActiveWorkspaceID = ""
 	}
 
 	delete(m.State.Workspaces, workspaceID)

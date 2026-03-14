@@ -72,6 +72,7 @@ func TestMergeMCPServers(t *testing.T) {
 	}
 }
 
+//nolint:gocyclo // table-driven test; complexity from coverage breadth, not nested logic
 func TestMerge(t *testing.T) {
 	t.Run("scalar override non-zero replaces base", func(t *testing.T) {
 		base := &Config{

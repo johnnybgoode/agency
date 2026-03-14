@@ -12,8 +12,8 @@ import (
 	"strings"
 )
 
-// WorktreeInfo holds metadata about a single git worktree.
-type WorktreeInfo struct {
+// Info holds metadata about a single git worktree.
+type Info struct {
 	Path   string
 	Branch string
 	HEAD   string
@@ -63,15 +63,15 @@ func Create(bareDir, projectName, branch string) (string, error) {
 
 // List returns all worktrees registered with the bare repository at bareDir,
 // excluding the bare repo entry itself.
-func List(bareDir string) ([]WorktreeInfo, error) {
+func List(bareDir string) ([]Info, error) {
 	cmd := exec.Command("git", "-C", bareDir, "worktree", "list", "--porcelain")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("git worktree list: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
-	var results []WorktreeInfo
-	var current WorktreeInfo
+	var results []Info
+	var current Info
 	isBare := false
 
 	for _, line := range strings.Split(string(out), "\n") {
@@ -81,7 +81,7 @@ func List(bareDir string) ([]WorktreeInfo, error) {
 			if current.Path != "" && !isBare {
 				results = append(results, current)
 			}
-			current = WorktreeInfo{Path: strings.TrimPrefix(line, "worktree ")}
+			current = Info{Path: strings.TrimPrefix(line, "worktree ")}
 			isBare = false
 
 		case strings.HasPrefix(line, "HEAD "):
@@ -117,13 +117,13 @@ func Remove(bareDir, wtPath string) error {
 // cases depending on the current state of projectDir:
 //
 //   - .git/ exists  → return an unsupported-operation error with instructions.
-//   - .bare/ exists → validate the setup, create .tool/ if absent, return nil.
+//   - .bare/ exists → validate the setup, create .agency/ if absent, return nil.
 //   - Neither       → clone remote as a bare repo into .bare/, create an
-//     initial worktree named "<basename>-main", and create .tool/.
+//     initial worktree named "<basename>-main", and create .agency/.
 func Init(projectDir, remote string) error {
 	gitPath := filepath.Join(projectDir, ".git")
 	barePath := filepath.Join(projectDir, ".bare")
-	toolPath := filepath.Join(projectDir, ".tool")
+	toolPath := filepath.Join(projectDir, ".agency")
 
 	gitInfo, gitErr := os.Stat(gitPath)
 	bareInfo, bareErr := os.Stat(barePath)
@@ -139,7 +139,7 @@ func Init(projectDir, remote string) error {
 	// Case 2: bare repo already set up.
 	if bareErr == nil && bareInfo.IsDir() {
 		if err := os.MkdirAll(toolPath, 0o700); err != nil {
-			return fmt.Errorf("creating .tool directory: %w", err)
+			return fmt.Errorf("creating .agency directory: %w", err)
 		}
 		return nil
 	}
@@ -163,7 +163,7 @@ func Init(projectDir, remote string) error {
 	}
 
 	if err := os.MkdirAll(toolPath, 0o700); err != nil {
-		return fmt.Errorf("creating .tool directory: %w", err)
+		return fmt.Errorf("creating .agency directory: %w", err)
 	}
 
 	return nil

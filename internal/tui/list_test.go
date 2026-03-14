@@ -22,9 +22,9 @@ func TestFriendlyError(t *testing.T) {
 			wantNil: true,
 		},
 		{
-			name:        "active session conflict",
-			input:       errors.New("already has an active session for this branch"),
-			wantContain: "already has an active session",
+			name:        "active workspace conflict",
+			input:       errors.New("already has an active workspace for this branch"),
+			wantContain: "already has an active workspace",
 		},
 		{
 			name:        "git already checked out",
@@ -147,7 +147,7 @@ func TestRelativeTime(t *testing.T) {
 }
 
 func TestStyledStatus(t *testing.T) {
-	allStates := []state.SessionState{
+	allStates := []state.WorkspaceState{
 		state.StateCreating,
 		state.StateProvisioning,
 		state.StateRunning,

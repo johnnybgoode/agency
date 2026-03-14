@@ -15,6 +15,7 @@ type Config struct {
 	Sandbox     SandboxConfig     `toml:"sandbox"`
 	Credentials CredentialsConfig `toml:"credentials"`
 	Worktree    WorktreeConfig    `toml:"worktree"`
+	TUI         TUIConfig         `toml:"tui"`
 }
 
 // AgentConfig holds agent-specific configuration.
@@ -45,6 +46,11 @@ type WorktreeConfig struct {
 	AutoPush     *bool  `toml:"auto_push,omitempty"`
 }
 
+// TUIConfig holds TUI-specific configuration.
+type TUIConfig struct {
+	SidebarWidth int `toml:"sidebar_width"`
+}
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -58,7 +64,10 @@ func DefaultConfig() *Config {
 			CPUs:   2,
 		},
 		Worktree: WorktreeConfig{
-			BranchPrefix: "agent/",
+			BranchPrefix: "",
+		},
+		TUI: TUIConfig{
+			SidebarWidth: 24,
 		},
 	}
 }
@@ -74,12 +83,12 @@ func GlobalConfigPath() string {
 
 // ProjectConfigPath returns the path to the project-level config file.
 func ProjectConfigPath(projectDir string) string {
-	return projectDir + "/.tool/config.toml"
+	return projectDir + "/.agency/config.toml"
 }
 
-// SessionConfigPath returns the path to the session-local config file inside a worktree.
-func SessionConfigPath(worktreePath string) string {
-	return filepath.Join(worktreePath, ".tool", "config.toml")
+// WorkspaceConfigPath returns the path to the workspace-local config file inside a worktree.
+func WorkspaceConfigPath(worktreePath string) string {
+	return filepath.Join(worktreePath, ".agency", "config.toml")
 }
 
 // EnforceGlobalConfigPerms chmod 0600s the global config file if it exists.
@@ -102,7 +111,7 @@ func Load(paths ...string) (*Config, error) {
 			if info, err := os.Stat(path); err == nil {
 				perm := info.Mode().Perm()
 				if perm&0o177 != 0 {
-					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions %04o, should be 0o600\n", path, perm)
+					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions 0o%o, should be 0o600\n", path, perm)
 				}
 			}
 		}

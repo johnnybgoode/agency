@@ -52,6 +52,11 @@ func Merge(base, override *Config) *Config {
 		result.Worktree.AutoPush = override.Worktree.AutoPush
 	}
 
+	// TUI
+	if override.TUI.SidebarWidth != 0 {
+		result.TUI.SidebarWidth = override.TUI.SidebarWidth
+	}
+
 	return &result
 }
 

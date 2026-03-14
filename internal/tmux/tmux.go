@@ -27,13 +27,19 @@ func New(sessionName string) *Client {
 	return &Client{SessionName: sessionName, tmuxPath: path}
 }
 
+// NewWithBinaryPath creates a Client that uses the supplied binaryPath instead
+// of searching PATH. Intended for tests that inject a fake tmux script.
+func NewWithBinaryPath(sessionName, binaryPath string) *Client {
+	return &Client{SessionName: sessionName, tmuxPath: binaryPath}
+}
+
 // run is a shared helper that executes a tmux sub-command, returns trimmed
 // stdout, and wraps any error with the combined output for diagnostics.
 func (c *Client) run(args ...string) (string, error) {
 	if c.tmuxPath == "" {
 		return "", fmt.Errorf("tmux is not installed")
 	}
-	cmd := exec.Command(c.tmuxPath, args...)
+	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
@@ -46,7 +52,7 @@ func (c *Client) SessionExists() bool {
 	if c.tmuxPath == "" {
 		return false
 	}
-	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run()
+	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run() //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	return err == nil
 }
 
@@ -108,12 +114,83 @@ func (c *Client) SendKeys(windowID, keys string) error {
 	return err
 }
 
+// SendKeysToPane sends keystrokes directly to a pane by pane ID and presses Enter.
+// Pane IDs (e.g. "%5") are globally unique within the tmux server.
+func (c *Client) SendKeysToPane(paneID, keys string) error {
+	_, err := c.run("send-keys", "-t", paneID, keys, "Enter")
+	return err
+}
+
+// SelectPane makes the given pane the active pane in its window.
+func (c *Client) SelectPane(paneID string) error {
+	_, err := c.run("select-pane", "-t", paneID)
+	return err
+}
+
+// SplitWindowVertical creates a vertical (horizontal split) pane in windowID
+// and returns the new right pane ID.
+func (c *Client) SplitWindowVertical(windowID string) (string, error) {
+	return c.run("split-window", "-h", "-t", c.SessionName+":"+windowID, "-P", "-F", "#{pane_id}")
+}
+
+// JoinPane moves a pane from its current location into targetWindowID as the
+// right pane.
+func (c *Client) JoinPane(srcPaneID, targetWindowID string) error {
+	_, err := c.run("join-pane", "-s", srcPaneID, "-t", c.SessionName+":"+targetWindowID, "-h")
+	return err
+}
+
+// BreakPane moves a pane out of its current window into a new detached window.
+// Returns the new window ID.
+func (c *Client) BreakPane(windowID, paneID string) (string, error) {
+	return c.run("break-pane", "-s", c.SessionName+":"+windowID+"."+paneID, "-d", "-P", "-F", "#{window_id}")
+}
+
+// GetWindowPanes returns all pane IDs for a window.
+func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
+	out, err := c.run("list-panes", "-t", c.SessionName+":"+windowID, "-F", "#{pane_id}")
+	if err != nil {
+		return nil, err
+	}
+	var panes []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			panes = append(panes, line)
+		}
+	}
+	return panes, nil
+}
+
+// ResizePane resizes the pane identified by paneID to the given width (columns).
+func (c *Client) ResizePane(paneID string, width int) error {
+	_, err := c.run("resize-pane", "-t", paneID, "-x", fmt.Sprintf("%d", width))
+	return err
+}
+
+// DisplayPopup runs cmd in a tmux display-popup overlay.
+// The popup is sized to width columns × height rows.
+// If x > 0 it is passed as the -x left-edge offset of the popup.
+func (c *Client) DisplayPopup(cmd string, width, height, x int) error {
+	args := []string{
+		"display-popup", "-E",
+		"-w", fmt.Sprintf("%d", width),
+		"-h", fmt.Sprintf("%d", height),
+	}
+	if x > 0 {
+		args = append(args, "-x", fmt.Sprintf("%d", x))
+	}
+	args = append(args, cmd)
+	_, err := c.run(args...)
+	return err
+}
+
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
 	if c.tmuxPath == "" {
 		return fmt.Errorf("tmux is not installed")
 	}
-	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName)
+	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

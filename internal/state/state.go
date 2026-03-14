@@ -10,44 +10,48 @@ import (
 	"time"
 )
 
-// SessionState represents the lifecycle state of a session.
-type SessionState string
+// WorkspaceState represents the lifecycle state of a workspace.
+type WorkspaceState string
 
-// Session state constants represent the lifecycle of a session.
+// Workspace state constants represent the lifecycle of a workspace.
 const (
-	StateCreating     SessionState = "creating"
-	StateProvisioning SessionState = "provisioning"
-	StateRunning      SessionState = "running"
-	StatePaused       SessionState = "paused"
-	StateCompleting   SessionState = "completing"
-	StateDone         SessionState = "done"
-	StateFailed       SessionState = "failed"
+	StateCreating     WorkspaceState = "creating"
+	StateProvisioning WorkspaceState = "provisioning"
+	StateRunning      WorkspaceState = "running"
+	StatePaused       WorkspaceState = "paused"
+	StateCompleting   WorkspaceState = "completing"
+	StateDone         WorkspaceState = "done"
+	StateFailed       WorkspaceState = "failed"
 )
 
-// Session holds the runtime state of a single agent session.
-type Session struct {
-	ID           string       `json:"id"`
-	State        SessionState `json:"state"`
-	Branch       string       `json:"branch"`
-	WorktreePath string       `json:"worktree_path"`
-	SandboxID    string       `json:"sandbox_id"`
-	TmuxWindow   string       `json:"tmux_window"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	PauseMode    *string      `json:"pause_mode"`
-	FailedFrom   *string      `json:"failed_from"`
-	Error        *string      `json:"error"`
+// Workspace holds the runtime state of a single agent workspace.
+type Workspace struct {
+	ID           string         `json:"id"`
+	Name         string         `json:"name"` // user-defined display name
+	State        WorkspaceState `json:"state"`
+	Branch       string         `json:"branch"`
+	WorktreePath string         `json:"worktree_path"`
+	SandboxID    string         `json:"sandbox_id"`
+	TmuxWindow   string         `json:"tmux_window"` // window ID (e.g. "@3")
+	PaneID       string         `json:"pane_id"`     // pane ID within that window (e.g. "%5")
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+	PauseMode    *string        `json:"pause_mode"`
+	FailedFrom   *string        `json:"failed_from"`
+	Error        *string        `json:"error"`
 }
 
 // State holds the persisted state for an agency project.
 type State struct {
-	Version     int                 `json:"version"`
-	Project     string              `json:"project"`
-	BarePath    string              `json:"bare_path"`
-	TmuxSession string              `json:"tmux_session"`
-	PID         int                 `json:"pid"`
-	UpdatedAt   time.Time           `json:"updated_at"`
-	Sessions    map[string]*Session `json:"sessions"`
+	Version           int                   `json:"version"`
+	Project           string                `json:"project"`
+	BarePath          string                `json:"bare_path"`
+	TmuxSession       string                `json:"tmux_session"`
+	MainWindowID      string                `json:"main_window_id"`      // ID of the Agency main window (sidebar lives here)
+	ActiveWorkspaceID string                `json:"active_workspace_id"` // workspace ID whose pane is currently joined on the right
+	PID               int                   `json:"pid"`
+	UpdatedAt         time.Time             `json:"updated_at"`
+	Workspaces        map[string]*Workspace `json:"workspaces"`
 }
 
 // Default returns a new State with sensible defaults for the given project.
@@ -57,7 +61,7 @@ func Default(project, barePath string) *State {
 		Project:     project,
 		BarePath:    barePath,
 		TmuxSession: "agency-" + project,
-		Sessions:    make(map[string]*Session),
+		Workspaces:  make(map[string]*Workspace),
 	}
 }
 
@@ -71,8 +75,8 @@ func Read(path string) (*State, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("parsing state file %s: %w", path, err)
 	}
-	if s.Sessions == nil {
-		s.Sessions = make(map[string]*Session)
+	if s.Workspaces == nil {
+		s.Workspaces = make(map[string]*Workspace)
 	}
 	return &s, nil
 }

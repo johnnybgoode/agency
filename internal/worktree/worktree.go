@@ -4,6 +4,7 @@ package worktree
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -146,7 +147,7 @@ func Init(projectDir, remote string) error {
 
 	// Case 3: fresh directory — require a remote.
 	if remote == "" {
-		return fmt.Errorf("remote is required when initializing a new project directory")
+		return errors.New("remote is required when initializing a new project directory")
 	}
 
 	cloneCmd := exec.Command("git", "clone", "--bare", remote, barePath)

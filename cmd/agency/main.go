@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -90,7 +91,7 @@ var topLevelNewCmd = &cobra.Command{
 
 		// Non-popup: require name and branch args.
 		if len(args) < 2 {
-			return fmt.Errorf("usage: agency new <name> <branch>  (or agency new --popup)")
+			return errors.New("usage: agency new <name> <branch>  (or agency new --popup)")
 		}
 		name := args[0]
 		branch := args[1]

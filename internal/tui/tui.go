@@ -197,15 +197,6 @@ func runSidebar(projectDir string) error {
 		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
-	if err := mgr.Tmux.EnsureSession(); err != nil {
-		// Non-fatal: tmux may not be installed or we may be in a test env.
-		fmt.Fprintf(os.Stderr, "warning: could not ensure tmux session: %v\n", err)
-	}
-
-	if err := mgr.Reconcile(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: reconcile failed: %v\n", err)
-	}
-
 	// Ensure the main window is set up (sidebar lives here).
 	leftPaneID, winErr := ensureMainWindow(mgr)
 	if winErr != nil {
@@ -256,25 +247,25 @@ func rejoinActivePane(mgr *workspace.Manager) {
 func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 	mainID := mgr.State.MainWindowID
 
-	if mainID != "" {
-		// Verify it still exists.
-		windows, err := mgr.Tmux.ListWindows()
-		if err == nil {
-			for _, w := range windows {
-				if w.ID == mainID {
-					// Already good — return the left pane ID.
-					if panes, err := mgr.Tmux.GetWindowPanes(mainID); err == nil && len(panes) > 0 {
-						return panes[0], nil
-					}
-					return "", nil
+	// One ListWindows call covers both the "verify existing" and "find fallback" cases.
+	windows, listErr := mgr.Tmux.ListWindows()
+
+	if mainID != "" && listErr == nil {
+		for _, w := range windows {
+			if w.ID == mainID {
+				// Already good — return the left pane ID.
+				if panes, err := mgr.Tmux.GetWindowPanes(mainID); err == nil && len(panes) > 0 {
+					return panes[0], nil
 				}
+				return "", nil
 			}
 		}
 	}
 
-	// Reuse an existing window not owned by a workspace, or create a new one.
+	// mainID is empty or the window is gone — reuse an existing non-workspace
+	// window, or create a new one.
 	var winID string
-	if windows, listErr := mgr.Tmux.ListWindows(); listErr == nil {
+	if listErr == nil {
 		workspaceWins := map[string]bool{}
 		for _, ws := range mgr.State.Workspaces {
 			if ws.TmuxWindow != "" {

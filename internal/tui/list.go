@@ -75,13 +75,21 @@ func newListModel(mgr *workspace.Manager) listModel {
 	}
 }
 
-// Init returns the polling tick command.
+// Init returns the initial commands: an immediate background reconcile and the
+// first polling tick.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) Init() tea.Cmd {
-	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		return tickMsg{}
-	})
+	mgr := m.manager
+	return tea.Batch(
+		func() tea.Msg {
+			err := mgr.Reconcile(context.Background())
+			return reconcileDoneMsg{err: err}
+		},
+		tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+			return tickMsg{}
+		}),
+	)
 }
 
 // handleConfirmKey handles key presses when a delete confirmation is in progress.

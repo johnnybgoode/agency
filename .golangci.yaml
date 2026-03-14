@@ -61,9 +61,8 @@ linters:
 
     errorlint:
       # Ensure proper error wrapping with fmt.Errorf(%w)
-      errorf: true
-      asserts: true
-      comparison: true
+      check-error-type-assertions: true
+      check-errors-new-uppercase: true
 
     gosec:
       # Exclude rules that are false positives for CLI tools

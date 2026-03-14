@@ -181,3 +181,64 @@ func TestEnsureMainWindow_ReuseExistingWindow(t *testing.T) {
 		t.Errorf("MainWindowID = %q, want @5", mgr.State.MainWindowID)
 	}
 }
+
+// TestZeroStateView_WelcomePanel verifies that View() joins the sidebar with a
+// welcome panel when there are no workspaces and the terminal is wide enough.
+func TestZeroStateView_WelcomePanel(t *testing.T) {
+	mgr, _ := newFakeTuiManager(t, nil)
+	m := newListModel(mgr)
+	m.width = 120
+	m.height = 40
+
+	out := m.View()
+
+	for _, want := range []string{"Agency", "Create [n]ew workspace..."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("View() missing %q in zero state\noutput:\n%s", want, out)
+		}
+	}
+}
+
+// TestZeroStateView_NarrowFallback verifies that View() returns only the
+// sidebar when the terminal is not wider than the sidebar (m.width == 0).
+func TestZeroStateView_NarrowFallback(t *testing.T) {
+	mgr, _ := newFakeTuiManager(t, nil)
+	m := newListModel(mgr)
+	// m.width defaults to 0 — narrower than sidebarWidth, so no welcome panel.
+
+	out := m.View()
+
+	if strings.Contains(out, "Create [n]ew workspace...") {
+		t.Errorf("View() rendered welcome panel when m.width == 0; output:\n%s", out)
+	}
+	// Sidebar header should still appear.
+	if !strings.Contains(out, "Agency") {
+		t.Errorf("View() missing sidebar header in narrow fallback; output:\n%s", out)
+	}
+}
+
+// TestNewWorkspaceCmd_ZeroStateXPos verifies that newWorkspaceCmd computes a
+// positive x offset when in zero state so the popup is centered over the right
+// welcome panel rather than the default (full-terminal) center.
+func TestNewWorkspaceCmd_ZeroStateXPos(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"display-popup": "",
+	})
+	m := newListModel(mgr)
+	m.width = 120
+	m.height = 40
+
+	cmd := m.newWorkspaceCmd()
+	cmd() // execute the tea.Cmd synchronously
+
+	calls, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading calls file: %v", err)
+	}
+	// The fake tmux script records subcommand names. Verify display-popup was
+	// called and that the call log contains "-x" (position flag).
+	callStr := string(calls)
+	if !strings.Contains(callStr, "display-popup") {
+		t.Errorf("newWorkspaceCmd did not call display-popup; calls:\n%s", callStr)
+	}
+}

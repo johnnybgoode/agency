@@ -17,11 +17,6 @@ import (
 // Lipgloss styles used across the list view and create form.
 var (
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	failedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	pausedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	doneStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	pendingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	removingStyle = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
@@ -278,15 +273,11 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // sidebarWidth returns the configured sidebar total width (including the right │).
-// Defaults to 22 if not set in config.
+// Delegates to workspace.Manager.SidebarWidth() as the single source of truth.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
-	w := m.manager.Cfg.TUI.SidebarWidth
-	if w <= 0 {
-		w = 22
-	}
-	return w
+	return m.manager.SidebarWidth()
 }
 
 // truncate shortens s to maxLen runes, appending ".." if truncated.
@@ -296,7 +287,7 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	if maxLen <= 2 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-2]) + ".."
 }
@@ -473,37 +464,6 @@ func (m listModel) renderZeroPanel(width, height int) string {
 	return centered + "\n" + strings.Repeat("─", width)
 }
 
-// styledStatus returns a colored string representation of a WorkspaceState.
-func styledStatus(s state.WorkspaceState) string {
-	switch s {
-	case state.StateRunning:
-		return runningStyle.Render("running")
-	case state.StateFailed:
-		return failedStyle.Render("failed")
-	case state.StatePaused:
-		return pausedStyle.Render("paused")
-	case state.StateDone:
-		return doneStyle.Render("done")
-	default:
-		return pendingStyle.Render(string(s))
-	}
-}
-
-// relativeTime formats a time.Time as a human-readable relative duration.
-func relativeTime(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
-}
-
 // friendlyError translates common internal/git errors into user-friendly
 // messages. Unknown errors are returned with their raw message stripped of
 // noisy git output.
@@ -527,7 +487,7 @@ func friendlyError(err error) error {
 	case strings.Contains(msg, "docker daemon is not running"):
 		return errors.New("docker daemon is not reachable — start Docker Desktop and try again")
 	case strings.Contains(msg, "No such image"):
-		return fmt.Errorf("sandbox image not found — run 'docker pull' for your configured image first")
+		return errors.New("sandbox image not found — run 'docker pull' for your configured image first")
 	case strings.Contains(msg, "Conflict") && strings.Contains(msg, "name"):
 		return errors.New("a container with that name already exists — delete the old workspace first or choose a different branch")
 	default:

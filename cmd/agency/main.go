@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/johnnybgoode/agency/internal/config"
+	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tui"
 	"github.com/johnnybgoode/agency/internal/workspace"
@@ -89,7 +91,7 @@ var topLevelNewCmd = &cobra.Command{
 
 		// Non-popup: require name and branch args.
 		if len(args) < 2 {
-			return fmt.Errorf("usage: agency new <name> <branch>  (or agency new --popup)")
+			return errors.New("usage: agency new <name> <branch>  (or agency new --popup)")
 		}
 		name := args[0]
 		branch := args[1]
@@ -215,7 +217,7 @@ var gcCmd = &cobra.Command{
 
 		total := len(orphanWorktrees) + len(orphanContainers)
 
-		if total == 0 && len(orphanWorktrees) == 0 && len(orphanContainers) == 0 {
+		if total == 0 {
 			fmt.Println("No orphans found.")
 		} else {
 			fmt.Printf("%-6s  %-10s  %s\n", "TYPE", "KIND", "PATH/NAME")
@@ -275,7 +277,7 @@ var gcCmd = &cobra.Command{
 // loadManager is a shared helper that finds the project directory, loads
 // configuration, and constructs a workspace Manager.
 func loadManager() (*workspace.Manager, error) {
-	projectDir, err := findProjectDir()
+	projectDir, err := project.FindProjectDir()
 	if err != nil {
 		return nil, err
 	}
@@ -291,38 +293,6 @@ func loadManager() (*workspace.Manager, error) {
 	}
 
 	return mgr, nil
-}
-
-// findProjectDir walks up from the current working directory looking for a
-// .agency/ or .bare/ directory, which marks an agency project root.
-func findProjectDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getting working directory: %w", err)
-	}
-
-	dir := cwd
-	for {
-		if isDir(filepath.Join(dir, ".agency")) || isDir(filepath.Join(dir, ".bare")) {
-			return dir, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
-	}
-
-	return "", fmt.Errorf(
-		"not in an agency project (no .agency/ or .bare/ found); run 'agency init' first",
-	)
-}
-
-// isDir reports whether path exists and is a directory.
-func isDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 func init() {

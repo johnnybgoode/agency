@@ -3,6 +3,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -36,7 +37,7 @@ type Manager struct{}
 // operation (Create, Start, etc.).
 func New() (*Manager, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return nil, fmt.Errorf("docker is not installed")
+		return nil, errors.New("docker is not installed")
 	}
 	return &Manager{}, nil
 }

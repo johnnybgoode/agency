@@ -51,6 +51,10 @@ type TUIConfig struct {
 	SidebarWidth int `toml:"sidebar_width"`
 }
 
+// DefaultSidebarWidth is the default sidebar width in columns, used as a
+// fallback when the configuration does not specify a value.
+const DefaultSidebarWidth = 24
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -67,7 +71,7 @@ func DefaultConfig() *Config {
 			BranchPrefix: "",
 		},
 		TUI: TUIConfig{
-			SidebarWidth: 24,
+			SidebarWidth: DefaultSidebarWidth,
 		},
 	}
 }
@@ -78,12 +82,12 @@ func GlobalConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	return home + "/.config/agency/config.toml"
+	return filepath.Join(home, ".config", "agency", "config.toml")
 }
 
 // ProjectConfigPath returns the path to the project-level config file.
 func ProjectConfigPath(projectDir string) string {
-	return projectDir + "/.agency/config.toml"
+	return filepath.Join(projectDir, ".agency", "config.toml")
 }
 
 // WorkspaceConfigPath returns the path to the workspace-local config file inside a worktree.

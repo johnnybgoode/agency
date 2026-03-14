@@ -64,9 +64,9 @@ func TestLoadPermissionWarning(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 
-	// Write a minimal valid config with world-readable permissions (0644).
+	// Write a minimal valid config with world-readable permissions (0o644).
 	content := []byte("[agent]\ndefault = \"claude\"\n")
-	if err := os.WriteFile(cfgPath, content, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -80,10 +80,10 @@ func TestLoadPermissionWarning(t *testing.T) {
 	}
 
 	if !strings.Contains(stderr, "warning") {
-		t.Errorf("expected a warning on stderr for 0644 permissions, got: %q", stderr)
+		t.Errorf("expected a warning on stderr for 0o644 permissions, got: %q", stderr)
 	}
-	if !strings.Contains(stderr, "0644") {
-		t.Errorf("expected stderr to mention the actual permission 0644, got: %q", stderr)
+	if !strings.Contains(stderr, "0o644") {
+		t.Errorf("expected stderr to mention the actual permission 0o644, got: %q", stderr)
 	}
 }
 
@@ -92,7 +92,7 @@ func TestLoadPermissionOK(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.toml")
 
 	content := []byte("[agent]\ndefault = \"claude\"\n")
-	if err := os.WriteFile(cfgPath, content, 0600); err != nil {
+	if err := os.WriteFile(cfgPath, content, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestLoadPermissionOK(t *testing.T) {
 	}
 
 	if strings.Contains(stderr, "warning") {
-		t.Errorf("unexpected warning on stderr for 0600 permissions: %q", stderr)
+		t.Errorf("unexpected warning on stderr for 0o600 permissions: %q", stderr)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestEnforceGlobalConfigPerms(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 
-	if err := os.WriteFile(cfgPath, []byte(""), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(""), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -138,8 +138,8 @@ func TestEnforceGlobalConfigPerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat after enforce: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Errorf("file permissions = %04o, want 0600", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file permissions = %04o, want 0o600", got)
 	}
 }
 
@@ -154,7 +154,7 @@ func TestEnforceGlobalConfigPermsAlreadyCorrect(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
 
-	if err := os.WriteFile(cfgPath, []byte(""), 0600); err != nil {
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -167,7 +167,7 @@ func TestEnforceGlobalConfigPermsAlreadyCorrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0600 {
-		t.Errorf("file permissions = %04o, want 0600", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("file permissions = %04o, want 0o600", got)
 	}
 }

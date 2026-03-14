@@ -92,7 +92,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return sessionCreatedMsg{sess: sess, err: err}
 			}
 		}
-		if m.createForm.cancelled {
+		if m.createForm.canceled {
 			m.creating = false
 			return m, nil
 		}
@@ -233,11 +233,6 @@ func (m listModel) View() string {
 				cursor = "> "
 			}
 
-			id := sess.ID
-			if i == m.cursor {
-				id = selectedStyle.Render(id)
-			}
-
 			branch := sess.Branch
 			if len(branch) > 24 {
 				branch = branch[:24]
@@ -247,13 +242,12 @@ func (m listModel) View() string {
 			// This avoids invisible escape codes breaking fmt %-width padding.
 			idPad := fmt.Sprintf("%-16s", sess.ID)
 			branchPad := fmt.Sprintf("%-26s", branch)
-			statusPad := fmt.Sprintf("%-12s", string(sess.State))
 
 			// Now style the padded fields — the padding is already baked in.
 			if i == m.cursor {
 				idPad = selectedStyle.Render(idPad)
 			}
-			statusPad = styledStatus(sess.State) + strings.Repeat(" ", 12-len(string(sess.State)))
+			statusPad := styledStatus(sess.State) + strings.Repeat(" ", 12-len(string(sess.State)))
 
 			relTime := relativeTime(sess.CreatedAt)
 
@@ -275,7 +269,7 @@ func (m listModel) View() string {
 	return b.String()
 }
 
-// styledStatus returns a coloured string representation of a SessionState.
+// styledStatus returns a colored string representation of a SessionState.
 func styledStatus(s state.SessionState) string {
 	switch s {
 	case state.StateRunning:

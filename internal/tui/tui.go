@@ -53,7 +53,7 @@ func Run() error {
 			return fmt.Errorf("acquiring lock: %w", err)
 		}
 	}
-	defer lock.Release() //nolint:errcheck
+	defer lock.Release() //nolint:errcheck // lock cleanup on shutdown
 
 	mgr, err := session.NewManager(projectDir, cfg)
 	if err != nil {

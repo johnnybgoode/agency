@@ -1,3 +1,4 @@
+// Package tmux provides a client for tmux session management.
 package tmux
 
 import (

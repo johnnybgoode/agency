@@ -1,0 +1,184 @@
+version: "2"
+
+formatters:
+  enable:
+    - gci           # Canonical import grouping and formatting
+    - gofumpt       # Stricter gofmt with additional style rules
+
+linters:
+  # Start with no defaults and explicitly enable linters
+  default: none
+
+  enable:
+    # Core linters - essential for code quality
+    - errcheck      # Check for unchecked errors
+    - govet         # Reports suspicious constructs
+    - staticcheck   # Go static analysis
+    - unused        # Check for unused code
+    - ineffassign   # Detect ineffectual assignments
+
+    # Style and consistency
+    - misspell      # Find commonly misspelled words
+
+    # Modern Go features
+    - copyloopvar   # Detect loop variable issues (Go 1.22+)
+
+    # Code quality
+    - gocritic      # Comprehensive meta-linter
+    - revive        # Fast, configurable, extensible linter
+    - unconvert     # Remove unnecessary type conversions
+
+    # Error handling - critical for CLI/TUI tools
+    - errorlint     # Ensure proper error wrapping/unwrapping
+    - nilnil        # Detect returning both nil error and nil value
+
+    # Context usage
+    - contextcheck  # Ensure proper context usage in goroutines/HTTP
+
+    # Security
+    - gosec         # Security-focused linter
+
+    # Complexity
+    - gocyclo       # Compute cyclomatic complexity
+
+    # Best practices
+    - nolintlint    # Reports ill-formed or insufficient nolint directives
+    - bodyclose     # Check for unclosed HTTP response bodies
+
+  settings:
+    errcheck:
+      # Ignore these functions for error checking (common in CLI tools)
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Writer).Write
+        - (*github.com/fatih/color.Color).Fprintf
+
+    gocyclo:
+      # Maximum cyclomatic complexity - TUI handlers may be complex but should remain maintainable
+      min-complexity: 20
+
+    errorlint:
+      # Ensure proper error wrapping with fmt.Errorf(%w)
+      check-error-type-assertions: true
+      check-errors-new-uppercase: true
+
+    gosec:
+      # Exclude rules that are false positives for CLI tools
+      excludes:
+        - G104  # Audit errors not checked (handled by errcheck)
+        - G304  # File path provided as taint input (expected in CLI tools)
+        - G306  # WriteFile permissions (0644 is fine for config files)
+
+    misspell:
+      locale: US
+
+    govet:
+      # Enable all analyzers
+      enable-all: true
+      disable:
+        - shadow
+        - fieldalignment
+        - unusedwrite      # Common in test structs with intentional field writes
+
+    gocritic:
+      # Enable multiple check groups
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - evalOrder              # Too pedantic about expression evaluation order
+        - singleCaseSwitch       # Single case switch is acceptable for consistency
+        - ifElseChain            # Long if-else chains can be clearer than switch
+        - stringXbytes           # Allow string conversion for comparison
+        - emptyStringTest        # Allow len(s) == 0 style
+
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: errorf
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: package-comments  # Document all packages
+        - name: exported           # Document exported symbols
+        - name: early-return       # Reduce nesting depth
+
+  exclusions:
+    # Use common presets for sensible defaults
+    presets:
+      - std-error-handling
+      - common-false-positives
+    rules:
+      # Exclude linters in test files that are less critical
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - contextcheck
+      # Exclude staticcheck false positives in tests
+      - path: _test\.go
+        text: "SA4006|SA9003"
+      # Exclude package-comments and exported from test files and examples
+      - path: (_test\.go|examples/)
+        linters:
+          - revive
+        text: "package-comments|exported"
+      # Exclude gocritic nestingReduce as it's stylistic
+      - linters:
+          - gocritic
+        text: "nestingReduce"
+
+issues:
+  # Maximum issues count per linter (0 = unlimited)
+  max-issues-per-linter: 50
+
+  # Maximum count of same issues (0 = unlimited)
+  max-same-issues: 10
+
+  # Make issues output unique by line
+  uniq-by-line: false
+
+run:
+  # Timeout for analysis
+  timeout: 5m
+
+  # Modules download mode (readonly for CI)
+  modules-download-mode: readonly
+
+  # Include test files in analysis
+  tests: true
+
+  # Build tags to use during analysis
+  build-tags: []
+
+output:
+  # Format for output
+  formats:
+    text:
+      path: stdout
+      print-issued-lines: true
+      print-linter-name: true
+      colors: true
+
+  # Sort order for issues
+  sort-order:
+    - file
+    - linter
+
+  # Show statistics per linter
+  show-stats: false

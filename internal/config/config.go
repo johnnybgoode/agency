@@ -1,3 +1,4 @@
+// Package config handles TOML configuration loading and merging.
 package config
 
 import (
@@ -86,7 +87,7 @@ func EnforceGlobalConfigPerms(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
-	return os.Chmod(path, 0600)
+	return os.Chmod(path, 0o600)
 }
 
 // Load reads configuration from the given paths in order, merging each into
@@ -100,8 +101,8 @@ func Load(paths ...string) (*Config, error) {
 		if i == 0 {
 			if info, err := os.Stat(path); err == nil {
 				perm := info.Mode().Perm()
-				if perm&0177 != 0 {
-					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions %04o, should be 0600\n", path, perm)
+				if perm&0o177 != 0 {
+					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions %04o, should be 0o600\n", path, perm)
 				}
 			}
 		}

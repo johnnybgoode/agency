@@ -1,3 +1,4 @@
+// Package state manages persistent application state and file locking.
 package state
 
 import (
@@ -17,11 +18,11 @@ type Lock struct {
 // The parent directory is created if it does not exist. Returns an error if
 // another process holds the lock.
 func AcquireLock(path string) (*Lock, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("creating lock directory: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening lock file %s: %w", path, err)
 	}

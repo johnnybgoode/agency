@@ -1,3 +1,4 @@
+// Package session manages agent sessions with worktrees and containers.
 package session
 
 import (
@@ -33,7 +34,7 @@ type Manager struct {
 }
 
 // NewManager constructs a Manager for the given project directory. It loads or
-// initialises the state file, creates a tmux client, and optionally connects to
+// initializes the state file, creates a tmux client, and optionally connects to
 // the Docker daemon. A nil Sandbox is not fatal — the TUI can still list
 // existing sessions without Docker.
 func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
@@ -42,13 +43,12 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 
 	s, err := state.Read(statePath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			s = state.Default(projectName, filepath.Join(projectDir, ".bare"))
-			// Persist immediately so subsequent reads don't re-default.
-			_ = state.Write(statePath, s)
-		} else {
+		if !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("loading state: %w", err)
 		}
+		s = state.Default(projectName, filepath.Join(projectDir, ".bare"))
+		// Persist immediately so subsequent reads don't re-default.
+		_ = state.Write(statePath, s)
 	}
 
 	tc := tmux.New("agency-" + projectName)
@@ -304,83 +304,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	markFailed := func(sess *state.Session, reason string) {
-		fromState := string(sess.State)
-		sess.FailedFrom = &fromState
-		sess.State = state.StateFailed
-		sess.Error = &reason
-		sess.UpdatedAt = time.Now().UTC()
-	}
-
-	changed := false
-	toDelete := []string{}
-
-	for id, sess := range m.State.Sessions {
-		switch sess.State {
-		case state.StateRunning:
-			// Only check container presence if the Docker query succeeded.
-			if res.contsErr == nil && sess.SandboxID != "" {
-				if !containerIDSet[sess.SandboxID] {
-					markFailed(sess, "sandbox disappeared")
-					changed = true
-					continue
-				}
-			}
-			// Recreate missing tmux window if the sandbox is alive.
-			if res.windowsErr == nil && sess.TmuxWindow != "" && !windowSet[sess.TmuxWindow] {
-				if newWin, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch)); err == nil {
-					_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", sess.SandboxID))
-					sess.TmuxWindow = newWin
-					sess.UpdatedAt = time.Now().UTC()
-					changed = true
-				}
-			}
-
-		case state.StateProvisioning:
-			if res.contsErr == nil && sess.SandboxID != "" {
-				if containerIDSet[sess.SandboxID] {
-					sess.State = state.StateRunning
-					sess.UpdatedAt = time.Now().UTC()
-					changed = true
-				} else {
-					markFailed(sess, "sandbox not found during reconciliation")
-					changed = true
-				}
-			} else if res.contsErr == nil {
-				// No sandbox ID recorded — provisioning never got that far.
-				markFailed(sess, "sandbox not found during reconciliation")
-				changed = true
-			}
-
-		case state.StateCreating:
-			// Session stuck in creating means the tool crashed during worktree creation.
-			if sess.WorktreePath == "" {
-				markFailed(sess, "session stuck in creating state")
-				changed = true
-			}
-
-		case state.StateCompleting:
-			// If sandbox is gone, transition to done.
-			if res.contsErr == nil && (sess.SandboxID == "" || !containerIDSet[sess.SandboxID]) {
-				sess.State = state.StateDone
-				sess.UpdatedAt = time.Now().UTC()
-				changed = true
-			}
-
-		case state.StatePaused:
-			// Verify that the worktree still exists for paused sessions.
-			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
-				markFailed(sess, "worktree disappeared while paused")
-				changed = true
-			}
-
-		case state.StateDone:
-			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
-				toDelete = append(toDelete, id)
-				changed = true
-			}
-		}
-	}
+	toDelete, changed := m.reconcileSessions(res, windowSet, containerIDSet, worktreeSet)
 
 	for _, id := range toDelete {
 		delete(m.State.Sessions, id)
@@ -427,6 +351,83 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// reconcileSessions processes all sessions and handles state transitions based on
+// the current tmux, docker, and worktree state. Returns sessions to delete and
+// whether any changes were made.
+func (m *Manager) reconcileSessions(res reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
+	markFailed := func(sess *state.Session, reason string) {
+		fromState := string(sess.State)
+		sess.FailedFrom = &fromState
+		sess.State = state.StateFailed
+		sess.Error = &reason
+		sess.UpdatedAt = time.Now().UTC()
+	}
+
+	changed := false
+	toDelete := []string{}
+
+	for id, sess := range m.State.Sessions {
+		switch sess.State {
+		case state.StateRunning:
+			if res.contsErr == nil && sess.SandboxID != "" && !containerIDSet[sess.SandboxID] {
+				markFailed(sess, "sandbox disappeared")
+				changed = true
+				continue
+			}
+			if res.windowsErr == nil && sess.TmuxWindow != "" && !windowSet[sess.TmuxWindow] {
+				if newWin, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch)); err == nil {
+					_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", sess.SandboxID))
+					sess.TmuxWindow = newWin
+					sess.UpdatedAt = time.Now().UTC()
+					changed = true
+				}
+			}
+
+		case state.StateProvisioning:
+			if res.contsErr == nil && sess.SandboxID != "" {
+				if containerIDSet[sess.SandboxID] {
+					sess.State = state.StateRunning
+					sess.UpdatedAt = time.Now().UTC()
+					changed = true
+				} else {
+					markFailed(sess, "sandbox not found during reconciliation")
+					changed = true
+				}
+			} else if res.contsErr == nil {
+				markFailed(sess, "sandbox not found during reconciliation")
+				changed = true
+			}
+
+		case state.StateCreating:
+			if sess.WorktreePath == "" {
+				markFailed(sess, "session stuck in creating state")
+				changed = true
+			}
+
+		case state.StateCompleting:
+			if res.contsErr == nil && (sess.SandboxID == "" || !containerIDSet[sess.SandboxID]) {
+				sess.State = state.StateDone
+				sess.UpdatedAt = time.Now().UTC()
+				changed = true
+			}
+
+		case state.StatePaused:
+			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
+				markFailed(sess, "worktree disappeared while paused")
+				changed = true
+			}
+
+		case state.StateDone:
+			if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
+				toDelete = append(toDelete, id)
+				changed = true
+			}
+		}
+	}
+
+	return toDelete, changed
 }
 
 // List returns all sessions sorted by creation time (oldest first).

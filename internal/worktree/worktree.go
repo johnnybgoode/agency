@@ -1,3 +1,4 @@
+// Package worktree manages git worktrees for agent sessions.
 package worktree
 
 import (
@@ -137,7 +138,7 @@ func Init(projectDir, remote string) error {
 
 	// Case 2: bare repo already set up.
 	if bareErr == nil && bareInfo.IsDir() {
-		if err := os.MkdirAll(toolPath, 0o755); err != nil {
+		if err := os.MkdirAll(toolPath, 0o700); err != nil {
 			return fmt.Errorf("creating .tool directory: %w", err)
 		}
 		return nil
@@ -145,7 +146,7 @@ func Init(projectDir, remote string) error {
 
 	// Case 3: fresh directory — require a remote.
 	if remote == "" {
-		return fmt.Errorf("remote is required when initialising a new project directory")
+		return fmt.Errorf("remote is required when initializing a new project directory")
 	}
 
 	cloneCmd := exec.Command("git", "clone", "--bare", remote, barePath)
@@ -161,7 +162,7 @@ func Init(projectDir, remote string) error {
 		return fmt.Errorf("creating initial worktree: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
-	if err := os.MkdirAll(toolPath, 0o755); err != nil {
+	if err := os.MkdirAll(toolPath, 0o700); err != nil {
 		return fmt.Errorf("creating .tool directory: %w", err)
 	}
 

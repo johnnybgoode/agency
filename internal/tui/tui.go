@@ -51,6 +51,15 @@ func (pw popupWrapper) Init() tea.Cmd { //nolint:gocritic // bubbletea model mus
 }
 
 func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocritic // bubbletea model must use value receivers
+	// Once Create is in flight, only handle its completion.
+	if pw.done {
+		if m, ok := msg.(popupDoneMsg); ok {
+			pw.err = m.err
+			return pw, tea.Quit
+		}
+		return pw, nil
+	}
+
 	var cmd tea.Cmd
 	pw.form, cmd = pw.form.Update(msg)
 
@@ -77,7 +86,7 @@ func (pw popupWrapper) View() string { //nolint:gocritic // bubbletea model must
 		if pw.err != nil {
 			return errorStyle.Render("Error: "+pw.err.Error()) + "\n"
 		}
-		return ""
+		return "Creating workspace…\n"
 	}
 	return pw.form.View()
 }
@@ -198,8 +207,16 @@ func runSidebar(projectDir string) error {
 	}
 
 	// Ensure the main window is set up (sidebar lives here).
-	if _, err := ensureMainWindow(mgr); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", err)
+	// Re-apply the sidebar resize here (after terminal attach) so tmux uses the
+	// actual terminal geometry rather than the detached-session geometry.
+	if leftPaneID, winErr := ensureMainWindow(mgr); winErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", winErr)
+	} else if leftPaneID != "" {
+		w := mgr.Cfg.TUI.SidebarWidth
+		if w <= 0 {
+			w = 24
+		}
+		_ = mgr.Tmux.ResizePane(leftPaneID, w)
 	}
 
 	// If there is an active workspace, join its pane into the main window only if
@@ -246,15 +263,30 @@ func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 		}
 	}
 
-	// Create a new window to serve as the main (sidebar) window.
-	winID, err := mgr.Tmux.NewWindow("agency")
-	if err != nil {
-		return "", fmt.Errorf("creating main window: %w", err)
+	// Reuse an existing window not owned by a workspace, or create a new one.
+	var winID string
+	if windows, listErr := mgr.Tmux.ListWindows(); listErr == nil {
+		workspaceWins := map[string]bool{}
+		for _, ws := range mgr.State.Workspaces {
+			if ws.TmuxWindow != "" {
+				workspaceWins[ws.TmuxWindow] = true
+			}
+		}
+		for _, w := range windows {
+			if !workspaceWins[w.ID] {
+				winID = w.ID
+				break
+			}
+		}
+	}
+	if winID == "" {
+		var err error
+		winID, err = mgr.Tmux.NewWindow("agency")
+		if err != nil {
+			return "", fmt.Errorf("creating main window: %w", err)
+		}
 	}
 	mgr.State.MainWindowID = winID
-
-	// Split it vertically — the right pane starts empty.
-	_, _ = mgr.Tmux.SplitWindowVertical(winID)
 
 	// Get panes and resize the left pane to the configured sidebar width.
 	panes, err := mgr.Tmux.GetWindowPanes(winID)

@@ -234,15 +234,33 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(err)
 	}
 
-	// Step 5: mark running and persist.
+	// Step 5: join new pane into main window so sidebar stays visible, then mark running.
+	if m.State.MainWindowID != "" && ws.PaneID != "" {
+		// Break any currently active workspace pane back to its own window first
+		// to maintain the 2-pane invariant (sidebar + at most one workspace pane).
+		if m.State.ActiveWorkspaceID != "" {
+			if activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok && activeWS.PaneID != "" {
+				if newWinID, err := m.Tmux.BreakPane(m.State.MainWindowID, activeWS.PaneID); err == nil {
+					activeWS.TmuxWindow = newWinID
+				}
+			}
+		}
+		_ = m.Tmux.JoinPane(ws.PaneID, m.State.MainWindowID)
+		ws.TmuxWindow = m.State.MainWindowID
+		m.State.ActiveWorkspaceID = ws.ID
+	}
 	ws.State = state.StateRunning
 	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
 		return fail(fmt.Errorf("saving running state: %w", err))
 	}
 
-	// Step 6: bring the new window into focus.
-	_ = m.Tmux.SelectWindow(ws.TmuxWindow)
+	// Step 6: focus the main window so sidebar + workspace are both visible.
+	if m.State.MainWindowID != "" {
+		_ = m.Tmux.SelectWindow(m.State.MainWindowID)
+	} else if ws.TmuxWindow != "" {
+		_ = m.Tmux.SelectWindow(ws.TmuxWindow)
+	}
 
 	return ws, nil
 }
@@ -306,7 +324,7 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	go func() {
 		defer wg.Done()
 		if m.Sandbox != nil {
-			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, "claude-sb-"+m.ProjectName)
+			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, "claude-sb-"+m.ProjectName+"-")
 		}
 	}()
 

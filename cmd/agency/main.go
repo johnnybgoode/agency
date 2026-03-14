@@ -205,9 +205,14 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Find orphan worktrees.
+		// Never flag the main worktree (<project>-main) — that is the user's development copy.
+		mainWorktreePath := filepath.Join(mgr.ProjectDir, mgr.ProjectName+"-main")
 		var orphanWorktrees []worktree.Info
 		if wts, err := worktree.List(barePath); err == nil {
 			for _, wt := range wts {
+				if wt.Path == mainWorktreePath {
+					continue
+				}
 				if !knownWorktrees[wt.Path] {
 					orphanWorktrees = append(orphanWorktrees, wt)
 				}
@@ -217,7 +222,7 @@ var gcCmd = &cobra.Command{
 		// Find orphan containers.
 		var orphanContainers []string // container IDs
 		var orphanContainerNames []string
-		prefix := "claude-sb-" + mgr.ProjectName
+		prefix := "claude-sb-" + mgr.ProjectName + "-"
 		if mgr.Sandbox != nil {
 			if containers, err := mgr.Sandbox.ListByProject(ctx, prefix); err == nil {
 				for _, c := range containers {

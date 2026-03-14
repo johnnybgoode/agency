@@ -131,10 +131,20 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 					// Already active — focus the pane by selecting the main window.
 					_ = m.manager.Tmux.SelectWindow(mainWindowID)
 				} else {
-					// Join the workspace pane into the main window as the right pane.
+					// Break the currently active pane back to its own window first.
+					if activeID != "" {
+						if activeWS, ok := m.manager.State.Workspaces[activeID]; ok && activeWS.PaneID != "" {
+							if newWinID, err := m.manager.Tmux.BreakPane(mainWindowID, activeWS.PaneID); err == nil {
+								activeWS.TmuxWindow = newWinID
+							}
+						}
+					}
+					// Join the selected workspace pane into the main window as the right pane.
 					_ = m.manager.Tmux.JoinPane(ws.PaneID, mainWindowID)
+					ws.TmuxWindow = mainWindowID
 					m.manager.State.ActiveWorkspaceID = ws.ID
 					_ = m.manager.SaveState()
+					_ = m.manager.Tmux.SelectWindow(mainWindowID)
 				}
 			} else if ws.TmuxWindow != "" {
 				// Fallback: just select the window.

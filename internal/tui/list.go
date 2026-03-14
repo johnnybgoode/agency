@@ -487,7 +487,7 @@ func friendlyError(err error) error {
 	case strings.Contains(msg, "docker daemon is not running"):
 		return errors.New("docker daemon is not reachable — start Docker Desktop and try again")
 	case strings.Contains(msg, "No such image"):
-		return fmt.Errorf("sandbox image not found — run 'docker pull' for your configured image first")
+		return errors.New("sandbox image not found — run 'docker pull' for your configured image first")
 	case strings.Contains(msg, "Conflict") && strings.Contains(msg, "name"):
 		return errors.New("a container with that name already exists — delete the old workspace first or choose a different branch")
 	default:

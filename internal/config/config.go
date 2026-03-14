@@ -78,12 +78,12 @@ func GlobalConfigPath() string {
 	if err != nil {
 		return ""
 	}
-	return home + "/.config/agency/config.toml"
+	return filepath.Join(home, ".config", "agency", "config.toml")
 }
 
 // ProjectConfigPath returns the path to the project-level config file.
 func ProjectConfigPath(projectDir string) string {
-	return projectDir + "/.agency/config.toml"
+	return filepath.Join(projectDir, ".agency", "config.toml")
 }
 
 // WorkspaceConfigPath returns the path to the workspace-local config file inside a worktree.

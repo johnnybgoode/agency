@@ -103,6 +103,14 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		m.confirmID = ""
 		mgr := m.manager
 		return m, func() tea.Msg {
+			// If removing the active workspace, switch to the last active one
+			// immediately (fast tmux op) before the slow teardown begins. This
+			// also breaks the pane out of the main window, so Remove can safely
+			// kill its now-detached window without touching the sidebar.
+			if mgr.State.ActiveWorkspaceID == id {
+				mgr.SwitchToLastActive()
+				_ = mgr.SaveState()
+			}
 			err := mgr.Remove(context.Background(), id)
 			return workspaceRemovedMsg{id: id, err: err}
 		}

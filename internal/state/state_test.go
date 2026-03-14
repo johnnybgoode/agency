@@ -16,11 +16,11 @@ func TestDefault(t *testing.T) {
 	if s.BarePath != "/path/to/.bare" {
 		t.Errorf("BarePath = %q, want %q", s.BarePath, "/path/to/.bare")
 	}
-	if s.Sessions == nil {
-		t.Error("Sessions should be initialized, got nil")
+	if s.Workspaces == nil {
+		t.Error("Workspaces should be initialized, got nil")
 	}
-	if len(s.Sessions) != 0 {
-		t.Errorf("Sessions should be empty, got %d entries", len(s.Sessions))
+	if len(s.Workspaces) != 0 {
+		t.Errorf("Workspaces should be empty, got %d entries", len(s.Workspaces))
 	}
 	if s.Version != 1 {
 		t.Errorf("Version = %d, want 1", s.Version)
@@ -36,8 +36,8 @@ func TestReadWrite(t *testing.T) {
 
 	original := Default("testproject", "/bare")
 	original.PID = 12345
-	original.Sessions["sess-abcd1234"] = &Session{
-		ID:     "sess-abcd1234",
+	original.Workspaces["ws-abcd1234"] = &Workspace{
+		ID:     "ws-abcd1234",
 		State:  StateRunning,
 		Branch: "agent/feature",
 	}
@@ -60,18 +60,18 @@ func TestReadWrite(t *testing.T) {
 	if got.PID != original.PID {
 		t.Errorf("PID = %d, want %d", got.PID, original.PID)
 	}
-	if len(got.Sessions) != 1 {
-		t.Fatalf("Sessions len = %d, want 1", len(got.Sessions))
+	if len(got.Workspaces) != 1 {
+		t.Fatalf("Workspaces len = %d, want 1", len(got.Workspaces))
 	}
-	sess := got.Sessions["sess-abcd1234"]
-	if sess == nil {
-		t.Fatal("expected session sess-abcd1234, got nil")
+	ws := got.Workspaces["ws-abcd1234"]
+	if ws == nil {
+		t.Fatal("expected workspace ws-abcd1234, got nil")
 	}
-	if sess.State != StateRunning {
-		t.Errorf("Session.State = %q, want %q", sess.State, StateRunning)
+	if ws.State != StateRunning {
+		t.Errorf("Workspace.State = %q, want %q", ws.State, StateRunning)
 	}
-	if sess.Branch != "agent/feature" {
-		t.Errorf("Session.Branch = %q, want %q", sess.Branch, "agent/feature")
+	if ws.Branch != "agent/feature" {
+		t.Errorf("Workspace.Branch = %q, want %q", ws.Branch, "agent/feature")
 	}
 }
 
@@ -96,11 +96,11 @@ func TestWriteAtomicity(t *testing.T) {
 	}
 }
 
-func TestReadInitializesNilSessions(t *testing.T) {
+func TestReadInitializesNilWorkspaces(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
 
-	// Write JSON without a "sessions" key to simulate missing sessions field.
+	// Write JSON without a "workspaces" key to simulate missing workspaces field.
 	raw := `{"version":1,"project":"p","bare_path":"/bare","tmux_session":"agency-p","pid":0,"updated_at":"2024-01-01T00:00:00Z"}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -110,8 +110,8 @@ func TestReadInitializesNilSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
-	if got.Sessions == nil {
-		t.Error("Sessions should be initialized to empty map when missing from JSON, got nil")
+	if got.Workspaces == nil {
+		t.Error("Workspaces should be initialized to empty map when missing from JSON, got nil")
 	}
 }
 

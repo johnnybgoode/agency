@@ -41,22 +41,22 @@ func captureStderr(t *testing.T, fn func()) string {
 	return buf.String()
 }
 
-func TestSessionConfigPath(t *testing.T) {
+func TestWorkspaceConfigPath(t *testing.T) {
 	worktreePath := "/some/project/my-project-abc123"
-	got := SessionConfigPath(worktreePath)
-	want := filepath.Join(worktreePath, ".tool", "config.toml")
+	got := WorkspaceConfigPath(worktreePath)
+	want := filepath.Join(worktreePath, ".agency", "config.toml")
 	if got != want {
-		t.Errorf("SessionConfigPath(%q) = %q, want %q", worktreePath, got, want)
+		t.Errorf("WorkspaceConfigPath(%q) = %q, want %q", worktreePath, got, want)
 	}
 }
 
-func TestSessionConfigPathIsInsideTool(t *testing.T) {
-	// Verify the path ends with .tool/config.toml regardless of OS separator.
+func TestWorkspaceConfigPathIsInsideTool(t *testing.T) {
+	// Verify the path ends with .agency/config.toml regardless of OS separator.
 	worktreePath := "/a/b/c"
-	got := SessionConfigPath(worktreePath)
-	suffix := filepath.Join(".tool", "config.toml")
+	got := WorkspaceConfigPath(worktreePath)
+	suffix := filepath.Join(".agency", "config.toml")
 	if !strings.HasSuffix(got, suffix) {
-		t.Errorf("SessionConfigPath(%q) = %q, want suffix %q", worktreePath, got, suffix)
+		t.Errorf("WorkspaceConfigPath(%q) = %q, want suffix %q", worktreePath, got, suffix)
 	}
 }
 

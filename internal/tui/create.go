@@ -8,7 +8,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
-// createModel is the Bubble Tea model for the "new session" form.
+// createModel is the Bubble Tea model for the "new workspace" form.
 // It has two fields: Name and Branch (with Branch auto-derived from Name).
 type createModel struct {
 	nameInput    textinput.Model
@@ -108,7 +108,7 @@ func (m createModel) Branch() string { //nolint:gocritic // bubbletea model must
 
 // View renders the create form.
 func (m createModel) View() string { //nolint:gocritic // bubbletea model must use value receivers
-	formTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("New Session")
+	formTitle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")).Render("New Workspace")
 
 	nameLabel := "  Name:   "
 	branchLabel := "  Branch: "

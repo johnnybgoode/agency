@@ -10,8 +10,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/johnnybgoode/agency/internal/session"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/workspace"
 )
 
 // Lipgloss styles used across the list view and create form.
@@ -28,16 +28,16 @@ var (
 
 // --- Messages ---
 
-// tickMsg is emitted on the polling interval to reload session state.
+// tickMsg is emitted on the polling interval to reload workspace state.
 type tickMsg struct{}
 
-// sessionCreatedMsg is emitted after an async Create call completes.
-type sessionCreatedMsg struct {
+// workspaceCreatedMsg is emitted after an async Create call completes.
+type workspaceCreatedMsg struct {
 	err error
 }
 
-// sessionRemovedMsg is emitted after an async Remove call completes.
-type sessionRemovedMsg struct {
+// workspaceRemovedMsg is emitted after an async Remove call completes.
+type workspaceRemovedMsg struct {
 	id  string
 	err error
 }
@@ -49,10 +49,10 @@ type reconcileDoneMsg struct {
 
 // --- Model ---
 
-// listModel is the top-level Bubble Tea model for the sidebar session list view.
+// listModel is the top-level Bubble Tea model for the sidebar workspace list view.
 type listModel struct {
-	manager    *session.Manager
-	sessions   []*state.Session
+	manager    *workspace.Manager
+	workspaces []*state.Workspace
 	cursor     int
 	width      int
 	height     int
@@ -62,16 +62,16 @@ type listModel struct {
 	agencyBin  string // absolute path to the agency binary for popup invocation
 }
 
-// newListModel constructs the list model, pre-populating the session list.
-func newListModel(mgr *session.Manager) listModel {
+// newListModel constructs the list model, pre-populating the workspace list.
+func newListModel(mgr *workspace.Manager) listModel {
 	bin := "agency"
 	if exe, err := os.Executable(); err == nil {
 		bin = exe
 	}
 	return listModel{
-		manager:   mgr,
-		sessions:  mgr.List(),
-		agencyBin: bin,
+		manager:    mgr,
+		workspaces: mgr.List(),
+		agencyBin:  bin,
 	}
 }
 
@@ -96,7 +96,7 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		mgr := m.manager
 		return m, func() tea.Msg {
 			err := mgr.Remove(context.Background(), id)
-			return sessionRemovedMsg{id: id, err: err}
+			return workspaceRemovedMsg{id: id, err: err}
 		}
 	case "n", "esc":
 		m.confirming = false
@@ -118,34 +118,34 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		agencyBin := m.agencyBin
 		return m, func() tea.Msg {
 			_ = tmuxClient.DisplayPopup(agencyBin+" new --popup", 60, 10)
-			return tickMsg{} // refresh session list after the popup closes
+			return tickMsg{} // refresh workspace list after the popup closes
 		}
 
 	case "enter":
-		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
-			sess := m.sessions[m.cursor]
-			activeID := m.manager.State.ActiveSessionID
+		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
+			ws := m.workspaces[m.cursor]
+			activeID := m.manager.State.ActiveWorkspaceID
 			mainWindowID := m.manager.State.MainWindowID
-			if sess.PaneID != "" && mainWindowID != "" {
-				if activeID == sess.ID {
+			if ws.PaneID != "" && mainWindowID != "" {
+				if activeID == ws.ID {
 					// Already active — focus the pane by selecting the main window.
 					_ = m.manager.Tmux.SelectWindow(mainWindowID)
 				} else {
-					// Join the session pane into the main window as the right pane.
-					_ = m.manager.Tmux.JoinPane(sess.PaneID, mainWindowID)
-					m.manager.State.ActiveSessionID = sess.ID
+					// Join the workspace pane into the main window as the right pane.
+					_ = m.manager.Tmux.JoinPane(ws.PaneID, mainWindowID)
+					m.manager.State.ActiveWorkspaceID = ws.ID
 					_ = m.manager.SaveState()
 				}
-			} else if sess.TmuxWindow != "" {
+			} else if ws.TmuxWindow != "" {
 				// Fallback: just select the window.
-				_ = m.manager.Tmux.SelectWindow(sess.TmuxWindow)
+				_ = m.manager.Tmux.SelectWindow(ws.TmuxWindow)
 			}
 		}
 
 	case "d":
-		if len(m.sessions) > 0 && m.cursor < len(m.sessions) {
+		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
 			m.confirming = true
-			m.confirmID = m.sessions[m.cursor].ID
+			m.confirmID = m.workspaces[m.cursor].ID
 		}
 
 	case "r":
@@ -156,7 +156,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		}
 
 	case "j", "down":
-		if m.cursor < len(m.sessions)-1 {
+		if m.cursor < len(m.workspaces)-1 {
 			m.cursor++
 		}
 
@@ -187,12 +187,12 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tickMsg:
-		// Reload sessions from state file on each tick.
+		// Reload workspaces from state file on each tick.
 		if s, err := state.Read(m.manager.StatePath); err == nil {
 			m.manager.State = s
-			m.sessions = m.manager.List()
-			if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
-				m.cursor = len(m.sessions) - 1
+			m.workspaces = m.manager.List()
+			if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+				m.cursor = len(m.workspaces) - 1
 			}
 		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
@@ -204,30 +204,30 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleNormalKey(msg)
 
-	case sessionCreatedMsg:
-		m.sessions = m.manager.List()
+	case workspaceCreatedMsg:
+		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
 		}
-		if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
-			m.cursor = len(m.sessions) - 1
+		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+			m.cursor = len(m.workspaces) - 1
 		}
 
-	case sessionRemovedMsg:
-		m.sessions = m.manager.List()
+	case workspaceRemovedMsg:
+		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
 		}
-		if m.cursor >= len(m.sessions) && len(m.sessions) > 0 {
-			m.cursor = len(m.sessions) - 1
+		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+			m.cursor = len(m.workspaces) - 1
 		}
 
 	case reconcileDoneMsg:
-		m.sessions = m.manager.List()
+		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = msg.err
 		} else {
@@ -297,7 +297,7 @@ func (m listModel) View() string {
 
 	blank := row("")
 
-	activeID := m.manager.State.ActiveSessionID
+	activeID := m.manager.State.ActiveWorkspaceID
 	projectName := m.manager.State.Project
 
 	// Top rule: "───── Agency " + remaining dashes + "╮"
@@ -313,18 +313,18 @@ func (m listModel) View() string {
 	bottom := strings.Repeat("─", inner) + "╯"
 
 	var rows []string
-	rows = append(rows, top, blank, row(" Project:"), row("   "+truncate(projectName+"/", inner-3)), blank, row(" Sessions:"))
+	rows = append(rows, top, blank, row(" Project:"), row("   "+truncate(projectName+"/", inner-3)), blank, row(" Workspaces:"))
 
-	if len(m.sessions) == 0 {
+	if len(m.workspaces) == 0 {
 		rows = append(rows, row("  (none)"))
 	} else {
-		for i, sess := range m.sessions {
-			name := sess.Name
+		for i, ws := range m.workspaces {
+			name := ws.Name
 			if name == "" {
-				name = sess.Branch
+				name = ws.Branch
 			}
 			indicator := "◯"
-			if sess.ID == activeID {
+			if ws.ID == activeID {
 				indicator = "◉"
 			}
 			// Leading space + indicator + space + name; truncate name to fit.
@@ -366,22 +366,22 @@ func (m listModel) View() string {
 	var hint string
 	switch {
 	case m.confirming:
-		confirmSess := m.confirmID
-		for _, sess := range m.sessions {
-			if sess.ID == m.confirmID {
-				confirmSess = sess.Name
-				if confirmSess == "" {
-					confirmSess = sess.Branch
+		confirmWS := m.confirmID
+		for _, ws := range m.workspaces {
+			if ws.ID == m.confirmID {
+				confirmWS = ws.Name
+				if confirmWS == "" {
+					confirmWS = ws.Branch
 				}
 				break
 			}
 		}
-		hint = errorStyle.Render(fmt.Sprintf(" del %s [y/n]", truncate(confirmSess, inner-11)))
-	case len(m.sessions) == 0:
-		hint = " [n] new session"
+		hint = errorStyle.Render(fmt.Sprintf(" del %s [y/n]", truncate(confirmWS, inner-11)))
+	case len(m.workspaces) == 0:
+		hint = " [n] new workspace"
 	default:
-		sess := m.sessions[m.cursor]
-		if sess.ID == activeID {
+		ws := m.workspaces[m.cursor]
+		if ws.ID == activeID {
 			hint = " [⏎] focus  [n] [d]"
 		} else {
 			hint = " [⏎] switch  [n] [d]"
@@ -392,8 +392,8 @@ func (m listModel) View() string {
 	return strings.Join(rows, "\n")
 }
 
-// styledStatus returns a colored string representation of a SessionState.
-func styledStatus(s state.SessionState) string {
+// styledStatus returns a colored string representation of a WorkspaceState.
+func styledStatus(s state.WorkspaceState) string {
 	switch s {
 	case state.StateRunning:
 		return runningStyle.Render("running")
@@ -433,8 +433,8 @@ func friendlyError(err error) error {
 	msg := err.Error()
 
 	switch {
-	case strings.Contains(msg, "already has an active session"):
-		return errors.New("that branch already has an active session — choose a different branch name")
+	case strings.Contains(msg, "already has an active workspace"):
+		return errors.New("that branch already has an active workspace — choose a different branch name")
 	case strings.Contains(msg, "already checked out"):
 		return errors.New("that branch already has an active worktree — choose a different branch name")
 	case strings.Contains(msg, "already exists"):
@@ -448,7 +448,7 @@ func friendlyError(err error) error {
 	case strings.Contains(msg, "No such image"):
 		return fmt.Errorf("sandbox image not found — run 'docker pull' for your configured image first")
 	case strings.Contains(msg, "Conflict") && strings.Contains(msg, "name"):
-		return errors.New("a container with that name already exists — delete the old session first or choose a different branch")
+		return errors.New("a container with that name already exists — delete the old workspace first or choose a different branch")
 	default:
 		// Strip multi-line git output noise; keep only the first line.
 		if idx := strings.Index(msg, "\n"); idx > 0 {

@@ -1,4 +1,4 @@
-package session
+package workspace
 
 import (
 	"context"
@@ -18,7 +18,7 @@ import (
 //     is not installed, causing all tmux calls to return errors that the
 //     Manager ignores (they are wrapped with _ =).
 //   - Sandbox is nil, which the Manager explicitly handles.
-//   - State is pre-initialized with an empty Sessions map.
+//   - State is pre-initialized with an empty Workspaces map.
 func newTestManager(t *testing.T) *Manager {
 	t.Helper()
 
@@ -46,10 +46,10 @@ func newTestManager(t *testing.T) *Manager {
 	return m
 }
 
-// addSession is a helper that inserts a pre-built Session into a Manager's
+// addWorkspace is a helper that inserts a pre-built Workspace into a Manager's
 // in-memory state without going through the full Create path.
-func addSession(m *Manager, sess *state.Session) {
-	m.State.Sessions[sess.ID] = sess
+func addWorkspace(m *Manager, ws *state.Workspace) {
+	m.State.Workspaces[ws.ID] = ws
 }
 
 // ----- Create: name, branch, and initial state -----
@@ -68,15 +68,15 @@ func TestCreate_RejectsDuplicateActiveBranch(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	existing := &state.Session{
-		ID:        "sess-aabbccdd",
+	existing := &state.Workspace{
+		ID:        "ws-aabbccdd",
 		Name:      "Existing",
 		Branch:    "project/my-feature",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, existing)
+	addWorkspace(m, existing)
 
 	_, err := m.Create(ctx, "Duplicate", "project/my-feature")
 	if err == nil {
@@ -85,23 +85,23 @@ func TestCreate_RejectsDuplicateActiveBranch(t *testing.T) {
 }
 
 // TestCreate_AllowsDuplicateBranchWhenDone verifies that a branch used by a
-// DONE session can be re-used for a new session.  The new Create call will
+// DONE workspace can be re-used for a new workspace. The new Create call will
 // still fail eventually (no Docker), but the duplicate-branch pre-check must
-// pass and a session entry with StateCreating must be written before the
+// pass and a workspace entry with StateCreating must be written before the
 // Docker error is returned.
 func TestCreate_AllowsDuplicateBranchWhenDone(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	done := &state.Session{
-		ID:        "sess-done0001",
+	done := &state.Workspace{
+		ID:        "ws-done0001",
 		Name:      "Old",
 		Branch:    "project/my-feature",
 		State:     state.StateDone,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, done)
+	addWorkspace(m, done)
 
 	_, err := m.Create(ctx, "New", "project/my-feature")
 	// We expect an error because docker/worktree is not available.
@@ -110,22 +110,22 @@ func TestCreate_AllowsDuplicateBranchWhenDone(t *testing.T) {
 		// Unexpected success — still fine for the duplicate-check assertion.
 		return
 	}
-	// The session should have been inserted (and then marked failed).
+	// The workspace should have been inserted (and then marked failed).
 	found := false
-	for _, sess := range m.State.Sessions {
-		if sess.Branch == "project/my-feature" && sess.ID != done.ID {
+	for _, ws := range m.State.Workspaces {
+		if ws.Branch == "project/my-feature" && ws.ID != done.ID {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("expected a new session entry to be created before the infrastructure error")
+		t.Error("expected a new workspace entry to be created before the infrastructure error")
 	}
 }
 
-// TestCreate_SetsInitialState verifies that a session entry is placed in
+// TestCreate_SetsInitialState verifies that a workspace entry is placed in
 // state with the correct Name, Branch, and StateCreating before any
-// infrastructure step is attempted.  The Create call will fail at the
+// infrastructure step is attempted. The Create call will fail at the
 // worktree step (no real git repo), but by then the entry is already saved.
 func TestCreate_SetsInitialState(t *testing.T) {
 	m := newTestManager(t)
@@ -138,16 +138,16 @@ func TestCreate_SetsInitialState(t *testing.T) {
 		// If somehow it succeeded (unlikely in CI), just check state normally.
 	}
 
-	var found *state.Session
-	for _, sess := range m.State.Sessions {
-		if sess.Branch == "project/my-feature" {
-			found = sess
+	var found *state.Workspace
+	for _, ws := range m.State.Workspaces {
+		if ws.Branch == "project/my-feature" {
+			found = ws
 			break
 		}
 	}
 
 	if found == nil {
-		t.Fatal("no session entry found in state after Create")
+		t.Fatal("no workspace entry found in state after Create")
 	}
 	if found.Name != "My Feature" {
 		t.Errorf("Name: got %q, want %q", found.Name, "My Feature")
@@ -155,8 +155,8 @@ func TestCreate_SetsInitialState(t *testing.T) {
 	if found.Branch != "project/my-feature" {
 		t.Errorf("Branch: got %q, want %q", found.Branch, "project/my-feature")
 	}
-	// The session starts as StateCreating; after an infrastructure failure it
-	// transitions to StateFailed.  Either is acceptable here — what matters is
+	// The workspace starts as StateCreating; after an infrastructure failure it
+	// transitions to StateFailed. Either is acceptable here — what matters is
 	// that the entry exists with the right Name and Branch.
 	if found.State != state.StateCreating && found.State != state.StateFailed {
 		t.Errorf("State: got %q, expected StateCreating or StateFailed", found.State)
@@ -169,25 +169,25 @@ func TestList_SortedByCreatedAt(t *testing.T) {
 	m := newTestManager(t)
 
 	now := time.Now().UTC()
-	sessions := []*state.Session{
-		{ID: "sess-c", Name: "C", Branch: "c", State: state.StateRunning, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now},
-		{ID: "sess-a", Name: "A", Branch: "a", State: state.StateRunning, CreatedAt: now.Add(0), UpdatedAt: now},
-		{ID: "sess-b", Name: "B", Branch: "b", State: state.StateRunning, CreatedAt: now.Add(1 * time.Second), UpdatedAt: now},
+	workspaces := []*state.Workspace{
+		{ID: "ws-c", Name: "C", Branch: "c", State: state.StateRunning, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now},
+		{ID: "ws-a", Name: "A", Branch: "a", State: state.StateRunning, CreatedAt: now.Add(0), UpdatedAt: now},
+		{ID: "ws-b", Name: "B", Branch: "b", State: state.StateRunning, CreatedAt: now.Add(1 * time.Second), UpdatedAt: now},
 	}
-	for _, s := range sessions {
-		addSession(m, s)
+	for _, ws := range workspaces {
+		addWorkspace(m, ws)
 	}
 
 	listed := m.List()
 
 	if len(listed) != 3 {
-		t.Fatalf("List returned %d sessions, want 3", len(listed))
+		t.Fatalf("List returned %d workspaces, want 3", len(listed))
 	}
 
-	wantOrder := []string{"sess-a", "sess-b", "sess-c"}
-	for i, sess := range listed {
-		if sess.ID != wantOrder[i] {
-			t.Errorf("position %d: got ID %q, want %q", i, sess.ID, wantOrder[i])
+	wantOrder := []string{"ws-a", "ws-b", "ws-c"}
+	for i, ws := range listed {
+		if ws.ID != wantOrder[i] {
+			t.Errorf("position %d: got ID %q, want %q", i, ws.ID, wantOrder[i])
 		}
 	}
 }
@@ -196,95 +196,95 @@ func TestList_EmptyState(t *testing.T) {
 	m := newTestManager(t)
 	listed := m.List()
 	if len(listed) != 0 {
-		t.Errorf("expected empty list, got %d sessions", len(listed))
+		t.Errorf("expected empty list, got %d workspaces", len(listed))
 	}
 }
 
-// ----- Reconcile: clears ActiveSessionID for missing sessions -----
+// ----- Reconcile: clears ActiveWorkspaceID for missing workspaces -----
 
-func TestReconcile_ClearsActiveSessionIDWhenMissing(t *testing.T) {
+func TestReconcile_ClearsActiveWorkspaceIDWhenMissing(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	// Set an ActiveSessionID that does not exist in Sessions.
-	m.State.ActiveSessionID = "sess-nonexistent"
+	// Set an ActiveWorkspaceID that does not exist in Workspaces.
+	m.State.ActiveWorkspaceID = "ws-nonexistent"
 
 	if err := m.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
 
-	if m.State.ActiveSessionID != "" {
-		t.Errorf("ActiveSessionID not cleared: got %q", m.State.ActiveSessionID)
+	if m.State.ActiveWorkspaceID != "" {
+		t.Errorf("ActiveWorkspaceID not cleared: got %q", m.State.ActiveWorkspaceID)
 	}
 }
 
-func TestReconcile_ClearsActiveSessionIDWhenNotRunning(t *testing.T) {
+func TestReconcile_ClearsActiveWorkspaceIDWhenNotRunning(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	sess := &state.Session{
-		ID:        "sess-done0002",
-		Name:      "Done Session",
+	ws := &state.Workspace{
+		ID:        "ws-done0002",
+		Name:      "Done Workspace",
 		Branch:    "done/branch",
 		State:     state.StateDone,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, sess)
-	m.State.ActiveSessionID = sess.ID
+	addWorkspace(m, ws)
+	m.State.ActiveWorkspaceID = ws.ID
 
 	if err := m.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
 
-	if m.State.ActiveSessionID != "" {
-		t.Errorf("ActiveSessionID should be cleared for non-running session; got %q", m.State.ActiveSessionID)
+	if m.State.ActiveWorkspaceID != "" {
+		t.Errorf("ActiveWorkspaceID should be cleared for non-running workspace; got %q", m.State.ActiveWorkspaceID)
 	}
 }
 
-func TestReconcile_KeepsActiveSessionIDWhenRunning(t *testing.T) {
+func TestReconcile_KeepsActiveWorkspaceIDWhenRunning(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	// A running session with a SandboxID and TmuxWindow both empty so the
-	// reconcileSessions logic does not transition it (it only checks IDs that
+	// A running workspace with a SandboxID and TmuxWindow both empty so the
+	// reconcileWorkspaces logic does not transition it (it only checks IDs that
 	// are non-empty against the live sets, which are empty due to failed
 	// external queries).
-	sess := &state.Session{
-		ID:        "sess-run00001",
+	ws := &state.Workspace{
+		ID:        "ws-run00001",
 		Name:      "Running",
 		Branch:    "feature/run",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, sess)
-	m.State.ActiveSessionID = sess.ID
+	addWorkspace(m, ws)
+	m.State.ActiveWorkspaceID = ws.ID
 
 	if err := m.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
 	}
 
-	// The session should still be running (no sandbox/tmux IDs to check).
-	if _, ok := m.State.Sessions[sess.ID]; !ok {
-		t.Fatal("running session was unexpectedly removed")
+	// The workspace should still be running (no sandbox/tmux IDs to check).
+	if _, ok := m.State.Workspaces[ws.ID]; !ok {
+		t.Fatal("running workspace was unexpectedly removed")
 	}
-	if m.State.Sessions[sess.ID].State != state.StateRunning {
-		t.Errorf("expected StateRunning, got %q", m.State.Sessions[sess.ID].State)
+	if m.State.Workspaces[ws.ID].State != state.StateRunning {
+		t.Errorf("expected StateRunning, got %q", m.State.Workspaces[ws.ID].State)
 	}
-	if m.State.ActiveSessionID != sess.ID {
-		t.Errorf("ActiveSessionID was cleared unexpectedly; got %q", m.State.ActiveSessionID)
+	if m.State.ActiveWorkspaceID != ws.ID {
+		t.Errorf("ActiveWorkspaceID was cleared unexpectedly; got %q", m.State.ActiveWorkspaceID)
 	}
 }
 
-// ----- Remove: deletes session from state -----
+// ----- Remove: deletes workspace from state -----
 
-func TestRemove_DeletesSessionFromState(t *testing.T) {
+func TestRemove_DeletesWorkspaceFromState(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	sess := &state.Session{
-		ID:        "sess-rm000001",
+	ws := &state.Workspace{
+		ID:        "ws-rm000001",
 		Name:      "Finished",
 		Branch:    "done/cleanup",
 		State:     state.StateDone,
@@ -292,24 +292,24 @@ func TestRemove_DeletesSessionFromState(t *testing.T) {
 		UpdatedAt: time.Now().UTC(),
 		// Leave SandboxID and WorktreePath empty so Remove skips docker and git.
 	}
-	addSession(m, sess)
+	addWorkspace(m, ws)
 
-	if err := m.Remove(ctx, sess.ID); err != nil {
+	if err := m.Remove(ctx, ws.ID); err != nil {
 		t.Fatalf("Remove returned unexpected error: %v", err)
 	}
 
-	if _, ok := m.State.Sessions[sess.ID]; ok {
-		t.Error("session still present in state after Remove")
+	if _, ok := m.State.Workspaces[ws.ID]; ok {
+		t.Error("workspace still present in state after Remove")
 	}
 }
 
-func TestRemove_ReturnsErrorForUnknownSession(t *testing.T) {
+func TestRemove_ReturnsErrorForUnknownWorkspace(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	err := m.Remove(ctx, "sess-doesnotexist")
+	err := m.Remove(ctx, "ws-doesnotexist")
 	if err == nil {
-		t.Error("expected error when removing unknown session, got nil")
+		t.Error("expected error when removing unknown workspace, got nil")
 	}
 }
 
@@ -317,17 +317,17 @@ func TestRemove_PersistsStateAfterDeletion(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	sess := &state.Session{
-		ID:        "sess-persist001",
+	ws := &state.Workspace{
+		ID:        "ws-persist001",
 		Name:      "Persist Test",
 		Branch:    "done/persist",
 		State:     state.StateDone,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, sess)
+	addWorkspace(m, ws)
 
-	if err := m.Remove(ctx, sess.ID); err != nil {
+	if err := m.Remove(ctx, ws.ID); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
 
@@ -336,8 +336,8 @@ func TestRemove_PersistsStateAfterDeletion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("state.Read: %v", err)
 	}
-	if _, ok := loaded.Sessions[sess.ID]; ok {
-		t.Error("session still present in persisted state file after Remove")
+	if _, ok := loaded.Workspaces[ws.ID]; ok {
+		t.Error("workspace still present in persisted state file after Remove")
 	}
 }
 
@@ -346,15 +346,15 @@ func TestRemove_PersistsStateAfterDeletion(t *testing.T) {
 func TestSaveState_RoundTrip(t *testing.T) {
 	m := newTestManager(t)
 
-	sess := &state.Session{
-		ID:        "sess-rt000001",
+	ws := &state.Workspace{
+		ID:        "ws-rt000001",
 		Name:      "Round Trip",
 		Branch:    "feat/round-trip",
 		State:     state.StateCreating,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
-	addSession(m, sess)
+	addWorkspace(m, ws)
 
 	if err := m.SaveState(); err != nil {
 		t.Fatalf("SaveState: %v", err)
@@ -365,18 +365,18 @@ func TestSaveState_RoundTrip(t *testing.T) {
 		t.Fatalf("state.Read: %v", err)
 	}
 
-	got, ok := loaded.Sessions[sess.ID]
+	got, ok := loaded.Workspaces[ws.ID]
 	if !ok {
-		t.Fatal("session not found after SaveState round-trip")
+		t.Fatal("workspace not found after SaveState round-trip")
 	}
-	if got.Name != sess.Name {
-		t.Errorf("Name: got %q, want %q", got.Name, sess.Name)
+	if got.Name != ws.Name {
+		t.Errorf("Name: got %q, want %q", got.Name, ws.Name)
 	}
-	if got.Branch != sess.Branch {
-		t.Errorf("Branch: got %q, want %q", got.Branch, sess.Branch)
+	if got.Branch != ws.Branch {
+		t.Errorf("Branch: got %q, want %q", got.Branch, ws.Branch)
 	}
-	if got.State != sess.State {
-		t.Errorf("State: got %q, want %q", got.State, sess.State)
+	if got.State != ws.State {
+		t.Errorf("State: got %q, want %q", got.State, ws.State)
 	}
 }
 
@@ -384,15 +384,15 @@ func TestSaveState_RoundTrip(t *testing.T) {
 
 func TestGenerateID_Format(t *testing.T) {
 	id := generateID()
-	if len(id) != 13 { // "sess-" (5) + 8 hex chars
-		t.Errorf("generateID length: got %d, want 13; id=%q", len(id), id)
+	if len(id) != 11 { // "ws-" (3) + 8 hex chars
+		t.Errorf("generateID length: got %d, want 11; id=%q", len(id), id)
 	}
-	if id[:5] != "sess-" {
-		t.Errorf("generateID prefix: got %q, want %q", id[:5], "sess-")
+	if id[:3] != "ws-" {
+		t.Errorf("generateID prefix: got %q, want %q", id[:3], "ws-")
 	}
-	for _, ch := range id[5:] {
+	for _, ch := range id[3:] {
 		if (ch < '0' || ch > '9') && (ch < 'a' || ch > 'f') {
-			t.Errorf("generateID contains non-hex character %q in suffix %q", ch, id[5:])
+			t.Errorf("generateID contains non-hex character %q in suffix %q", ch, id[3:])
 		}
 	}
 }

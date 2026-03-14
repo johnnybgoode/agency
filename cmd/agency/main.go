@@ -11,16 +11,16 @@ import (
 	"strings"
 
 	"github.com/johnnybgoode/agency/internal/config"
-	"github.com/johnnybgoode/agency/internal/session"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tui"
+	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:          "agency",
-	Short:        "Coding agent session manager",
+	Short:        "Coding agent workspace manager",
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return tui.Run()
@@ -51,7 +51,7 @@ var initCmd = &cobra.Command{
 		}
 
 		projectName := filepath.Base(cwd)
-		statePath := filepath.Join(cwd, ".tool", "state.json")
+		statePath := filepath.Join(cwd, ".agency", "state.json")
 		s := state.Default(projectName, filepath.Join(cwd, ".bare"))
 		if err := state.Write(statePath, s); err != nil {
 			return fmt.Errorf("writing initial state: %w", err)
@@ -70,17 +70,17 @@ var initCmd = &cobra.Command{
 	},
 }
 
-var sessionCmd = &cobra.Command{
-	Use:   "session",
-	Short: "Manage agent sessions",
+var workspaceCmd = &cobra.Command{
+	Use:   "workspace",
+	Short: "Manage workspaces",
 }
 
-// topLevelNewCmd is the top-level "agency new" command that creates a session.
+// topLevelNewCmd is the top-level "agency new" command that creates a workspace.
 // With --popup it runs the interactive TUI create form (suitable for tmux popups).
 // Without --popup it accepts name and branch as positional arguments.
 var topLevelNewCmd = &cobra.Command{
 	Use:   "new [name] [branch]",
-	Short: "Create a new agent session (interactive with --popup)",
+	Short: "Create a new workspace (interactive with --popup)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		popup, _ := cmd.Flags().GetBool("popup")
 		if popup {
@@ -98,19 +98,19 @@ var topLevelNewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		sess, err := mgr.Create(context.Background(), name, branch)
+		ws, err := mgr.Create(context.Background(), name, branch)
 		if err != nil {
-			return fmt.Errorf("creating session: %w", err)
+			return fmt.Errorf("creating workspace: %w", err)
 		}
-		fmt.Printf("Created session %s (%s) for branch %s\n", sess.ID, sess.Name, sess.Branch)
+		fmt.Printf("Created workspace %s (%s) for branch %s\n", ws.ID, ws.Name, ws.Branch)
 		return nil
 	},
 }
 
-// sessionNewCmd is the "session new" subcommand kept for backwards compat.
-var sessionNewCmd = &cobra.Command{
+// workspaceNewCmd is the "workspace new" subcommand.
+var workspaceNewCmd = &cobra.Command{
 	Use:   "new <name> <branch>",
-	Short: "Create a new session for a branch",
+	Short: "Create a new workspace for a branch",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
@@ -119,37 +119,37 @@ var sessionNewCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		sess, err := mgr.Create(context.Background(), name, branch)
+		ws, err := mgr.Create(context.Background(), name, branch)
 		if err != nil {
-			return fmt.Errorf("creating session: %w", err)
+			return fmt.Errorf("creating workspace: %w", err)
 		}
-		fmt.Printf("Created session %s (%s) for branch %s\n", sess.ID, sess.Name, sess.Branch)
+		fmt.Printf("Created workspace %s (%s) for branch %s\n", ws.ID, ws.Name, ws.Branch)
 		return nil
 	},
 }
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all sessions",
+	Short: "List all workspaces",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := loadManager()
 		if err != nil {
 			return err
 		}
-		sessions := mgr.List()
-		if len(sessions) == 0 {
-			fmt.Println("No sessions found.")
+		workspaces := mgr.List()
+		if len(workspaces) == 0 {
+			fmt.Println("No workspaces found.")
 			return nil
 		}
 		fmt.Printf("%-20s  %-20s  %-30s  %-12s  %s\n", "ID", "NAME", "BRANCH", "STATE", "CREATED")
 		fmt.Println(strings.Repeat("-", 100))
-		for _, s := range sessions {
+		for _, ws := range workspaces {
 			fmt.Printf("%-20s  %-20s  %-30s  %-12s  %s\n",
-				s.ID,
-				s.Name,
-				s.Branch,
-				string(s.State),
-				s.CreatedAt.Format("2006-01-02 15:04:05"),
+				ws.ID,
+				ws.Name,
+				ws.Branch,
+				string(ws.State),
+				ws.CreatedAt.Format("2006-01-02 15:04:05"),
 			)
 		}
 		return nil
@@ -157,8 +157,8 @@ var listCmd = &cobra.Command{
 }
 
 var rmCmd = &cobra.Command{
-	Use:   "rm <session-id>",
-	Short: "Remove a session",
+	Use:   "rm <workspace-id>",
+	Short: "Remove a workspace",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
@@ -167,16 +167,16 @@ var rmCmd = &cobra.Command{
 			return err
 		}
 		if err := mgr.Remove(context.Background(), id); err != nil {
-			return fmt.Errorf("removing session: %w", err)
+			return fmt.Errorf("removing workspace: %w", err)
 		}
-		fmt.Printf("Removed session %s\n", id)
+		fmt.Printf("Removed workspace %s\n", id)
 		return nil
 	},
 }
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "Run garbage collection on stale sessions",
+	Short: "Run garbage collection on stale workspaces",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		force, _ := cmd.Flags().GetBool("force")
 
@@ -190,17 +190,17 @@ var gcCmd = &cobra.Command{
 
 		// Collect known worktree paths from state.
 		knownWorktrees := make(map[string]bool)
-		for _, s := range mgr.State.Sessions {
-			if s.WorktreePath != "" {
-				knownWorktrees[s.WorktreePath] = true
+		for _, ws := range mgr.State.Workspaces {
+			if ws.WorktreePath != "" {
+				knownWorktrees[ws.WorktreePath] = true
 			}
 		}
 
 		// Collect known sandbox IDs from state.
 		knownSandboxIDs := make(map[string]bool)
-		for _, s := range mgr.State.Sessions {
-			if s.SandboxID != "" {
-				knownSandboxIDs[s.SandboxID] = true
+		for _, ws := range mgr.State.Workspaces {
+			if ws.SandboxID != "" {
+				knownSandboxIDs[ws.SandboxID] = true
 			}
 		}
 
@@ -289,8 +289,8 @@ var gcCmd = &cobra.Command{
 }
 
 // loadManager is a shared helper that finds the project directory, loads
-// configuration, and constructs a session Manager.
-func loadManager() (*session.Manager, error) {
+// configuration, and constructs a workspace Manager.
+func loadManager() (*workspace.Manager, error) {
 	projectDir, err := findProjectDir()
 	if err != nil {
 		return nil, err
@@ -301,16 +301,16 @@ func loadManager() (*session.Manager, error) {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
-	mgr, err := session.NewManager(projectDir, cfg)
+	mgr, err := workspace.NewManager(projectDir, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("initializing session manager: %w", err)
+		return nil, fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
 	return mgr, nil
 }
 
 // findProjectDir walks up from the current working directory looking for a
-// .tool/ or .bare/ directory, which marks an agency project root.
+// .agency/ or .bare/ directory, which marks an agency project root.
 func findProjectDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -319,7 +319,7 @@ func findProjectDir() (string, error) {
 
 	dir := cwd
 	for {
-		if isDir(filepath.Join(dir, ".tool")) || isDir(filepath.Join(dir, ".bare")) {
+		if isDir(filepath.Join(dir, ".agency")) || isDir(filepath.Join(dir, ".bare")) {
 			return dir, nil
 		}
 
@@ -331,7 +331,7 @@ func findProjectDir() (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"not in an agency project (no .tool/ or .bare/ found); run 'agency init' first",
+		"not in an agency project (no .agency/ or .bare/ found); run 'agency init' first",
 	)
 }
 
@@ -346,8 +346,8 @@ func init() {
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
 	topLevelNewCmd.Flags().Bool("popup", false, "Run interactive create form (for use in tmux popup)")
 
-	rootCmd.AddCommand(versionCmd, initCmd, sessionCmd, gcCmd, topLevelNewCmd)
-	sessionCmd.AddCommand(sessionNewCmd, listCmd, rmCmd)
+	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd)
+	workspaceCmd.AddCommand(workspaceNewCmd, listCmd, rmCmd)
 }
 
 func main() {

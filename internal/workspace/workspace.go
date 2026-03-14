@@ -1,5 +1,5 @@
-// Package session manages agent sessions with worktrees and containers.
-package session
+// Package workspace manages agent workspaces with worktrees and containers.
+package workspace
 
 import (
 	"context"
@@ -21,7 +21,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
-// Manager coordinates session lifecycle: worktree creation, sandbox
+// Manager coordinates workspace lifecycle: worktree creation, sandbox
 // provisioning, tmux window management, and state persistence.
 type Manager struct {
 	StatePath   string
@@ -36,10 +36,10 @@ type Manager struct {
 // NewManager constructs a Manager for the given project directory. It loads or
 // initializes the state file, creates a tmux client, and optionally connects to
 // the Docker daemon. A nil Sandbox is not fatal — the TUI can still list
-// existing sessions without Docker.
+// existing workspaces without Docker.
 func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 	projectName := filepath.Base(projectDir)
-	statePath := filepath.Join(projectDir, ".tool", "state.json")
+	statePath := filepath.Join(projectDir, ".agency", "state.json")
 
 	s, err := state.Read(statePath)
 	if err != nil {
@@ -70,50 +70,50 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 	}, nil
 }
 
-// generateID returns a random session ID with the "sess-" prefix.
+// generateID returns a random workspace ID with the "ws-" prefix.
 func generateID() string {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		panic(fmt.Sprintf("session: rand.Read: %v", err))
+		panic(fmt.Sprintf("workspace: rand.Read: %v", err))
 	}
-	return "sess-" + hex.EncodeToString(b)
+	return "ws-" + hex.EncodeToString(b)
 }
 
 // validateCreate checks that name and branch are non-empty and that no active
-// session already uses the given branch.
+// workspace already uses the given branch.
 func (m *Manager) validateCreate(name, branch string) error {
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("session name cannot be empty")
+		return fmt.Errorf("workspace name cannot be empty")
 	}
 	if strings.TrimSpace(branch) == "" {
 		return fmt.Errorf("branch name cannot be empty")
 	}
-	for _, existing := range m.State.Sessions {
+	for _, existing := range m.State.Workspaces {
 		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
-			return fmt.Errorf("branch %q already has an active session (%s)", branch, existing.ID)
+			return fmt.Errorf("branch %q already has an active workspace (%s)", branch, existing.ID)
 		}
 	}
 	return nil
 }
 
-// provisionWorktree creates the git worktree for sess and updates the session
+// provisionWorktree creates the git worktree for ws and updates the workspace
 // fields accordingly.
-func (m *Manager) provisionWorktree(sess *state.Session) error {
-	wtPath, err := worktree.Create(m.State.BarePath, m.ProjectName, sess.Branch)
+func (m *Manager) provisionWorktree(ws *state.Workspace) error {
+	wtPath, err := worktree.Create(m.State.BarePath, m.ProjectName, ws.Branch)
 	if err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
-	sess.State = state.StateProvisioning
-	sess.WorktreePath = wtPath
-	sess.UpdatedAt = time.Now().UTC()
+	ws.State = state.StateProvisioning
+	ws.WorktreePath = wtPath
+	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
 		return fmt.Errorf("saving provisioning state: %w", err)
 	}
 	return nil
 }
 
-// provisionContainer creates and starts the Docker container for sess.
-func (m *Manager) provisionContainer(ctx context.Context, sess *state.Session, cfg *config.Config) error {
+// provisionContainer creates and starts the Docker container for ws.
+func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, cfg *config.Config) error {
 	if m.Sandbox == nil {
 		return fmt.Errorf("docker is not available")
 	}
@@ -142,15 +142,15 @@ func (m *Manager) provisionContainer(ctx context.Context, sess *state.Session, c
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
 		Image:         cfg.Sandbox.Image,
-		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(sess.Branch) + "-" + sess.ID,
-		WorktreeMount: sess.WorktreePath,
+		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
+		WorktreeMount: ws.WorktreePath,
 		ConfigMount:   configMount,
 		Env:           env,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	sess.SandboxID = containerID
+	ws.SandboxID = containerID
 
 	if err := m.Sandbox.Start(ctx, containerID); err != nil {
 		return fmt.Errorf("starting sandbox: %w", err)
@@ -158,37 +158,37 @@ func (m *Manager) provisionContainer(ctx context.Context, sess *state.Session, c
 	return nil
 }
 
-// provisionTmux opens a new tmux window for sess, captures the pane ID, and
+// provisionTmux opens a new tmux window for ws, captures the pane ID, and
 // launches the agent inside the container.
-func (m *Manager) provisionTmux(sess *state.Session) error {
-	windowID, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch))
+func (m *Manager) provisionTmux(ws *state.Workspace) error {
+	windowID, err := m.Tmux.NewWindow(worktree.Slugify(ws.Branch))
 	if err != nil {
 		return fmt.Errorf("creating tmux window: %w", err)
 	}
-	sess.TmuxWindow = windowID
+	ws.TmuxWindow = windowID
 
 	// Capture pane ID for the new window.
 	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
-		sess.PaneID = panes[0]
+		ws.PaneID = panes[0]
 	}
 
-	if err := m.Tmux.SendKeys(windowID, fmt.Sprintf("docker exec -it %s bash -c claude", sess.SandboxID)); err != nil {
+	if err := m.Tmux.SendKeys(windowID, fmt.Sprintf("docker exec -it %s bash -c claude", ws.SandboxID)); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
 	}
 	return nil
 }
 
-// Create provisions a full session for the given name and branch: worktree → sandbox →
+// Create provisions a full workspace for the given name and branch: worktree → sandbox →
 // tmux window. On any error after the initial state entry is written the
-// session is marked as failed before returning the error.
-func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Session, error) {
+// workspace is marked as failed before returning the error.
+func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Workspace, error) {
 	if err := m.validateCreate(name, branch); err != nil {
 		return nil, err
 	}
 
 	id := generateID()
 	now := time.Now().UTC()
-	sess := &state.Session{
+	ws := &state.Workspace{
 		ID:        id,
 		Name:      name,
 		State:     state.StateCreating,
@@ -197,86 +197,86 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Sessi
 		UpdatedAt: now,
 	}
 
-	m.State.Sessions[id] = sess
+	m.State.Workspaces[id] = ws
 	if err := m.SaveState(); err != nil {
 		return nil, fmt.Errorf("saving initial state: %w", err)
 	}
 
-	fail := func(err error) (*state.Session, error) {
+	fail := func(err error) (*state.Workspace, error) {
 		msg := err.Error()
-		fromState := string(sess.State)
-		sess.FailedFrom = &fromState
-		sess.State = state.StateFailed
-		sess.Error = &msg
-		sess.UpdatedAt = time.Now().UTC()
+		fromState := string(ws.State)
+		ws.FailedFrom = &fromState
+		ws.State = state.StateFailed
+		ws.Error = &msg
+		ws.UpdatedAt = time.Now().UTC()
 		_ = m.SaveState()
-		return sess, err
+		return ws, err
 	}
 
 	// Step 1: create git worktree.
-	if err := m.provisionWorktree(sess); err != nil {
+	if err := m.provisionWorktree(ws); err != nil {
 		return fail(err)
 	}
 
-	// Step 2: load session-local config overlay if present.
+	// Step 2: load workspace-local config overlay if present.
 	cfg := m.Cfg
-	if localCfg, err := config.Load(config.SessionConfigPath(sess.WorktreePath)); err == nil {
+	if localCfg, err := config.Load(config.WorkspaceConfigPath(ws.WorktreePath)); err == nil {
 		cfg = config.Merge(m.Cfg, localCfg)
 	}
 
 	// Step 3: create and start container.
-	if err := m.provisionContainer(ctx, sess, cfg); err != nil {
+	if err := m.provisionContainer(ctx, ws, cfg); err != nil {
 		return fail(err)
 	}
 
 	// Step 4: open tmux window and launch agent.
-	if err := m.provisionTmux(sess); err != nil {
+	if err := m.provisionTmux(ws); err != nil {
 		return fail(err)
 	}
 
 	// Step 5: mark running and persist.
-	sess.State = state.StateRunning
-	sess.UpdatedAt = time.Now().UTC()
+	ws.State = state.StateRunning
+	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
 		return fail(fmt.Errorf("saving running state: %w", err))
 	}
 
 	// Step 6: bring the new window into focus.
-	_ = m.Tmux.SelectWindow(sess.TmuxWindow)
+	_ = m.Tmux.SelectWindow(ws.TmuxWindow)
 
-	return sess, nil
+	return ws, nil
 }
 
-// Remove tears down a session: stops/removes its container, deletes the
-// worktree, kills the tmux window, and removes the session from state.
-func (m *Manager) Remove(ctx context.Context, sessionID string) error {
-	sess, ok := m.State.Sessions[sessionID]
+// Remove tears down a workspace: stops/removes its container, deletes the
+// worktree, kills the tmux window, and removes the workspace from state.
+func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
+	ws, ok := m.State.Workspaces[workspaceID]
 	if !ok {
-		return fmt.Errorf("session %s not found", sessionID)
+		return fmt.Errorf("workspace %s not found", workspaceID)
 	}
 
 	// Interrupt the foreground process so it can clean up.
-	if sess.TmuxWindow != "" {
-		_ = m.Tmux.SendKeys(sess.TmuxWindow, "C-c")
+	if ws.TmuxWindow != "" {
+		_ = m.Tmux.SendKeys(ws.TmuxWindow, "C-c")
 	}
 
 	// Stop and remove the sandbox container.
-	if sess.SandboxID != "" && m.Sandbox != nil {
-		_ = m.Sandbox.Stop(ctx, sess.SandboxID, 5)
-		_ = m.Sandbox.Remove(ctx, sess.SandboxID)
+	if ws.SandboxID != "" && m.Sandbox != nil {
+		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 5)
+		_ = m.Sandbox.Remove(ctx, ws.SandboxID)
 	}
 
 	// Remove the git worktree.
-	if sess.WorktreePath != "" {
-		_ = worktree.Remove(m.State.BarePath, sess.WorktreePath)
+	if ws.WorktreePath != "" {
+		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}
 
 	// Kill the tmux window.
-	if sess.TmuxWindow != "" {
-		_ = m.Tmux.KillWindow(sess.TmuxWindow)
+	if ws.TmuxWindow != "" {
+		_ = m.Tmux.KillWindow(ws.TmuxWindow)
 	}
 
-	delete(m.State.Sessions, sessionID)
+	delete(m.State.Workspaces, workspaceID)
 	return m.SaveState()
 }
 
@@ -320,15 +320,15 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	return res
 }
 
-// cleanupActiveSessionID clears ActiveSessionID if it refers to a session that
-// no longer exists or is not running. Returns true if a change was made.
-func (m *Manager) cleanupActiveSessionID() bool {
-	if m.State.ActiveSessionID == "" {
+// cleanupActiveWorkspaceID clears ActiveWorkspaceID if it refers to a workspace
+// that no longer exists or is not running. Returns true if a change was made.
+func (m *Manager) cleanupActiveWorkspaceID() bool {
+	if m.State.ActiveWorkspaceID == "" {
 		return false
 	}
-	activeSess, ok := m.State.Sessions[m.State.ActiveSessionID]
-	if !ok || activeSess.State != state.StateRunning {
-		m.State.ActiveSessionID = ""
+	activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]
+	if !ok || activeWS.State != state.StateRunning {
+		m.State.ActiveWorkspaceID = ""
 		return true
 	}
 	return false
@@ -365,18 +365,18 @@ func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeS
 func (m *Manager) logOrphans(_ *reconcileResult) {}
 
 // Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
-// session states that have drifted from reality.
+// workspace states that have drifted from reality.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	res := m.gatherReconcileResources(ctx)
 
 	windowSet, containerIDSet, worktreeSet := buildLookupSets(&res)
-	toDelete, changed := m.reconcileSessions(&res, windowSet, containerIDSet, worktreeSet)
+	toDelete, changed := m.reconcileWorkspaces(&res, windowSet, containerIDSet, worktreeSet)
 
 	for _, id := range toDelete {
-		delete(m.State.Sessions, id)
+		delete(m.State.Workspaces, id)
 	}
 
-	if m.cleanupActiveSessionID() {
+	if m.cleanupActiveWorkspaceID() {
 		changed = true
 	}
 
@@ -390,43 +390,43 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	return nil
 }
 
-// reconcileOneSession handles the reconcile logic for a single session.
+// reconcileOneWorkspace handles the reconcile logic for a single workspace.
 // Returns (shouldDelete bool, changed bool).
-func (m *Manager) reconcileOneSession(
+func (m *Manager) reconcileOneWorkspace(
 	id string,
-	sess *state.Session,
+	ws *state.Workspace,
 	res *reconcileResult,
 	windowSet, containerIDSet, worktreeSet map[string]bool,
-	markFailed func(*state.Session, string),
+	markFailed func(*state.Workspace, string),
 ) (shouldDelete, changed bool) {
-	switch sess.State {
+	switch ws.State {
 	case state.StateRunning:
-		return m.reconcileRunning(sess, res, windowSet, containerIDSet, markFailed)
+		return m.reconcileRunning(ws, res, windowSet, containerIDSet, markFailed)
 
 	case state.StateProvisioning:
-		return false, m.reconcileProvisioning(sess, res, containerIDSet, markFailed)
+		return false, m.reconcileProvisioning(ws, res, containerIDSet, markFailed)
 
 	case state.StateCreating:
-		if sess.WorktreePath == "" {
-			markFailed(sess, "session stuck in creating state")
+		if ws.WorktreePath == "" {
+			markFailed(ws, "workspace stuck in creating state")
 			return false, true
 		}
 
 	case state.StateCompleting:
-		if res.contsErr == nil && (sess.SandboxID == "" || !containerIDSet[sess.SandboxID]) {
-			sess.State = state.StateDone
-			sess.UpdatedAt = time.Now().UTC()
+		if res.contsErr == nil && (ws.SandboxID == "" || !containerIDSet[ws.SandboxID]) {
+			ws.State = state.StateDone
+			ws.UpdatedAt = time.Now().UTC()
 			return false, true
 		}
 
 	case state.StatePaused:
-		if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
-			markFailed(sess, "worktree disappeared while paused")
+		if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
+			markFailed(ws, "worktree disappeared while paused")
 			return false, true
 		}
 
 	case state.StateDone:
-		if res.wtErr == nil && sess.WorktreePath != "" && !worktreeSet[sess.WorktreePath] {
+		if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
 			return true, true
 		}
 	}
@@ -435,41 +435,41 @@ func (m *Manager) reconcileOneSession(
 	return false, false
 }
 
-// reconcileRunning handles reconcile logic for a session in StateRunning.
+// reconcileRunning handles reconcile logic for a workspace in StateRunning.
 func (m *Manager) reconcileRunning(
-	sess *state.Session,
+	ws *state.Workspace,
 	res *reconcileResult,
 	windowSet, containerIDSet map[string]bool,
-	markFailed func(*state.Session, string),
+	markFailed func(*state.Workspace, string),
 ) (shouldDelete, changed bool) {
-	if res.contsErr == nil && sess.SandboxID != "" && !containerIDSet[sess.SandboxID] {
-		markFailed(sess, "sandbox disappeared")
+	if res.contsErr == nil && ws.SandboxID != "" && !containerIDSet[ws.SandboxID] {
+		markFailed(ws, "sandbox disappeared")
 		return false, true
 	}
-	if res.windowsErr == nil && sess.TmuxWindow != "" && !windowSet[sess.TmuxWindow] {
-		if newWin, err := m.Tmux.NewWindow(worktree.Slugify(sess.Branch)); err == nil {
-			_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", sess.SandboxID))
-			sess.TmuxWindow = newWin
+	if res.windowsErr == nil && ws.TmuxWindow != "" && !windowSet[ws.TmuxWindow] {
+		if newWin, err := m.Tmux.NewWindow(worktree.Slugify(ws.Branch)); err == nil {
+			_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", ws.SandboxID))
+			ws.TmuxWindow = newWin
 			// Capture new pane ID.
 			if panes, err := m.Tmux.GetWindowPanes(newWin); err == nil && len(panes) > 0 {
-				sess.PaneID = panes[0]
+				ws.PaneID = panes[0]
 			}
-			sess.UpdatedAt = time.Now().UTC()
+			ws.UpdatedAt = time.Now().UTC()
 			return false, true
 		}
-	} else if res.windowsErr == nil && sess.TmuxWindow != "" && windowSet[sess.TmuxWindow] && sess.PaneID != "" {
+	} else if res.windowsErr == nil && ws.TmuxWindow != "" && windowSet[ws.TmuxWindow] && ws.PaneID != "" {
 		// Verify pane still exists in the window; if not, re-capture.
-		if panes, err := m.Tmux.GetWindowPanes(sess.TmuxWindow); err == nil {
+		if panes, err := m.Tmux.GetWindowPanes(ws.TmuxWindow); err == nil {
 			paneFound := false
 			for _, p := range panes {
-				if p == sess.PaneID {
+				if p == ws.PaneID {
 					paneFound = true
 					break
 				}
 			}
 			if !paneFound && len(panes) > 0 {
-				sess.PaneID = panes[0]
-				sess.UpdatedAt = time.Now().UTC()
+				ws.PaneID = panes[0]
+				ws.UpdatedAt = time.Now().UTC()
 				return false, true
 			}
 		}
@@ -477,45 +477,45 @@ func (m *Manager) reconcileRunning(
 	return false, false
 }
 
-// reconcileProvisioning handles reconcile logic for a session in StateProvisioning.
+// reconcileProvisioning handles reconcile logic for a workspace in StateProvisioning.
 func (m *Manager) reconcileProvisioning(
-	sess *state.Session,
+	ws *state.Workspace,
 	res *reconcileResult,
 	containerIDSet map[string]bool,
-	markFailed func(*state.Session, string),
+	markFailed func(*state.Workspace, string),
 ) (changed bool) {
-	if res.contsErr == nil && sess.SandboxID != "" {
-		if containerIDSet[sess.SandboxID] {
-			sess.State = state.StateRunning
-			sess.UpdatedAt = time.Now().UTC()
+	if res.contsErr == nil && ws.SandboxID != "" {
+		if containerIDSet[ws.SandboxID] {
+			ws.State = state.StateRunning
+			ws.UpdatedAt = time.Now().UTC()
 			return true
 		}
-		markFailed(sess, "sandbox not found during reconciliation")
+		markFailed(ws, "sandbox not found during reconciliation")
 		return true
 	} else if res.contsErr == nil {
-		markFailed(sess, "sandbox not found during reconciliation")
+		markFailed(ws, "sandbox not found during reconciliation")
 		return true
 	}
 	return false
 }
 
-// reconcileSessions processes all sessions and handles state transitions based on
-// the current tmux, docker, and worktree state. Returns sessions to delete and
-// whether any changes were made.
-func (m *Manager) reconcileSessions(res *reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
-	markFailed := func(sess *state.Session, reason string) {
-		fromState := string(sess.State)
-		sess.FailedFrom = &fromState
-		sess.State = state.StateFailed
-		sess.Error = &reason
-		sess.UpdatedAt = time.Now().UTC()
+// reconcileWorkspaces processes all workspaces and handles state transitions based
+// on the current tmux, docker, and worktree state. Returns workspaces to delete
+// and whether any changes were made.
+func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
+	markFailed := func(ws *state.Workspace, reason string) {
+		fromState := string(ws.State)
+		ws.FailedFrom = &fromState
+		ws.State = state.StateFailed
+		ws.Error = &reason
+		ws.UpdatedAt = time.Now().UTC()
 	}
 
 	changed := false
 	toDelete := []string{}
 
-	for id, sess := range m.State.Sessions {
-		del, chg := m.reconcileOneSession(id, sess, res, windowSet, containerIDSet, worktreeSet, markFailed)
+	for id, ws := range m.State.Workspaces {
+		del, chg := m.reconcileOneWorkspace(id, ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
 		if chg {
 			changed = true
 		}
@@ -527,16 +527,16 @@ func (m *Manager) reconcileSessions(res *reconcileResult, windowSet, containerID
 	return toDelete, changed
 }
 
-// List returns all sessions sorted by creation time (oldest first).
-func (m *Manager) List() []*state.Session {
-	sessions := make([]*state.Session, 0, len(m.State.Sessions))
-	for _, s := range m.State.Sessions {
-		sessions = append(sessions, s)
+// List returns all workspaces sorted by creation time (oldest first).
+func (m *Manager) List() []*state.Workspace {
+	workspaces := make([]*state.Workspace, 0, len(m.State.Workspaces))
+	for _, ws := range m.State.Workspaces {
+		workspaces = append(workspaces, ws)
 	}
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].CreatedAt.Before(sessions[j].CreatedAt)
+	sort.Slice(workspaces, func(i, j int) bool {
+		return workspaces[i].CreatedAt.Before(workspaces[j].CreatedAt)
 	})
-	return sessions
+	return workspaces
 }
 
 // SaveState persists current state to disk, updating the PID field first.

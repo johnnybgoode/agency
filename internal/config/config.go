@@ -83,12 +83,12 @@ func GlobalConfigPath() string {
 
 // ProjectConfigPath returns the path to the project-level config file.
 func ProjectConfigPath(projectDir string) string {
-	return projectDir + "/.tool/config.toml"
+	return projectDir + "/.agency/config.toml"
 }
 
-// SessionConfigPath returns the path to the session-local config file inside a worktree.
-func SessionConfigPath(worktreePath string) string {
-	return filepath.Join(worktreePath, ".tool", "config.toml")
+// WorkspaceConfigPath returns the path to the workspace-local config file inside a worktree.
+func WorkspaceConfigPath(worktreePath string) string {
+	return filepath.Join(worktreePath, ".agency", "config.toml")
 }
 
 // EnforceGlobalConfigPerms chmod 0600s the global config file if it exists.

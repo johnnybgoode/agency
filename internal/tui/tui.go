@@ -8,14 +8,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/johnnybgoode/agency/internal/config"
-	"github.com/johnnybgoode/agency/internal/session"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
 // RunPopup runs just the create form (for use in a tmux popup). It finds the
-// project directory, loads config, creates a session manager, presents the
-// two-field form, and submits the session on enter.
+// project directory, loads config, creates a workspace manager, presents the
+// two-field form, and submits the workspace on enter.
 func RunPopup() error {
 	projectDir, err := findProjectDir()
 	if err != nil {
@@ -27,9 +27,9 @@ func RunPopup() error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	mgr, err := session.NewManager(projectDir, cfg)
+	mgr, err := workspace.NewManager(projectDir, cfg)
 	if err != nil {
-		return fmt.Errorf("initializing session manager: %w", err)
+		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
 	form := newCreateModel(mgr.ProjectName)
@@ -41,7 +41,7 @@ func RunPopup() error {
 // popupWrapper is a thin bubbletea model that wraps the create form for popup mode.
 type popupWrapper struct {
 	form createModel
-	mgr  *session.Manager
+	mgr  *workspace.Manager
 	done bool
 	err  error
 }
@@ -112,9 +112,9 @@ func runAndAttach(projectDir string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	mgr, err := session.NewManager(projectDir, cfg)
+	mgr, err := workspace.NewManager(projectDir, cfg)
 	if err != nil {
-		return fmt.Errorf("initializing session manager: %w", err)
+		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
 	if err := mgr.Tmux.EnsureSession(); err != nil {
@@ -150,8 +150,8 @@ func runAndAttach(projectDir string) error {
 
 // runSidebar is the full sidebar TUI flow, run when already inside tmux.
 func runSidebar(projectDir string) error {
-	// Auto-init .tool/ if missing (e.g. bare repo exists but tool dir was never created).
-	if !isDir(filepath.Join(projectDir, ".tool")) {
+	// Auto-init .agency/ if missing (e.g. bare repo exists but tool dir was never created).
+	if !isDir(filepath.Join(projectDir, ".agency")) {
 		if err := worktree.Init(projectDir, ""); err != nil {
 			return fmt.Errorf("initializing project: %w", err)
 		}
@@ -162,11 +162,11 @@ func runSidebar(projectDir string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	lockPath := filepath.Join(projectDir, ".tool", "lock")
+	lockPath := filepath.Join(projectDir, ".agency", "lock")
 	lock, err := state.AcquireLock(lockPath)
 	if err != nil {
 		// Check whether the process that holds the lock is still alive.
-		statePath := filepath.Join(projectDir, ".tool", "state.json")
+		statePath := filepath.Join(projectDir, ".agency", "state.json")
 		s, readErr := state.Read(statePath)
 		if readErr != nil || s.PID <= 0 {
 			return fmt.Errorf("acquiring lock: %w", err)
@@ -183,9 +183,9 @@ func runSidebar(projectDir string) error {
 	}
 	defer lock.Release() //nolint:errcheck // lock cleanup on shutdown
 
-	mgr, err := session.NewManager(projectDir, cfg)
+	mgr, err := workspace.NewManager(projectDir, cfg)
 	if err != nil {
-		return fmt.Errorf("initializing session manager: %w", err)
+		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
 	if err := mgr.Tmux.EnsureSession(); err != nil {
@@ -202,13 +202,13 @@ func runSidebar(projectDir string) error {
 		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", err)
 	}
 
-	// If there is an active session, join its pane into the main window only if
+	// If there is an active workspace, join its pane into the main window only if
 	// it is not already there (guards against double-join after an unclean exit).
-	if mgr.State.ActiveSessionID != "" && mgr.State.MainWindowID != "" {
-		if sess, ok := mgr.State.Sessions[mgr.State.ActiveSessionID]; ok && sess.PaneID != "" {
+	if mgr.State.ActiveWorkspaceID != "" && mgr.State.MainWindowID != "" {
+		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok && ws.PaneID != "" {
 			existingPanes, _ := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
-			if !paneInWindow(existingPanes, sess.PaneID) {
-				_ = mgr.Tmux.JoinPane(sess.PaneID, mgr.State.MainWindowID)
+			if !paneInWindow(existingPanes, ws.PaneID) {
+				_ = mgr.Tmux.JoinPane(ws.PaneID, mgr.State.MainWindowID)
 			}
 		}
 	}
@@ -227,7 +227,7 @@ func runSidebar(projectDir string) error {
 // ensureMainWindow verifies that State.MainWindowID points to a real tmux window.
 // If it is empty or the window is gone, a new window is created, split
 // vertically, and the state is saved. Returns the left pane ID.
-func ensureMainWindow(mgr *session.Manager) (string, error) {
+func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 	mainID := mgr.State.MainWindowID
 
 	if mainID != "" {
@@ -273,7 +273,7 @@ func ensureMainWindow(mgr *session.Manager) (string, error) {
 }
 
 // findProjectDir walks up from the current working directory looking for a
-// .tool/ or .bare/ directory, which marks an agency project root.
+// .agency/ or .bare/ directory, which marks an agency project root.
 func findProjectDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -282,7 +282,7 @@ func findProjectDir() (string, error) {
 
 	dir := cwd
 	for {
-		if isDir(filepath.Join(dir, ".tool")) || isDir(filepath.Join(dir, ".bare")) {
+		if isDir(filepath.Join(dir, ".agency")) || isDir(filepath.Join(dir, ".bare")) {
 			return dir, nil
 		}
 
@@ -295,7 +295,7 @@ func findProjectDir() (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"not in an agency project (no .tool/ or .bare/ found); run 'agency init' first",
+		"not in an agency project (no .agency/ or .bare/ found); run 'agency init' first",
 	)
 }
 

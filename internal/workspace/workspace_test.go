@@ -730,6 +730,37 @@ func TestSwitchActivePane_ResizesAfterBreakAndJoin(t *testing.T) {
 	}
 }
 
+// TestSwitchActivePane_UpdatesMainWindowTitle verifies that SwitchActivePane
+// renames the main window to show the active workspace name.
+func TestSwitchActivePane_UpdatesMainWindowTitle(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.MainWindowID = "@main"
+
+	ws := &state.Workspace{
+		ID:        "ws-title001",
+		Name:      "My Feature",
+		PaneID:    "%20",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	m.SwitchActivePane(ws)
+
+	calls := readCalls(t, argsFile)
+
+	// rename-window should be called with the workspace name.
+	renameFound := false
+	for _, c := range calls {
+		if c == "rename-window" {
+			renameFound = true
+			break
+		}
+	}
+	if !renameFound {
+		t.Errorf("rename-window was not called; calls = %v", calls)
+	}
+}
+
 // ----- ContainerPrefix -----
 
 // TestContainerPrefix_EndsWithDash verifies that the container filter prefix

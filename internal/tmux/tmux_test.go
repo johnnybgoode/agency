@@ -418,6 +418,46 @@ func TestSessionExistsNoTmux(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// RenameWindow
+// ---------------------------------------------------------------------------
+
+func TestRenameWindow(t *testing.T) {
+	tests := []struct {
+		name      string
+		windowID  string
+		newName   string
+		wantSeq   []string
+	}{
+		{
+			name:      "rename to simple name",
+			windowID:  "@1",
+			newName:   "workspace",
+			wantSeq:   []string{"rename-window", "-t", "test-session:@1", "workspace"},
+		},
+		{
+			name:      "rename to name with hyphen",
+			windowID:  "@3",
+			newName:   "my-workspace",
+			wantSeq:   []string{"rename-window", "-t", "test-session:@3", "my-workspace"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, "")
+			if err := c.RenameWindow(tt.windowID, tt.newName); err != nil {
+				t.Fatalf("RenameWindow(%q, %q) error: %v", tt.windowID, tt.newName, err)
+			}
+
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, tt.wantSeq...) {
+				t.Errorf("RenameWindow args = %v, want sequence %v", args, tt.wantSeq)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ListWindows
 // ---------------------------------------------------------------------------
 

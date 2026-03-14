@@ -30,17 +30,15 @@ type ContainerInfo struct {
 // Manager shells out to the docker CLI to manage sandbox containers.
 type Manager struct{}
 
-// New verifies that docker is installed and the daemon is reachable, then
-// returns a Manager ready for use.
+// New verifies that docker is installed and returns a Manager ready for use.
+// The daemon health check is intentionally skipped at construction time so
+// startup is fast; any daemon-reachability error surfaces on the first real
+// operation (Create, Start, etc.).
 func New() (*Manager, error) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		return nil, fmt.Errorf("docker is not installed")
 	}
-	m := &Manager{}
-	if _, err := m.docker(context.Background(), "info"); err != nil {
-		return nil, fmt.Errorf("docker daemon is not running")
-	}
-	return m, nil
+	return &Manager{}, nil
 }
 
 // docker is a shared helper that runs a docker sub-command and returns the

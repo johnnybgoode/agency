@@ -214,6 +214,9 @@ func runSidebar(projectDir string) error {
 		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
 	}
 
+	// Clear the terminal immediately to mask the shell echo of the launch command.
+	fmt.Print("\033[2J\033[H")
+
 	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)
 	p := tea.NewProgram(model)

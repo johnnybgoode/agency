@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/johnnybgoode/agency/internal/config"
+	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
@@ -17,7 +18,7 @@ import (
 // project directory, loads config, creates a workspace manager, presents the
 // two-field form, and submits the workspace on enter.
 func RunPopup() error {
-	projectDir, err := findProjectDir()
+	projectDir, err := project.FindProjectDir()
 	if err != nil {
 		return err
 	}
@@ -101,7 +102,7 @@ type popupDoneMsg struct{ err error }
 // If already inside tmux (TMUX env set), the sidebar runs directly in the
 // current pane.
 func Run() error {
-	projectDir, err := findProjectDir()
+	projectDir, err := project.FindProjectDir()
 	if err != nil {
 		return err
 	}
@@ -160,7 +161,7 @@ func runAndAttach(projectDir string) error {
 // runSidebar is the full sidebar TUI flow, run when already inside tmux.
 func runSidebar(projectDir string) error {
 	// Auto-init .agency/ if missing (e.g. bare repo exists but tool dir was never created).
-	if !isDir(filepath.Join(projectDir, ".agency")) {
+	if !project.IsDir(filepath.Join(projectDir, ".agency")) {
 		if err := worktree.Init(projectDir, ""); err != nil {
 			return fmt.Errorf("initializing project: %w", err)
 		}
@@ -305,39 +306,6 @@ func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 	_ = mgr.Tmux.ResizePane(panes[0], w)
 
 	return panes[0], mgr.SaveState()
-}
-
-// findProjectDir walks up from the current working directory looking for a
-// .agency/ or .bare/ directory, which marks an agency project root.
-func findProjectDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getting working directory: %w", err)
-	}
-
-	dir := cwd
-	for {
-		if isDir(filepath.Join(dir, ".agency")) || isDir(filepath.Join(dir, ".bare")) {
-			return dir, nil
-		}
-
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			// Reached the filesystem root.
-			break
-		}
-		dir = parent
-	}
-
-	return "", fmt.Errorf(
-		"not in an agency project (no .agency/ or .bare/ found); run 'agency init' first",
-	)
-}
-
-// isDir reports whether path exists and is a directory.
-func isDir(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
 }
 
 // paneInWindow reports whether paneID is present in the given slice of pane IDs.

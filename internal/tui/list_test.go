@@ -4,9 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/johnnybgoode/agency/internal/state"
 )
 
 func TestFriendlyError(t *testing.T) {
@@ -91,81 +88,6 @@ func TestFriendlyError(t *testing.T) {
 			// Unknown errors should not contain multi-line content.
 			if strings.Contains(got.Error(), "\n") {
 				t.Errorf("friendlyError result contains newline: %q", got.Error())
-			}
-		})
-	}
-}
-
-func TestRelativeTime(t *testing.T) {
-	now := time.Now()
-
-	tests := []struct {
-		name        string
-		t           time.Time
-		wantContain string
-		wantSuffix  string
-	}{
-		{
-			name:        "30 seconds ago",
-			t:           now.Add(-30 * time.Second),
-			wantContain: "s ago",
-			wantSuffix:  "ago",
-		},
-		{
-			name:        "5 minutes ago",
-			t:           now.Add(-5 * time.Minute),
-			wantContain: "m ago",
-			wantSuffix:  "ago",
-		},
-		{
-			name:        "3 hours ago",
-			t:           now.Add(-3 * time.Hour),
-			wantContain: "h ago",
-			wantSuffix:  "ago",
-		},
-		{
-			name:        "2 days ago",
-			t:           now.Add(-2 * 24 * time.Hour),
-			wantContain: "d ago",
-			wantSuffix:  "ago",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := relativeTime(tt.t)
-
-			if !strings.Contains(got, tt.wantContain) {
-				t.Errorf("relativeTime(%v) = %q, want to contain %q", tt.t, got, tt.wantContain)
-			}
-
-			if !strings.HasSuffix(got, tt.wantSuffix) {
-				t.Errorf("relativeTime(%v) = %q, want suffix %q", tt.t, got, tt.wantSuffix)
-			}
-		})
-	}
-}
-
-func TestStyledStatus(t *testing.T) {
-	allStates := []state.WorkspaceState{
-		state.StateCreating,
-		state.StateProvisioning,
-		state.StateRunning,
-		state.StatePaused,
-		state.StateCompleting,
-		state.StateDone,
-		state.StateFailed,
-	}
-
-	for _, s := range allStates {
-		t.Run(string(s), func(t *testing.T) {
-			got := styledStatus(s)
-			if got == "" {
-				t.Errorf("styledStatus(%q) returned empty string", s)
-			}
-			// The styled output should contain the state name (ANSI codes wrap it).
-			if !strings.Contains(got, string(s)) {
-				t.Errorf("styledStatus(%q) = %q, should contain the state name", s, got)
 			}
 		})
 	}

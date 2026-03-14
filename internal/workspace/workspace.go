@@ -83,10 +83,10 @@ func generateID() string {
 // workspace already uses the given branch.
 func (m *Manager) validateCreate(name, branch string) error {
 	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("workspace name cannot be empty")
+		return errors.New("workspace name cannot be empty")
 	}
 	if strings.TrimSpace(branch) == "" {
-		return fmt.Errorf("branch name cannot be empty")
+		return errors.New("branch name cannot be empty")
 	}
 	for _, existing := range m.State.Workspaces {
 		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
@@ -115,11 +115,11 @@ func (m *Manager) provisionWorktree(ws *state.Workspace) error {
 // provisionContainer creates and starts the Docker container for ws.
 func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, cfg *config.Config) error {
 	if m.Sandbox == nil {
-		return fmt.Errorf("docker is not available")
+		return errors.New("docker is not available")
 	}
 
 	// Build environment variables.
-	env := []string{}
+	var env []string
 	if key := cfg.Credentials.AnthropicAPIKey; key != "" {
 		env = append(env, "ANTHROPIC_API_KEY="+key)
 	}
@@ -394,9 +394,6 @@ func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeS
 	return windowSet, containerIDSet, worktreeSet
 }
 
-// logOrphans is a no-op placeholder retained for future structured logging.
-func (m *Manager) logOrphans(_ *reconcileResult) {}
-
 // Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
 // workspace states that have drifted from reality.
 func (m *Manager) Reconcile(ctx context.Context) error {
@@ -419,14 +416,12 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
-	m.logOrphans(&res)
 	return nil
 }
 
 // reconcileOneWorkspace handles the reconcile logic for a single workspace.
 // Returns (shouldDelete bool, changed bool).
 func (m *Manager) reconcileOneWorkspace(
-	id string,
 	ws *state.Workspace,
 	res *reconcileResult,
 	windowSet, containerIDSet, worktreeSet map[string]bool,
@@ -464,7 +459,6 @@ func (m *Manager) reconcileOneWorkspace(
 		}
 	}
 
-	_ = id
 	return false, false
 }
 
@@ -545,10 +539,10 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 	}
 
 	changed := false
-	toDelete := []string{}
+	var toDelete []string
 
 	for id, ws := range m.State.Workspaces {
-		del, chg := m.reconcileOneWorkspace(id, ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
+		del, chg := m.reconcileOneWorkspace(ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
 		if chg {
 			changed = true
 		}

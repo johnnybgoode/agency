@@ -17,11 +17,6 @@ import (
 // Lipgloss styles used across the list view and create form.
 var (
 	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	runningStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))
-	failedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	pausedStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	doneStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	pendingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	removingStyle = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
@@ -467,37 +462,6 @@ func (m listModel) renderZeroPanel(width, height int) string {
 	// Center box in available area; reserve last line for a separator.
 	centered := lipgloss.Place(width, height-1, lipgloss.Center, lipgloss.Center, box)
 	return centered + "\n" + strings.Repeat("─", width)
-}
-
-// styledStatus returns a colored string representation of a WorkspaceState.
-func styledStatus(s state.WorkspaceState) string {
-	switch s {
-	case state.StateRunning:
-		return runningStyle.Render("running")
-	case state.StateFailed:
-		return failedStyle.Render("failed")
-	case state.StatePaused:
-		return pausedStyle.Render("paused")
-	case state.StateDone:
-		return doneStyle.Render("done")
-	default:
-		return pendingStyle.Render(string(s))
-	}
-}
-
-// relativeTime formats a time.Time as a human-readable relative duration.
-func relativeTime(t time.Time) string {
-	d := time.Since(t)
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	default:
-		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-	}
 }
 
 // friendlyError translates common internal/git errors into user-friendly

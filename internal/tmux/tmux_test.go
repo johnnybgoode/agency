@@ -423,22 +423,22 @@ func TestSessionExistsNoTmux(t *testing.T) {
 
 func TestRenameWindow(t *testing.T) {
 	tests := []struct {
-		name      string
-		windowID  string
-		newName   string
-		wantSeq   []string
+		name     string
+		windowID string
+		newName  string
+		wantSeq  []string
 	}{
 		{
-			name:      "rename to simple name",
-			windowID:  "@1",
-			newName:   "workspace",
-			wantSeq:   []string{"rename-window", "-t", "test-session:@1", "workspace"},
+			name:     "rename to simple name",
+			windowID: "@1",
+			newName:  "workspace",
+			wantSeq:  []string{"rename-window", "-t", "test-session:@1", "workspace"},
 		},
 		{
-			name:      "rename to name with hyphen",
-			windowID:  "@3",
-			newName:   "my-workspace",
-			wantSeq:   []string{"rename-window", "-t", "test-session:@3", "my-workspace"},
+			name:     "rename to name with hyphen",
+			windowID: "@3",
+			newName:  "my-workspace",
+			wantSeq:  []string{"rename-window", "-t", "test-session:@3", "my-workspace"},
 		},
 	}
 

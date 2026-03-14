@@ -301,7 +301,7 @@ func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 
 	w := mgr.Cfg.TUI.SidebarWidth
 	if w <= 0 {
-		w = 24
+		w = config.DefaultSidebarWidth
 	}
 	_ = mgr.Tmux.ResizePane(panes[0], w)
 

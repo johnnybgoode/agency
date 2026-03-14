@@ -51,6 +51,10 @@ type TUIConfig struct {
 	SidebarWidth int `toml:"sidebar_width"`
 }
 
+// DefaultSidebarWidth is the default sidebar width in columns, used as a
+// fallback when the configuration does not specify a value.
+const DefaultSidebarWidth = 24
+
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {
 	return &Config{
@@ -67,7 +71,7 @@ func DefaultConfig() *Config {
 			BranchPrefix: "",
 		},
 		TUI: TUIConfig{
-			SidebarWidth: 24,
+			SidebarWidth: DefaultSidebarWidth,
 		},
 	}
 }

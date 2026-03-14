@@ -566,7 +566,7 @@ func (m *Manager) ContainerPrefix() string {
 func (m *Manager) SidebarWidth() int {
 	w := m.Cfg.TUI.SidebarWidth
 	if w <= 0 {
-		w = 24
+		w = config.DefaultSidebarWidth
 	}
 	return w
 }

@@ -632,6 +632,104 @@ func TestSwitchActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
 	}
 }
 
+// TestSwitchActivePane_ResizesSidebarAfterJoin verifies that SwitchActivePane
+// calls resize-pane on the sidebar pane after join-pane, restoring the sidebar
+// to its configured width (JoinPane resets pane proportions to 50/50).
+func TestSwitchActivePane_ResizesSidebarAfterJoin(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.MainWindowID = "@main"
+	// No active workspace — simplest path: straight join then resize.
+
+	ws := &state.Workspace{
+		ID:        "ws-resize001",
+		PaneID:    "%20",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	m.SwitchActivePane(ws)
+
+	calls := readCalls(t, argsFile)
+
+	joinIdx, resizeIdx := -1, -1
+	for i, c := range calls {
+		switch c {
+		case "join-pane":
+			if joinIdx < 0 {
+				joinIdx = i
+			}
+		case "resize-pane":
+			if resizeIdx < 0 {
+				resizeIdx = i
+			}
+		}
+	}
+	if joinIdx < 0 {
+		t.Fatalf("join-pane not called; calls = %v", calls)
+	}
+	if resizeIdx < 0 {
+		t.Fatalf("resize-pane not called after join; calls = %v", calls)
+	}
+	if resizeIdx < joinIdx {
+		t.Errorf("resize-pane (pos %d) must come after join-pane (pos %d); calls = %v", resizeIdx, joinIdx, calls)
+	}
+}
+
+// TestSwitchActivePane_ResizesAfterBreakAndJoin verifies the full
+// break → join → resize sequence when switching between workspaces.
+func TestSwitchActivePane_ResizesAfterBreakAndJoin(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+
+	prev := &state.Workspace{
+		ID:         "ws-prev0002",
+		PaneID:     "%10",
+		TmuxWindow: "@main",
+		State:      state.StateRunning,
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	addWorkspace(m, prev)
+	m.State.MainWindowID = "@main"
+	m.State.ActiveWorkspaceID = prev.ID
+
+	next := &state.Workspace{
+		ID:        "ws-next0001",
+		PaneID:    "%20",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	m.SwitchActivePane(next)
+
+	calls := readCalls(t, argsFile)
+
+	// Expected order: break-pane → join-pane → resize-pane.
+	breakIdx, joinIdx, resizeIdx := -1, -1, -1
+	for i, c := range calls {
+		switch c {
+		case "break-pane":
+			if breakIdx < 0 {
+				breakIdx = i
+			}
+		case "join-pane":
+			if joinIdx < 0 {
+				joinIdx = i
+			}
+		case "resize-pane":
+			if resizeIdx < 0 {
+				resizeIdx = i
+			}
+		}
+	}
+	if breakIdx < 0 || joinIdx < 0 || resizeIdx < 0 {
+		t.Fatalf("expected break-pane, join-pane, resize-pane; got calls = %v", calls)
+	}
+	if breakIdx >= joinIdx || joinIdx >= resizeIdx {
+		t.Errorf("wrong order: break-pane=%d join-pane=%d resize-pane=%d; calls = %v",
+			breakIdx, joinIdx, resizeIdx, calls)
+	}
+}
+
 // ----- ContainerPrefix -----
 
 // TestContainerPrefix_EndsWithDash verifies that the container filter prefix

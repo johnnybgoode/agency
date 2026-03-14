@@ -540,9 +540,20 @@ func (m *Manager) ContainerPrefix() string {
 	return "claude-sb-" + m.ProjectName + "-"
 }
 
+// SidebarWidth returns the configured sidebar width, defaulting to 24.
+func (m *Manager) SidebarWidth() int {
+	w := m.Cfg.TUI.SidebarWidth
+	if w <= 0 {
+		w = 24
+	}
+	return w
+}
+
 // SwitchActivePane updates the main window so ws's pane occupies the right
 // slot. If another workspace pane is currently joined, it is broken back to
 // its own detached window first to maintain the single-right-pane invariant.
+// After joining, the sidebar pane is resized to the configured width because
+// JoinPane resets pane proportions to 50/50.
 // No-op when MainWindowID or ws.PaneID is empty.
 func (m *Manager) SwitchActivePane(ws *state.Workspace) {
 	if m.State.MainWindowID == "" || ws.PaneID == "" {
@@ -558,6 +569,10 @@ func (m *Manager) SwitchActivePane(ws *state.Workspace) {
 	_ = m.Tmux.JoinPane(ws.PaneID, m.State.MainWindowID)
 	ws.TmuxWindow = m.State.MainWindowID
 	m.State.ActiveWorkspaceID = ws.ID
+	// Restore sidebar width; JoinPane resets pane proportions to 50/50.
+	if panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID); err == nil && len(panes) > 0 {
+		_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
+	}
 }
 
 // FindOrphanWorktrees returns worktrees registered in the project's bare repo

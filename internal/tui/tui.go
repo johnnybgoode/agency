@@ -207,21 +207,19 @@ func runSidebar(projectDir string) error {
 	}
 
 	// Ensure the main window is set up (sidebar lives here).
-	// Re-apply the sidebar resize here (after terminal attach) so tmux uses the
-	// actual terminal geometry rather than the detached-session geometry.
-	if leftPaneID, winErr := ensureMainWindow(mgr); winErr != nil {
+	leftPaneID, winErr := ensureMainWindow(mgr)
+	if winErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", winErr)
-	} else if leftPaneID != "" {
-		w := mgr.Cfg.TUI.SidebarWidth
-		if w <= 0 {
-			w = 24
-		}
-		_ = mgr.Tmux.ResizePane(leftPaneID, w)
 	}
 
-	// If there is an active workspace, join its pane into the main window only if
-	// it is not already there (guards against double-join after an unclean exit).
+	// Rejoin the active workspace pane if it is not already in the main window.
+	// This must happen before the resize below: JoinPane resets proportions to 50/50.
 	rejoinActivePane(mgr)
+
+	// Apply the configured sidebar width after any rejoin that may have reset proportions.
+	if leftPaneID != "" {
+		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
+	}
 
 	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)

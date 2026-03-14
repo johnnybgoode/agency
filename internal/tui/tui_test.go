@@ -73,9 +73,9 @@ func readTuiCalls(t *testing.T, argsFile string) []string {
 // a workspace pane is joined only when a workspace becomes active.
 func TestEnsureMainWindow_NoSplitWindow(t *testing.T) {
 	mgr, argsFile := newFakeTuiManager(t, map[string]string{
-		"list-windows": "",       // no existing windows → triggers new-window
-		"new-window":   "@1",     // fake window ID
-		"list-panes":   "%1",     // one pane after creation
+		"list-windows": "",   // no existing windows → triggers new-window
+		"new-window":   "@1", // fake window ID
+		"list-panes":   "%1", // one pane after creation
 		"resize-pane":  "",
 	})
 
@@ -91,6 +91,63 @@ func TestEnsureMainWindow_NoSplitWindow(t *testing.T) {
 		if c == "split-window" {
 			t.Errorf("ensureMainWindow called split-window — this creates a spurious empty right pane; calls = %v", calls)
 		}
+	}
+}
+
+// TestStartup_ResizeSidebarAfterRejoin verifies the runSidebar invariant:
+// when an active workspace pane is rejoined into the main window on startup,
+// resize-pane is called on the sidebar AFTER join-pane (not before). Calling
+// ResizePane before JoinPane would leave the sidebar at 50% because JoinPane
+// resets pane proportions.
+func TestStartup_ResizeSidebarAfterRejoin(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-windows": "@5 agency",
+		"list-panes":   "%1",
+		"join-pane":    "",
+		"resize-pane":  "",
+	})
+	mgr.State.MainWindowID = "@5"
+
+	// Simulate an active workspace whose pane is NOT yet in the main window.
+	ws := &state.Workspace{
+		ID:     "ws-startup01",
+		PaneID: "%10", // not returned by fake list-panes → rejoin will call join-pane
+		State:  state.StateRunning,
+	}
+	mgr.State.Workspaces[ws.ID] = ws
+	mgr.State.ActiveWorkspaceID = ws.ID
+
+	// Replicate the runSidebar sequence directly.
+	leftPaneID, _ := ensureMainWindow(mgr)
+	rejoinActivePane(mgr)
+	if leftPaneID != "" {
+		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
+	}
+
+	calls := readTuiCalls(t, argsFile)
+
+	joinIdx, resizeIdx := -1, -1
+	for i, c := range calls {
+		switch c {
+		case "join-pane":
+			if joinIdx < 0 {
+				joinIdx = i
+			}
+		case "resize-pane":
+			if resizeIdx < 0 {
+				resizeIdx = i
+			}
+		}
+	}
+	if joinIdx < 0 {
+		t.Fatalf("join-pane not called; calls = %v", calls)
+	}
+	if resizeIdx < 0 {
+		t.Fatalf("resize-pane not called; calls = %v", calls)
+	}
+	if resizeIdx < joinIdx {
+		t.Errorf("resize-pane (pos %d) must come after join-pane (pos %d); calls = %v",
+			resizeIdx, joinIdx, calls)
 	}
 }
 

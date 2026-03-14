@@ -278,15 +278,11 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // sidebarWidth returns the configured sidebar total width (including the right │).
-// Defaults to 22 if not set in config.
+// Delegates to workspace.Manager.SidebarWidth() as the single source of truth.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
-	w := m.manager.Cfg.TUI.SidebarWidth
-	if w <= 0 {
-		w = 22
-	}
-	return w
+	return m.manager.SidebarWidth()
 }
 
 // truncate shortens s to maxLen runes, appending ".." if truncated.
@@ -296,7 +292,7 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	if maxLen <= 2 {
-		return s[:maxLen]
+		return string(runes[:maxLen])
 	}
 	return string(runes[:maxLen-2]) + ".."
 }

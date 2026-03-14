@@ -24,6 +24,7 @@ var (
 	pendingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	removingStyle = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
 )
 
 // --- Messages ---
@@ -59,7 +60,8 @@ type listModel struct {
 	err        error
 	confirming bool // inline delete confirm (shown in help area)
 	confirmID  string
-	agencyBin  string // absolute path to the agency binary for popup invocation
+	removing   map[string]bool // workspace IDs currently being torn down
+	agencyBin  string          // absolute path to the agency binary for popup invocation
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -71,6 +73,7 @@ func newListModel(mgr *workspace.Manager) listModel {
 	return listModel{
 		manager:    mgr,
 		workspaces: mgr.List(),
+		removing:   make(map[string]bool),
 		agencyBin:  bin,
 	}
 }
@@ -101,6 +104,7 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		id := m.confirmID
 		m.confirming = false
 		m.confirmID = ""
+		m.removing[id] = true
 		mgr := m.manager
 		return m, func() tea.Msg {
 			// If removing the active workspace, switch to the last active one
@@ -250,6 +254,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case workspaceRemovedMsg:
+		delete(m.removing, msg.id)
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
@@ -314,6 +319,30 @@ func (m listModel) View() string {
 	return sidebar
 }
 
+// workspaceLabel returns the styled label string for a single workspace row.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) workspaceLabel(ws *state.Workspace, idx int, activeID string, inner int) string {
+	name := ws.Name
+	if name == "" {
+		name = ws.Branch
+	}
+	// Leading space + indicator + space + name; truncate name to fit.
+	// Total prefix visible width: 1 (space) + 1 (indicator) + 1 (space) = 3.
+	truncName := truncate(name, inner-3)
+	if m.removing[ws.ID] {
+		return removingStyle.Render(" ✗ " + truncName)
+	}
+	indicator := "◯"
+	if ws.ID == activeID {
+		indicator = "◉"
+	}
+	if idx == m.cursor {
+		return selectedStyle.Render(" " + indicator + " " + truncName)
+	}
+	return " " + indicator + " " + truncName
+}
+
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) renderSidebar() string {
 	w := m.sidebarWidth()
@@ -363,22 +392,7 @@ func (m listModel) renderSidebar() string {
 		rows = append(rows, row("  (none)"))
 	} else {
 		for i, ws := range m.workspaces {
-			name := ws.Name
-			if name == "" {
-				name = ws.Branch
-			}
-			indicator := "◯"
-			if ws.ID == activeID {
-				indicator = "◉"
-			}
-			// Leading space + indicator + space + name; truncate name to fit.
-			// Total prefix visible width: 1 (space) + 1 (indicator) + 1 (space) = 3.
-			truncName := truncate(name, inner-3)
-			label := " " + indicator + " " + truncName
-			if i == m.cursor {
-				label = selectedStyle.Render(" " + indicator + " " + truncName)
-			}
-			rows = append(rows, row(label))
+			rows = append(rows, row(m.workspaceLabel(ws, i, activeID, inner)))
 		}
 	}
 

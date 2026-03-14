@@ -188,13 +188,8 @@ var gcCmd = &cobra.Command{
 		ctx := context.Background()
 		barePath := mgr.State.BarePath
 
-		// Collect known worktree paths from state.
-		knownWorktrees := make(map[string]bool)
-		for _, ws := range mgr.State.Workspaces {
-			if ws.WorktreePath != "" {
-				knownWorktrees[ws.WorktreePath] = true
-			}
-		}
+		// Find orphan worktrees (excludes the main development worktree).
+		orphanWorktrees, _ := mgr.FindOrphanWorktrees()
 
 		// Collect known sandbox IDs from state.
 		knownSandboxIDs := make(map[string]bool)
@@ -204,27 +199,11 @@ var gcCmd = &cobra.Command{
 			}
 		}
 
-		// Find orphan worktrees.
-		// Never flag the main worktree (<project>-main) — that is the user's development copy.
-		mainWorktreePath := filepath.Join(mgr.ProjectDir, mgr.ProjectName+"-main")
-		var orphanWorktrees []worktree.Info
-		if wts, err := worktree.List(barePath); err == nil {
-			for _, wt := range wts {
-				if wt.Path == mainWorktreePath {
-					continue
-				}
-				if !knownWorktrees[wt.Path] {
-					orphanWorktrees = append(orphanWorktrees, wt)
-				}
-			}
-		}
-
 		// Find orphan containers.
 		var orphanContainers []string // container IDs
 		var orphanContainerNames []string
-		prefix := "claude-sb-" + mgr.ProjectName + "-"
 		if mgr.Sandbox != nil {
-			if containers, err := mgr.Sandbox.ListByProject(ctx, prefix); err == nil {
+			if containers, err := mgr.Sandbox.ListByProject(ctx, mgr.ContainerPrefix()); err == nil {
 				for _, c := range containers {
 					if !knownSandboxIDs[c.ID] {
 						orphanContainers = append(orphanContainers, c.ID)

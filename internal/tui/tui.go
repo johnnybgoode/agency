@@ -221,14 +221,7 @@ func runSidebar(projectDir string) error {
 
 	// If there is an active workspace, join its pane into the main window only if
 	// it is not already there (guards against double-join after an unclean exit).
-	if mgr.State.ActiveWorkspaceID != "" && mgr.State.MainWindowID != "" {
-		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok && ws.PaneID != "" {
-			existingPanes, _ := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
-			if !paneInWindow(existingPanes, ws.PaneID) {
-				_ = mgr.Tmux.JoinPane(ws.PaneID, mgr.State.MainWindowID)
-			}
-		}
-	}
+	rejoinActivePane(mgr)
 
 	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)
@@ -239,6 +232,22 @@ func runSidebar(projectDir string) error {
 	}
 
 	return nil
+}
+
+// rejoinActivePane re-joins the active workspace pane into the main window if
+// it is not already there. Guards against double-join after an unclean exit.
+func rejoinActivePane(mgr *workspace.Manager) {
+	if mgr.State.ActiveWorkspaceID == "" || mgr.State.MainWindowID == "" {
+		return
+	}
+	ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]
+	if !ok || ws.PaneID == "" {
+		return
+	}
+	existingPanes, _ := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
+	if !paneInWindow(existingPanes, ws.PaneID) {
+		_ = mgr.Tmux.JoinPane(ws.PaneID, mgr.State.MainWindowID)
+	}
 }
 
 // ensureMainWindow verifies that State.MainWindowID points to a real tmux window.

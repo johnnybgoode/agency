@@ -3,6 +3,9 @@ package workspace
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -421,5 +424,396 @@ func TestNewTestManager_TempDirCleaned(t *testing.T) {
 	// test simply confirms that os.Stat fails, ensuring TempDir is valid.
 	if _, err := os.Stat(dir); err == nil {
 		// Still exists while test is running — that is expected.
+	}
+}
+
+// ----- fake tmux helpers -----
+
+// newFakeTmuxManager creates a Manager wired to a fake tmux script that
+// records every invocation (one line per call) to argsFile and returns
+// canned responses for break-pane and join-pane.
+func newFakeTmuxManager(t *testing.T) (m *Manager, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile = filepath.Join(dir, "calls.txt")
+
+	// The script appends one line per call so ordering can be verified.
+	// break-pane returns a fake new window ID; everything else exits 0.
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`subcmd="$1"` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  break-pane) echo "@99";;` + "\n" +
+		`  new-window)  echo "@88";;` + "\n" +
+		`  list-panes)  echo "%5";;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	mgr := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.NewWithBinaryPath("agency-testproject", scriptPath),
+		Sandbox:     nil,
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := mgr.SaveState(); err != nil {
+		t.Fatalf("newFakeTmuxManager: SaveState: %v", err)
+	}
+	return mgr, argsFile
+}
+
+// readCalls reads the recorded tmux subcommands in order.
+func readCalls(t *testing.T, argsFile string) []string {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		// File may not exist if no tmux calls were made.
+		return nil
+	}
+	var cmds []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		// First word is the subcommand.
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			cmds = append(cmds, fields[0])
+		}
+	}
+	return cmds
+}
+
+// ----- SwitchActivePane -----
+
+// TestSwitchActivePane_BreaksPreviousBeforeJoin verifies the 2-pane invariant:
+// when a workspace is currently active SwitchActivePane must call break-pane
+// on it before calling join-pane for the incoming workspace.
+func TestSwitchActivePane_BreaksPreviousBeforeJoin(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+
+	// Set up an active workspace with a pane in the main window.
+	prevWS := &state.Workspace{
+		ID:         "ws-prev0001",
+		Name:       "Previous",
+		Branch:     "feat/prev",
+		State:      state.StateRunning,
+		PaneID:     "%10",
+		TmuxWindow: "@main",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+	}
+	addWorkspace(m, prevWS)
+	m.State.MainWindowID = "@main"
+	m.State.ActiveWorkspaceID = prevWS.ID
+
+	newWS := &state.Workspace{
+		ID:        "ws-new00001",
+		Name:      "New",
+		Branch:    "feat/new",
+		State:     state.StateRunning,
+		PaneID:    "%20",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	m.SwitchActivePane(newWS)
+
+	calls := readCalls(t, argsFile)
+
+	// break-pane must appear before join-pane.
+	breakIdx, joinIdx := -1, -1
+	for i, c := range calls {
+		switch c {
+		case "break-pane":
+			if breakIdx < 0 {
+				breakIdx = i
+			}
+		case "join-pane":
+			if joinIdx < 0 {
+				joinIdx = i
+			}
+		}
+	}
+	if breakIdx < 0 {
+		t.Fatalf("break-pane was never called; calls = %v", calls)
+	}
+	if joinIdx < 0 {
+		t.Fatalf("join-pane was never called; calls = %v", calls)
+	}
+	if breakIdx > joinIdx {
+		t.Errorf("break-pane (pos %d) must precede join-pane (pos %d); calls = %v", breakIdx, joinIdx, calls)
+	}
+
+	// State should be updated.
+	if m.State.ActiveWorkspaceID != newWS.ID {
+		t.Errorf("ActiveWorkspaceID = %q, want %q", m.State.ActiveWorkspaceID, newWS.ID)
+	}
+	if newWS.TmuxWindow != "@main" {
+		t.Errorf("new ws TmuxWindow = %q, want %q", newWS.TmuxWindow, "@main")
+	}
+	// Previous workspace's TmuxWindow should have been updated to the new window ID.
+	if prevWS.TmuxWindow != "@99" {
+		t.Errorf("prev ws TmuxWindow = %q, want %q (fake break-pane output)", prevWS.TmuxWindow, "@99")
+	}
+}
+
+// TestSwitchActivePane_JoinsDirectlyWhenNoActive verifies that when no
+// workspace is currently active, join-pane is called without break-pane.
+func TestSwitchActivePane_JoinsDirectlyWhenNoActive(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.MainWindowID = "@main"
+	// No active workspace.
+
+	ws := &state.Workspace{
+		ID:        "ws-first001",
+		PaneID:    "%5",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	m.SwitchActivePane(ws)
+
+	calls := readCalls(t, argsFile)
+	for _, c := range calls {
+		if c == "break-pane" {
+			t.Errorf("break-pane must not be called when no workspace is active; calls = %v", calls)
+		}
+	}
+	joinFound := false
+	for _, c := range calls {
+		if c == "join-pane" {
+			joinFound = true
+		}
+	}
+	if !joinFound {
+		t.Errorf("join-pane was not called; calls = %v", calls)
+	}
+	if m.State.ActiveWorkspaceID != ws.ID {
+		t.Errorf("ActiveWorkspaceID = %q, want %q", m.State.ActiveWorkspaceID, ws.ID)
+	}
+}
+
+// TestSwitchActivePane_NoopWhenMainWindowEmpty verifies that SwitchActivePane
+// is a no-op when no main window has been established.
+func TestSwitchActivePane_NoopWhenMainWindowEmpty(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	// No MainWindowID set.
+
+	ws := &state.Workspace{ID: "ws-noop0001", PaneID: "%5", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	m.SwitchActivePane(ws)
+
+	calls := readCalls(t, argsFile)
+	if len(calls) != 0 {
+		t.Errorf("expected no tmux calls when MainWindowID is empty; got %v", calls)
+	}
+}
+
+// TestSwitchActivePane_NoopWhenPaneIDEmpty verifies that SwitchActivePane
+// is a no-op when the incoming workspace has no pane yet.
+func TestSwitchActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.MainWindowID = "@main"
+
+	ws := &state.Workspace{ID: "ws-nopane01", PaneID: "", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	m.SwitchActivePane(ws)
+
+	calls := readCalls(t, argsFile)
+	if len(calls) != 0 {
+		t.Errorf("expected no tmux calls when workspace PaneID is empty; got %v", calls)
+	}
+}
+
+// ----- ContainerPrefix -----
+
+// TestContainerPrefix_EndsWithDash verifies that the container filter prefix
+// ends with "-" to prevent Docker's substring --filter from matching containers
+// belonging to other projects whose names start with the same characters.
+func TestContainerPrefix_EndsWithDash(t *testing.T) {
+	m := newTestManager(t)
+	prefix := m.ContainerPrefix()
+	if !strings.HasSuffix(prefix, "-") {
+		t.Errorf("ContainerPrefix() = %q: must end with '-' for project isolation", prefix)
+	}
+}
+
+// TestContainerPrefix_DoesNotMatchSimilarProjectName verifies that the prefix
+// will not match a container belonging to a differently-named project.
+func TestContainerPrefix_DoesNotMatchSimilarProjectName(t *testing.T) {
+	m := newTestManager(t)
+	prefix := m.ContainerPrefix()
+
+	// A container from project "testprojectextended" must NOT contain our prefix.
+	other := "claude-sb-testprojectextended-feat-ws-12345678"
+	if strings.Contains(other, prefix) {
+		t.Errorf("prefix %q incorrectly matches container from another project: %q", prefix, other)
+	}
+
+	// Our own containers must match.
+	own := "claude-sb-testproject-feat-ws-12345678"
+	if !strings.Contains(own, prefix) {
+		t.Errorf("prefix %q should match own container %q", prefix, own)
+	}
+}
+
+// ----- FindOrphanWorktrees -----
+
+// setupBareRepo initializes a bare git repo with one commit and returns the
+// bare repo directory. Skips the test if git is not available.
+func setupBareRepo(t *testing.T) (bareDir string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found; skipping worktree integration test")
+	}
+
+	dir := t.TempDir()
+	bareDir = filepath.Join(dir, ".bare")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v: %v\n%s", args, err, out)
+		}
+	}
+
+	run("git", "init", "--bare", bareDir)
+	run("git", "-C", bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srcDir := filepath.Join(dir, "src")
+	run("git", "clone", bareDir, srcDir)
+	run("git", "-C", srcDir, "config", "user.email", "test@test.com")
+	run("git", "-C", srcDir, "config", "user.name", "Test")
+	run("git", "-C", srcDir, "commit", "--allow-empty", "-m", "init")
+	run("git", "-C", srcDir, "push", "origin", "HEAD:main")
+
+	return bareDir
+}
+
+// TestFindOrphanWorktrees_ExcludesMainWorktree verifies that the development
+// worktree created by `agency init` (<project>-main) is never flagged as an
+// orphan even when it is not tracked in state.
+func TestFindOrphanWorktrees_ExcludesMainWorktree(t *testing.T) {
+	bareDir := setupBareRepo(t)
+	projectDir := filepath.Dir(bareDir)
+	projectName := "testproject"
+
+	s := state.Default(projectName, bareDir)
+	m := &Manager{
+		StatePath:   filepath.Join(projectDir, ".agency", "state.json"),
+		ProjectDir:  projectDir,
+		ProjectName: projectName,
+		State:       s,
+		Tmux:        tmux.New("agency-" + projectName),
+		Cfg:         config.DefaultConfig(),
+	}
+
+	// Simulate `agency init`: create the main worktree directly.
+	mainWT := filepath.Join(projectDir, projectName+"-main")
+	cmd := exec.Command("git", "-C", bareDir, "worktree", "add", mainWT, "main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+
+	// FindOrphanWorktrees must not include the main worktree.
+	orphans, err := m.FindOrphanWorktrees()
+	if err != nil {
+		t.Fatalf("FindOrphanWorktrees: %v", err)
+	}
+	for _, wt := range orphans {
+		if wt.Path == mainWT {
+			t.Errorf("main worktree %q was incorrectly flagged as orphan", mainWT)
+		}
+	}
+}
+
+// TestFindOrphanWorktrees_ExcludesTrackedWorktrees verifies that worktrees
+// which are tracked in state are not returned as orphans.
+func TestFindOrphanWorktrees_ExcludesTrackedWorktrees(t *testing.T) {
+	bareDir := setupBareRepo(t)
+	projectDir := filepath.Dir(bareDir)
+	projectName := "testproject"
+
+	s := state.Default(projectName, bareDir)
+	m := &Manager{
+		StatePath:   filepath.Join(projectDir, ".agency", "state.json"),
+		ProjectDir:  projectDir,
+		ProjectName: projectName,
+		State:       s,
+		Tmux:        tmux.New("agency-" + projectName),
+		Cfg:         config.DefaultConfig(),
+	}
+
+	// Create a worktree and register it in state.
+	wtPath := filepath.Join(projectDir, projectName+"-feat1")
+	cmd := exec.Command("git", "-C", bareDir, "worktree", "add", wtPath, "-b", "feat1", "main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+	ws := &state.Workspace{
+		ID:           "ws-track001",
+		Branch:       "feat1",
+		WorktreePath: wtPath,
+		State:        state.StateRunning,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	orphans, err := m.FindOrphanWorktrees()
+	if err != nil {
+		t.Fatalf("FindOrphanWorktrees: %v", err)
+	}
+	for _, wt := range orphans {
+		if wt.Path == wtPath {
+			t.Errorf("tracked worktree %q was incorrectly flagged as orphan", wtPath)
+		}
+	}
+}
+
+// TestFindOrphanWorktrees_IncludesUntrackedWorktrees verifies that worktrees
+// present in the repo but absent from state (and not the main worktree) are
+// returned as orphans.
+func TestFindOrphanWorktrees_IncludesUntrackedWorktrees(t *testing.T) {
+	bareDir := setupBareRepo(t)
+	projectDir := filepath.Dir(bareDir)
+	projectName := "testproject"
+
+	s := state.Default(projectName, bareDir)
+	m := &Manager{
+		StatePath:   filepath.Join(projectDir, ".agency", "state.json"),
+		ProjectDir:  projectDir,
+		ProjectName: projectName,
+		State:       s,
+		Tmux:        tmux.New("agency-" + projectName),
+		Cfg:         config.DefaultConfig(),
+	}
+
+	// Create a worktree but do NOT register it in state → should be orphaned.
+	wtPath := filepath.Join(projectDir, projectName+"-orphan1")
+	cmd := exec.Command("git", "-C", bareDir, "worktree", "add", wtPath, "-b", "orphan1", "main")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git worktree add: %v\n%s", err, out)
+	}
+
+	orphans, err := m.FindOrphanWorktrees()
+	if err != nil {
+		t.Fatalf("FindOrphanWorktrees: %v", err)
+	}
+	found := false
+	for _, wt := range orphans {
+		if wt.Path == wtPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("untracked worktree %q was not returned as orphan; orphans = %v", wtPath, orphans)
 	}
 }

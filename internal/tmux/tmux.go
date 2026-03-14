@@ -27,6 +27,12 @@ func New(sessionName string) *Client {
 	return &Client{SessionName: sessionName, tmuxPath: path}
 }
 
+// NewWithBinaryPath creates a Client that uses the supplied binaryPath instead
+// of searching PATH. Intended for tests that inject a fake tmux script.
+func NewWithBinaryPath(sessionName, binaryPath string) *Client {
+	return &Client{SessionName: sessionName, tmuxPath: binaryPath}
+}
+
 // run is a shared helper that executes a tmux sub-command, returns trimmed
 // stdout, and wraps any error with the combined output for diagnostics.
 func (c *Client) run(args ...string) (string, error) {

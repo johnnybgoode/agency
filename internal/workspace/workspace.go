@@ -235,20 +235,7 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 	}
 
 	// Step 5: join new pane into main window so sidebar stays visible, then mark running.
-	if m.State.MainWindowID != "" && ws.PaneID != "" {
-		// Break any currently active workspace pane back to its own window first
-		// to maintain the 2-pane invariant (sidebar + at most one workspace pane).
-		if m.State.ActiveWorkspaceID != "" {
-			if activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok && activeWS.PaneID != "" {
-				if newWinID, err := m.Tmux.BreakPane(m.State.MainWindowID, activeWS.PaneID); err == nil {
-					activeWS.TmuxWindow = newWinID
-				}
-			}
-		}
-		_ = m.Tmux.JoinPane(ws.PaneID, m.State.MainWindowID)
-		ws.TmuxWindow = m.State.MainWindowID
-		m.State.ActiveWorkspaceID = ws.ID
-	}
+	m.SwitchActivePane(ws)
 	ws.State = state.StateRunning
 	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
@@ -324,7 +311,7 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	go func() {
 		defer wg.Done()
 		if m.Sandbox != nil {
-			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, "claude-sb-"+m.ProjectName+"-")
+			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, m.ContainerPrefix())
 		}
 	}()
 
@@ -543,6 +530,64 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 	}
 
 	return toDelete, changed
+}
+
+// ContainerPrefix returns the Docker container name prefix used to scope
+// sandbox operations to this project. It ends with "-" so that Docker's
+// substring --filter does not accidentally match containers belonging to a
+// project whose name starts with the same characters.
+func (m *Manager) ContainerPrefix() string {
+	return "claude-sb-" + m.ProjectName + "-"
+}
+
+// SwitchActivePane updates the main window so ws's pane occupies the right
+// slot. If another workspace pane is currently joined, it is broken back to
+// its own detached window first to maintain the single-right-pane invariant.
+// No-op when MainWindowID or ws.PaneID is empty.
+func (m *Manager) SwitchActivePane(ws *state.Workspace) {
+	if m.State.MainWindowID == "" || ws.PaneID == "" {
+		return
+	}
+	if m.State.ActiveWorkspaceID != "" {
+		if activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok && activeWS.PaneID != "" {
+			if newWinID, err := m.Tmux.BreakPane(m.State.MainWindowID, activeWS.PaneID); err == nil {
+				activeWS.TmuxWindow = newWinID
+			}
+		}
+	}
+	_ = m.Tmux.JoinPane(ws.PaneID, m.State.MainWindowID)
+	ws.TmuxWindow = m.State.MainWindowID
+	m.State.ActiveWorkspaceID = ws.ID
+}
+
+// FindOrphanWorktrees returns worktrees registered in the project's bare repo
+// that are not tracked in state. The initial development worktree
+// (<projectDir>/<projectName>-main) is always excluded.
+func (m *Manager) FindOrphanWorktrees() ([]worktree.Info, error) {
+	mainWorktreePath := filepath.Join(m.ProjectDir, m.ProjectName+"-main")
+
+	known := make(map[string]bool, len(m.State.Workspaces))
+	for _, ws := range m.State.Workspaces {
+		if ws.WorktreePath != "" {
+			known[ws.WorktreePath] = true
+		}
+	}
+
+	all, err := worktree.List(m.State.BarePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var orphans []worktree.Info
+	for _, wt := range all {
+		if wt.Path == mainWorktreePath {
+			continue
+		}
+		if !known[wt.Path] {
+			orphans = append(orphans, wt)
+		}
+	}
+	return orphans, nil
 }
 
 // List returns all workspaces sorted by creation time (oldest first).

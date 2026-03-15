@@ -305,11 +305,27 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		m.State.LastActiveWorkspaceID = ""
 	}
 
-	// Delete from state and persist BEFORE killing the tmux window. When
-	// the window is killed, the EXIT trap fires gc. gc reads state, finds
-	// the workspace already removed, and exits cleanly — no race.
+	// Re-read state from disk before saving to pick up any concurrent
+	// changes (e.g., a popup process creating a new workspace). Then apply
+	// our deletion to the fresh state so we don't overwrite those changes.
 	tmuxWindow := ws.TmuxWindow
-	delete(m.State.Workspaces, workspaceID)
+	if freshState, readErr := state.Read(m.StatePath); readErr == nil {
+		// Preserve our pointer cleanups on the fresh state.
+		if freshState.ActiveWorkspaceID == workspaceID {
+			freshState.ActiveWorkspaceID = ""
+		}
+		if freshState.LastActiveWorkspaceID == workspaceID {
+			freshState.LastActiveWorkspaceID = ""
+		}
+		delete(freshState.Workspaces, workspaceID)
+		m.State = freshState
+	} else {
+		delete(m.State.Workspaces, workspaceID)
+	}
+
+	// Persist BEFORE killing the tmux window. When the window is killed,
+	// the EXIT trap fires gc. gc reads state, finds the workspace already
+	// removed, and exits cleanly — no race.
 	if err := m.SaveState(); err != nil {
 		return err
 	}

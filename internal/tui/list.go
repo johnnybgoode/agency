@@ -43,20 +43,40 @@ type reconcileDoneMsg struct {
 	err error
 }
 
+// quitStep tracks the stage of the graceful-quit flow.
+type quitStep int
+
+const (
+	quitIdle            quitStep = iota
+	quitAssessing                // async git-status check in flight
+	quitConfirmingQuit           // "Quit? N active workspaces [y/N]"
+	quitConfirmingDirty          // per-workspace "Kill <name> with unsaved changes? [y/N]"
+)
+
+// quitAssessedMsg is emitted when AssessQuitStatuses completes.
+type quitAssessedMsg struct {
+	infos []workspace.QuitInfo
+	err   error
+}
+
 // --- Model ---
 
 // listModel is the top-level Bubble Tea model for the sidebar workspace list view.
 type listModel struct {
-	manager    *workspace.Manager
-	workspaces []*state.Workspace
-	cursor     int
-	width      int
-	height     int
-	err        error
-	confirming bool // inline delete confirm (shown in help area)
-	confirmID  string
-	removing   map[string]bool // workspace IDs currently being torn down
-	agencyBin  string          // absolute path to the agency binary for popup invocation
+	manager           *workspace.Manager
+	workspaces        []*state.Workspace
+	cursor            int
+	width             int
+	height            int
+	err               error
+	confirming        bool // inline delete confirm (shown in help area)
+	confirmID         string
+	removing          map[string]bool // workspace IDs currently being torn down
+	agencyBin         string          // absolute path to the agency binary for popup invocation
+	quitStep          quitStep
+	quitInfos         []workspace.QuitInfo
+	dirtyQueue        []*state.Workspace // ACTIVE+DIRTY workspaces awaiting per-ws confirm
+	shouldKillSession bool
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -144,13 +164,129 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 	}
 }
 
+// handleQuitMsg processes messages while a quit flow is in progress.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) handleQuitMsg(msg tea.Msg) (listModel, tea.Cmd) {
+	// Always reschedule the tick so polling continues if quit is aborted.
+	if _, ok := msg.(tickMsg); ok {
+		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
+	}
+
+	switch m.quitStep {
+	case quitAssessing:
+		if assessed, ok := msg.(quitAssessedMsg); ok {
+			m.quitInfos = assessed.infos
+			activeCount := 0
+			for _, info := range m.quitInfos {
+				if info.IsActive {
+					activeCount++
+				}
+			}
+			if activeCount == 0 {
+				return m.startExecuting()
+			}
+			m.quitStep = quitConfirmingQuit
+		}
+
+	case quitConfirmingQuit:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "y":
+				var dirtyQueue []*state.Workspace
+				for _, info := range m.quitInfos {
+					if info.IsActive && info.IsDirty {
+						dirtyQueue = append(dirtyQueue, info.WS)
+					}
+				}
+				if len(dirtyQueue) > 0 {
+					m.dirtyQueue = dirtyQueue
+					m.quitStep = quitConfirmingDirty
+					return m, nil
+				}
+				return m.startExecuting()
+			case "n", "esc":
+				_ = m.manager.Tmux.DetachClients()
+				m.quitStep = quitIdle
+			}
+		}
+
+	case quitConfirmingDirty:
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "y":
+				m.dirtyQueue = m.dirtyQueue[1:]
+				if len(m.dirtyQueue) > 0 {
+					return m, nil
+				}
+				return m.startExecuting()
+			case "n", "esc":
+				_ = m.manager.Tmux.DetachClients()
+				m.quitStep = quitIdle
+				m.dirtyQueue = nil
+			}
+		}
+
+	}
+
+	return m, nil
+}
+
+// startExecuting signals a graceful quit: sets shouldKillSession so runSidebar
+// can do cleanup after p.Run() returns, then exits the TUI immediately.
+// Container stops are fired as non-blocking background calls in runSidebar so
+// the user gets their shell prompt back without waiting for docker.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) startExecuting() (listModel, tea.Cmd) {
+	m.shouldKillSession = true
+	return m, tea.Quit
+}
+
+// buildQuitModal constructs the DangerModal for the current quit confirmation step.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) buildQuitModal() DangerModal {
+	if m.quitStep == quitConfirmingQuit {
+		activeCount := 0
+		for _, info := range m.quitInfos {
+			if info.IsActive {
+				activeCount++
+			}
+		}
+		return DangerModal{
+			Title:  "Quit Agency?",
+			Lines:  []string{fmt.Sprintf("%d active workspace(s)", activeCount), "will be paused."},
+			Prompt: "[y] yes   [N] cancel",
+		}
+	}
+	// quitConfirmingDirty
+	name := ""
+	if len(m.dirtyQueue) > 0 {
+		name = m.dirtyQueue[0].Name
+		if name == "" {
+			name = m.dirtyQueue[0].Branch
+		}
+	}
+	return DangerModal{
+		Title:  "Unsaved changes",
+		Lines:  []string{"Pause " + truncate(name, 14) + "?", "Changes will be kept."},
+		Prompt: "[y] yes   [N] cancel",
+	}
+}
+
 // handleNormalKey handles key presses in normal (non-confirming) mode.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
-		return m, tea.Quit
+		m.quitStep = quitAssessing
+		mgr := m.manager
+		return m, func() tea.Msg {
+			infos, err := mgr.AssessQuitStatuses(context.Background())
+			return quitAssessedMsg{infos: infos, err: err}
+		}
 
 	case "n":
 		return m, m.newWorkspaceCmd()
@@ -204,8 +340,13 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 
 // Update handles all incoming messages and key presses.
 //
-//nolint:gocritic // bubbletea model must use value receivers
+//nolint:gocritic,gocyclo // bubbletea model must use value receivers; message dispatch is inherently branchy
 func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Handle quit state machine first (suppresses all other input while active).
+	if m.quitStep != quitIdle {
+		return m.handleQuitMsg(msg)
+	}
+
 	// Handle delete confirmation first.
 	if m.confirming {
 		if key, ok := msg.(tea.KeyMsg); ok {
@@ -334,7 +475,7 @@ func (m listModel) workspaceLabel(ws *state.Workspace, idx int, activeID string,
 	return " " + indicator + " " + truncName
 }
 
-//nolint:gocritic // bubbletea model must use value receivers
+//nolint:gocritic,gocyclo // bubbletea model must use value receivers; sidebar rendering branches on many state combinations
 func (m listModel) renderSidebar() string {
 	w := m.sidebarWidth()
 	// inner is the number of content columns before the right "│".
@@ -361,6 +502,11 @@ func (m listModel) renderSidebar() string {
 
 	blank := row("")
 
+	totalRows := m.height
+	if totalRows <= 0 {
+		totalRows = 24
+	}
+
 	activeID := m.manager.State.ActiveWorkspaceID
 	projectName := m.manager.State.Project
 
@@ -379,6 +525,36 @@ func (m listModel) renderSidebar() string {
 	var rows []string
 	rows = append(rows, top, blank, row(" Project:"), row("   "+truncate(projectName+"/", inner-3)), blank, row(" Workspaces:"))
 
+	// Modal overlay: replace workspace list + help section with a danger dialog.
+	if m.quitStep == quitConfirmingQuit || m.quitStep == quitConfirmingDirty {
+		modal := m.buildQuitModal()
+		modalRows := modal.Rows(inner)
+
+		available := totalRows - len(rows) - 1 // -1 for bottom border
+		if available < 0 {
+			available = 0
+		}
+		topPad := (available - len(modalRows)) / 2
+		if topPad < 0 {
+			topPad = 0
+		}
+		for i := 0; i < topPad; i++ {
+			rows = append(rows, blank)
+		}
+		for _, r := range modalRows {
+			rows = append(rows, r+"│")
+		}
+		bottomPad := available - topPad - len(modalRows)
+		if bottomPad < 0 {
+			bottomPad = 0
+		}
+		for i := 0; i < bottomPad; i++ {
+			rows = append(rows, blank)
+		}
+		rows = append(rows, bottom)
+		return strings.Join(rows, "\n")
+	}
+
 	if len(m.workspaces) == 0 {
 		rows = append(rows, row("  (none)"))
 	} else {
@@ -396,10 +572,6 @@ func (m listModel) renderSidebar() string {
 	// Fixed rows at bottom: blank + " Help:" + hint + bottom border = 4 lines.
 	helpLines := 3 // " Help:" + hint + blank before help
 	fixedRows := len(rows)
-	totalRows := m.height
-	if totalRows <= 0 {
-		totalRows = 24
-	}
 	// Reserve: helpLines rows + 1 bottom border row.
 	fillCount := totalRows - fixedRows - helpLines - 1
 	if fillCount < 0 {
@@ -414,6 +586,8 @@ func (m listModel) renderSidebar() string {
 
 	var hint string
 	switch {
+	case m.quitStep == quitAssessing:
+		hint = helpStyle.Render(" checking workspaces...")
 	case m.confirming:
 		confirmWS := m.confirmID
 		for _, ws := range m.workspaces {

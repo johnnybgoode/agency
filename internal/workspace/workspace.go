@@ -172,7 +172,12 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 		ws.PaneID = panes[0]
 	}
 
-	if err := m.Tmux.SendKeys(windowID, fmt.Sprintf("docker exec -it %s bash -c claude", ws.SandboxID)); err != nil {
+	agencyBin, _ := os.Executable()
+	trapCmd := fmt.Sprintf(
+		`bash -c 'trap "%s gc --workspace-id %s" EXIT; docker exec -it %s bash -c claude'`,
+		agencyBin, ws.ID, ws.SandboxID,
+	)
+	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
 	}
 	return nil
@@ -664,4 +669,94 @@ func (m *Manager) List() []*state.Workspace {
 func (m *Manager) SaveState() error {
 	m.State.PID = os.Getpid()
 	return state.Write(m.StatePath, m.State)
+}
+
+// QuitInfo holds quit assessment data for a single workspace.
+type QuitInfo struct {
+	WS       *state.Workspace
+	IsActive bool
+	IsDirty  bool
+}
+
+// isActiveState reports whether a workspace state is considered "active" for
+// quit purposes (i.e. has a running or provisioning container that needs stopping).
+func isActiveState(s state.WorkspaceState) bool {
+	switch s {
+	case state.StateCreating, state.StateProvisioning, state.StateRunning, state.StatePaused:
+		return true
+	}
+	return false
+}
+
+// AssessQuitStatuses returns quit info for all workspaces (git status checked in parallel).
+func (m *Manager) AssessQuitStatuses(ctx context.Context) ([]QuitInfo, error) {
+	workspaces := m.List()
+	infos := make([]QuitInfo, len(workspaces))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+
+	for i, ws := range workspaces {
+		wg.Add(1)
+		go func(i int, ws *state.Workspace) {
+			defer wg.Done()
+			info := QuitInfo{
+				WS:       ws,
+				IsActive: isActiveState(ws.State),
+			}
+			if ws.WorktreePath != "" {
+				dirty, err := worktree.IsDirty(ws.WorktreePath)
+				if err != nil {
+					mu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					mu.Unlock()
+					dirty = true // assume dirty on error (safe default)
+				}
+				info.IsDirty = dirty
+			} else {
+				info.IsDirty = true // no worktree = treat as dirty
+			}
+			infos[i] = info
+		}(i, ws)
+	}
+	wg.Wait()
+	return infos, firstErr
+}
+
+// StopWorkspace stops the sandbox container and transitions ws to StatePaused.
+// No-op if no container is running. Does not remove the worktree or state.
+func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error {
+	if ws.SandboxID != "" && m.Sandbox != nil {
+		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 10)
+	}
+	ws.State = state.StatePaused
+	ws.UpdatedAt = time.Now().UTC()
+	return m.SaveState()
+}
+
+// StopWorkspaceBackground fires a non-blocking docker stop and immediately
+// transitions ws to StatePaused. The docker daemon handles the actual shutdown
+// independently; the agency process need not wait for it.
+func (m *Manager) StopWorkspaceBackground(ctx context.Context, ws *state.Workspace) error {
+	if ws.SandboxID != "" && m.Sandbox != nil {
+		_ = m.Sandbox.StopBackground(ws.SandboxID, 10)
+	}
+	ws.State = state.StatePaused
+	ws.UpdatedAt = time.Now().UTC()
+	return m.SaveState()
+}
+
+// CleanupDoneWorkspace removes the worktree, kills the tmux window, and purges
+// the workspace from state. Only call for INACTIVE+CLEAN workspaces.
+func (m *Manager) CleanupDoneWorkspace(ctx context.Context, ws *state.Workspace) error {
+	if ws.WorktreePath != "" {
+		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
+	}
+	if ws.TmuxWindow != "" {
+		_ = m.Tmux.KillWindow(ws.TmuxWindow)
+	}
+	delete(m.State.Workspaces, ws.ID)
+	return m.SaveState()
 }

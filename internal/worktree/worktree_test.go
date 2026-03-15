@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -151,5 +152,181 @@ func TestCreateList(t *testing.T) {
 		if wt.Path == wtPath {
 			t.Errorf("removed worktree %q still present in List output", wtPath)
 		}
+	}
+}
+
+func TestIsDirty_CleanWithUpstream(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found")
+	}
+
+	dir := t.TempDir()
+	bareDir := filepath.Join(dir, ".bare")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	// Create a bare repo with an initial commit.
+	run("git", "init", "--bare", bareDir)
+	run("git", "-C", bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srcDir := filepath.Join(dir, "src")
+	run("git", "clone", bareDir, srcDir)
+	run("git", "-C", srcDir, "config", "user.email", "test@test.com")
+	run("git", "-C", srcDir, "config", "user.name", "Test")
+	run("git", "-C", srcDir, "commit", "--allow-empty", "-m", "init")
+	run("git", "-C", srcDir, "push", "origin", "HEAD:main")
+
+	// Create a worktree from the bare repo.
+	wtPath, err := Create(bareDir, "myproject", "agent/clean-branch")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Add the bare repo as a remote, fetch it, and set the upstream tracking
+	// branch so that IsDirty can resolve @{u}.
+	run("git", "-C", wtPath, "remote", "add", "origin", bareDir)
+	run("git", "-C", wtPath, "fetch", "origin")
+	run("git", "-C", wtPath, "branch", "--set-upstream-to=origin/agent/clean-branch")
+
+	// The worktree has no local changes and tracks its upstream — not dirty.
+	dirty, err := IsDirty(wtPath)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if dirty {
+		t.Error("expected IsDirty=false for a clean worktree with upstream, got true")
+	}
+}
+
+func TestIsDirty_UncommittedChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found")
+	}
+
+	dir := t.TempDir()
+	bareDir := filepath.Join(dir, ".bare")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("git", "init", "--bare", bareDir)
+	run("git", "-C", bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srcDir := filepath.Join(dir, "src")
+	run("git", "clone", bareDir, srcDir)
+	run("git", "-C", srcDir, "config", "user.email", "test@test.com")
+	run("git", "-C", srcDir, "config", "user.name", "Test")
+	run("git", "-C", srcDir, "commit", "--allow-empty", "-m", "init")
+	run("git", "-C", srcDir, "push", "origin", "HEAD:main")
+
+	wtPath, err := Create(bareDir, "myproject", "agent/dirty-branch")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Write an untracked file to make the worktree dirty.
+	if err := os.WriteFile(filepath.Join(wtPath, "untracked.txt"), []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dirty, err := IsDirty(wtPath)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if !dirty {
+		t.Error("expected IsDirty=true for worktree with untracked file, got false")
+	}
+}
+
+func TestIsDirty_LocalOnlyCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found")
+	}
+
+	dir := t.TempDir()
+	bareDir := filepath.Join(dir, ".bare")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("git", "init", "--bare", bareDir)
+	run("git", "-C", bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srcDir := filepath.Join(dir, "src")
+	run("git", "clone", bareDir, srcDir)
+	run("git", "-C", srcDir, "config", "user.email", "test@test.com")
+	run("git", "-C", srcDir, "config", "user.name", "Test")
+	run("git", "-C", srcDir, "commit", "--allow-empty", "-m", "init")
+	run("git", "-C", srcDir, "push", "origin", "HEAD:main")
+
+	wtPath, err := Create(bareDir, "myproject", "agent/unpushed-branch")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Add a local commit that has not been pushed.
+	run("git", "-C", wtPath, "config", "user.email", "test@test.com")
+	run("git", "-C", wtPath, "config", "user.name", "Test")
+	run("git", "-C", wtPath, "commit", "--allow-empty", "-m", "local commit")
+
+	dirty, err := IsDirty(wtPath)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if !dirty {
+		t.Error("expected IsDirty=true for worktree with unpushed commits, got false")
+	}
+}
+
+func TestIsDirty_NoUpstream(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git binary not found")
+	}
+
+	dir := t.TempDir()
+	bareDir := filepath.Join(dir, ".bare")
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("command %v failed: %v\n%s", args, err, out)
+		}
+	}
+
+	run("git", "init", "--bare", bareDir)
+	run("git", "-C", bareDir, "symbolic-ref", "HEAD", "refs/heads/main")
+	srcDir := filepath.Join(dir, "src")
+	run("git", "clone", bareDir, srcDir)
+	run("git", "-C", srcDir, "config", "user.email", "test@test.com")
+	run("git", "-C", srcDir, "config", "user.name", "Test")
+	run("git", "-C", srcDir, "commit", "--allow-empty", "-m", "init")
+	run("git", "-C", srcDir, "push", "origin", "HEAD:main")
+
+	// Create a worktree on a local-only branch (no upstream tracking set).
+	wtPath := filepath.Join(dir, "myproject-local")
+	run("git", "-C", bareDir, "branch", "agent/local-only")
+	run("git", "-C", bareDir, "worktree", "add", wtPath, "agent/local-only")
+
+	// Do NOT set upstream — the branch tracks nothing.
+	dirty, err := IsDirty(wtPath)
+	if err != nil {
+		t.Fatalf("IsDirty: %v", err)
+	}
+	if !dirty {
+		t.Error("expected IsDirty=true when no upstream is configured, got false")
 	}
 }

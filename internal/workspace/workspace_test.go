@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -944,5 +945,242 @@ func TestFindOrphanWorktrees_IncludesUntrackedWorktrees(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("untracked worktree %q was not returned as orphan; orphans = %v", wtPath, orphans)
+	}
+}
+
+// ----- StopWorkspace -----
+
+func TestStopWorkspace_TransitionsToPaused(t *testing.T) {
+	m := newTestManager(t)
+
+	ws := &state.Workspace{
+		ID:        "ws-stop0001",
+		Name:      "To Stop",
+		Branch:    "feat/stop",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		// SandboxID empty — sandbox nil anyway, so stop is skipped.
+	}
+	addWorkspace(m, ws)
+
+	if err := m.StopWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("StopWorkspace: %v", err)
+	}
+
+	if ws.State != state.StatePaused {
+		t.Errorf("State after StopWorkspace: got %q, want %q", ws.State, state.StatePaused)
+	}
+}
+
+func TestStopWorkspace_PersistsState(t *testing.T) {
+	m := newTestManager(t)
+
+	ws := &state.Workspace{
+		ID:        "ws-stop0002",
+		Name:      "Persist Stop",
+		Branch:    "feat/persist-stop",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.StopWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("StopWorkspace: %v", err)
+	}
+
+	loaded, err := state.Read(m.StatePath)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	got, ok := loaded.Workspaces[ws.ID]
+	if !ok {
+		t.Fatal("workspace not found in persisted state after StopWorkspace")
+	}
+	if got.State != state.StatePaused {
+		t.Errorf("persisted state: got %q, want %q", got.State, state.StatePaused)
+	}
+}
+
+// ----- CleanupDoneWorkspace -----
+
+func TestCleanupDoneWorkspace_RemovesFromState(t *testing.T) {
+	m := newTestManager(t)
+
+	ws := &state.Workspace{
+		ID:        "ws-clean001",
+		Name:      "Cleanup",
+		Branch:    "feat/cleanup",
+		State:     state.StateDone,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		// No WorktreePath or TmuxWindow — skip git and tmux ops.
+	}
+	addWorkspace(m, ws)
+
+	if err := m.CleanupDoneWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CleanupDoneWorkspace: %v", err)
+	}
+
+	if _, ok := m.State.Workspaces[ws.ID]; ok {
+		t.Error("workspace still present in state after CleanupDoneWorkspace")
+	}
+}
+
+func TestCleanupDoneWorkspace_PersistsDeletion(t *testing.T) {
+	m := newTestManager(t)
+
+	ws := &state.Workspace{
+		ID:        "ws-clean002",
+		Name:      "Cleanup Persist",
+		Branch:    "feat/cleanup-persist",
+		State:     state.StateDone,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.CleanupDoneWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("CleanupDoneWorkspace: %v", err)
+	}
+
+	loaded, err := state.Read(m.StatePath)
+	if err != nil {
+		t.Fatalf("state.Read: %v", err)
+	}
+	if _, ok := loaded.Workspaces[ws.ID]; ok {
+		t.Error("workspace still present in persisted state after CleanupDoneWorkspace")
+	}
+}
+
+// ----- AssessQuitStatuses -----
+
+func TestAssessQuitStatuses_ClassifiesActive(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	ws := &state.Workspace{
+		ID:        "ws-assess01",
+		Name:      "Running",
+		Branch:    "feat/active",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		// No WorktreePath — IsDirty skipped, defaults to dirty.
+	}
+	addWorkspace(m, ws)
+
+	infos, err := m.AssessQuitStatuses(ctx)
+	if err != nil {
+		t.Fatalf("AssessQuitStatuses: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 info, got %d", len(infos))
+	}
+	if !infos[0].IsActive {
+		t.Error("running workspace should be classified as active")
+	}
+	// No WorktreePath → treated as dirty.
+	if !infos[0].IsDirty {
+		t.Error("workspace with no worktree path should be classified as dirty")
+	}
+}
+
+func TestAssessQuitStatuses_ClassifiesInactive(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	ws := &state.Workspace{
+		ID:        "ws-assess02",
+		Name:      "Done",
+		Branch:    "feat/done",
+		State:     state.StateDone,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	infos, err := m.AssessQuitStatuses(ctx)
+	if err != nil {
+		t.Fatalf("AssessQuitStatuses: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("expected 1 info, got %d", len(infos))
+	}
+	if infos[0].IsActive {
+		t.Error("done workspace should not be classified as active")
+	}
+}
+
+func TestAssessQuitStatuses_EmptyReturnsEmpty(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	infos, err := m.AssessQuitStatuses(ctx)
+	if err != nil {
+		t.Fatalf("AssessQuitStatuses: %v", err)
+	}
+	if len(infos) != 0 {
+		t.Errorf("expected 0 infos for empty state, got %d", len(infos))
+	}
+}
+
+func TestAssessQuitStatuses_AllStatesClassified(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	activeStates := []state.WorkspaceState{
+		state.StateCreating,
+		state.StateProvisioning,
+		state.StateRunning,
+		state.StatePaused,
+	}
+	inactiveStates := []state.WorkspaceState{
+		state.StateCompleting,
+		state.StateDone,
+		state.StateFailed,
+	}
+
+	now := time.Now().UTC()
+	for i, s := range activeStates {
+		ws := &state.Workspace{
+			ID:        fmt.Sprintf("ws-active%02d", i),
+			Branch:    fmt.Sprintf("feat/active%d", i),
+			State:     s,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		addWorkspace(m, ws)
+	}
+	for i, s := range inactiveStates {
+		ws := &state.Workspace{
+			ID:        fmt.Sprintf("ws-inact%02d", i),
+			Branch:    fmt.Sprintf("feat/inactive%d", i),
+			State:     s,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+		addWorkspace(m, ws)
+	}
+
+	infos, err := m.AssessQuitStatuses(ctx)
+	if err != nil {
+		t.Fatalf("AssessQuitStatuses: %v", err)
+	}
+
+	activeCount, inactiveCount := 0, 0
+	for _, info := range infos {
+		if info.IsActive {
+			activeCount++
+		} else {
+			inactiveCount++
+		}
+	}
+	if activeCount != len(activeStates) {
+		t.Errorf("active count: got %d, want %d", activeCount, len(activeStates))
+	}
+	if inactiveCount != len(inactiveStates) {
+		t.Errorf("inactive count: got %d, want %d", inactiveCount, len(inactiveStates))
 	}
 }

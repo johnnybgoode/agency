@@ -114,6 +114,31 @@ func Remove(bareDir, wtPath string) error {
 	return nil
 }
 
+// IsDirty returns true if the worktree has uncommitted changes or local-only
+// commits. If no upstream branch is configured, it is always considered dirty.
+func IsDirty(worktreePath string) (bool, error) {
+	// Check for uncommitted changes.
+	statusOut, err := exec.Command("git", "-C", worktreePath, "status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		return true, nil
+	}
+
+	// Check if upstream branch exists; no upstream = always dirty.
+	if err := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").Run(); err != nil {
+		return true, nil
+	}
+
+	// Check for local-only commits.
+	logOut, err := exec.Command("git", "-C", worktreePath, "log", "--oneline", "@{u}..").Output()
+	if err != nil {
+		return false, fmt.Errorf("git log: %w", err)
+	}
+	return strings.TrimSpace(string(logOut)) != "", nil
+}
+
 // Init prepares a project directory for use with worktrees. It handles three
 // cases depending on the current state of projectDir:
 //

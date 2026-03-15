@@ -192,6 +192,19 @@ func (c *Client) DisplayPopup(cmd string, width, height, x int) error {
 	return err
 }
 
+// KillSession kills the entire tmux session (called after graceful quit cleanup).
+func (c *Client) KillSession() error {
+	_, err := c.run("kill-session", "-t", c.SessionName)
+	return err
+}
+
+// DetachClients detaches all clients from the session without killing it
+// (called when the user cancels quit while active workspaces are running).
+func (c *Client) DetachClients() error {
+	_, err := c.run("detach-client", "-s", c.SessionName)
+	return err
+}
+
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
 	if c.tmuxPath == "" {

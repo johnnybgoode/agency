@@ -312,20 +312,24 @@ func protectWorkspacePane(mgr *workspace.Manager, rightPaneID string) {
 	_ = mgr.Tmux.SetHook("respawn-workspace", "pane-died", hookCmd)
 }
 
-// ensureLayout verifies that State.MainWindowID points to a real tmux window
-// with a 2-pane horizontal split (left = sidebar TUI, right = workspace shell).
-// If the window is missing or gone it is created. If only one pane exists the
-// window is split and the right pane ID is stored in State.WorkspacePaneID.
-// Enables the tmux status bar so the session name is always visible.
-// Returns the left pane ID.
+// ensureLayout verifies that State.MainWindowID points to a real tmux window.
+// When workspaces exist, it ensures a 2-pane horizontal split (left = sidebar
+// TUI, right = workspace shell). In zero state (no workspaces), the window is
+// kept as a single pane so the welcome panel can use the full terminal width.
+// The right pane is created on demand by SwapActivePane when the first workspace
+// is created. Returns the left pane ID.
 func ensureLayout(mgr *workspace.Manager) (string, error) {
-	// Attempt crash recovery from tmux env vars first.
-	if navPane, wsPane, mainWin, ok := recoverLayoutFromEnv(mgr); ok {
-		mgr.State.MainWindowID = mainWin
-		mgr.State.WorkspacePaneID = wsPane
-		_ = mgr.SaveState()
-		finalizeLayout(mgr, wsPane)
-		return navPane, nil
+	hasWorkspaces := len(mgr.State.Workspaces) > 0
+
+	// Attempt crash recovery from tmux env vars first (only when workspaces exist).
+	if hasWorkspaces {
+		if navPane, wsPane, mainWin, ok := recoverLayoutFromEnv(mgr); ok {
+			mgr.State.MainWindowID = mainWin
+			mgr.State.WorkspacePaneID = wsPane
+			_ = mgr.SaveState()
+			finalizeLayout(mgr, wsPane)
+			return navPane, nil
+		}
 	}
 
 	winID, err := resolveMainWindow(mgr)
@@ -340,11 +344,16 @@ func ensureLayout(mgr *workspace.Manager) (string, error) {
 		return "", fmt.Errorf("getting window panes: %w", err)
 	}
 
-	// Split to create the right pane if not already split.
-	ensureRightPane(mgr, winID, panes)
+	// Only split when workspaces exist — in zero state the TUI occupies the
+	// full window and renders a welcome panel.
+	if hasWorkspaces {
+		ensureRightPane(mgr, winID, panes)
+	}
 
 	finalizeLayout(mgr, mgr.State.WorkspacePaneID)
-	persistLayoutEnv(mgr, panes[0], mgr.State.WorkspacePaneID, winID)
+	if mgr.State.WorkspacePaneID != "" {
+		persistLayoutEnv(mgr, panes[0], mgr.State.WorkspacePaneID, winID)
+	}
 
 	return panes[0], mgr.SaveState()
 }

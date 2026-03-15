@@ -88,7 +88,7 @@ func readTuiCalls(t *testing.T, argsFile string) []string {
 }
 
 // TestEnsureLayout_SplitsToTwoPanes verifies that ensureLayout calls split-window
-// when the main window has only one pane, creating the right-side workspace slot.
+// when the main window has only one pane and workspaces exist.
 func TestEnsureLayout_SplitsToTwoPanes(t *testing.T) {
 	mgr, argsFile := newFakeTuiManager(t, map[string]string{
 		"list-windows": "",   // no existing windows → triggers new-window
@@ -97,6 +97,8 @@ func TestEnsureLayout_SplitsToTwoPanes(t *testing.T) {
 		"split-window": "%2", // fake right pane ID
 		"set-option":   "",
 	})
+	// Add a workspace so ensureLayout triggers the split.
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
 
 	if _, err := ensureLayout(mgr); err != nil {
 		_ = err
@@ -114,6 +116,29 @@ func TestEnsureLayout_SplitsToTwoPanes(t *testing.T) {
 	}
 }
 
+// TestEnsureLayout_NoSplitInZeroState verifies that ensureLayout does NOT
+// split the window when there are no workspaces (zero state).
+func TestEnsureLayout_NoSplitInZeroState(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-windows": "",   // no existing windows → triggers new-window
+		"new-window":   "@1", // fake window ID
+		"list-panes":   "%1", // one pane — should NOT trigger split in zero state
+		"split-window": "%2",
+	})
+	// No workspaces → zero state.
+
+	if _, err := ensureLayout(mgr); err != nil {
+		_ = err
+	}
+
+	calls := readTuiCalls(t, argsFile)
+	for _, c := range calls {
+		if c == "split-window" {
+			t.Errorf("ensureLayout called split-window in zero state; calls = %v", calls)
+		}
+	}
+}
+
 // TestEnsureLayout_StoresWorkspacePaneID verifies that ensureLayout saves the
 // right pane ID to State.WorkspacePaneID after splitting.
 func TestEnsureLayout_StoresWorkspacePaneID(t *testing.T) {
@@ -124,6 +149,8 @@ func TestEnsureLayout_StoresWorkspacePaneID(t *testing.T) {
 		"set-option":   "",
 	})
 	mgr.State.MainWindowID = "@5"
+	// Add a workspace so ensureLayout triggers the split.
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
 
 	if _, err := ensureLayout(mgr); err != nil {
 		t.Fatalf("ensureLayout returned error: %v", err)
@@ -210,6 +237,7 @@ func TestEnsureLayout_PersistsEnvVars(t *testing.T) {
 		"split-window": "%2",
 	})
 	mgr.State.MainWindowID = "@5"
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
 
 	if _, err := ensureLayout(mgr); err != nil {
 		t.Fatalf("ensureLayout returned error: %v", err)
@@ -236,6 +264,7 @@ func TestEnsureLayout_ProtectsWorkspacePane(t *testing.T) {
 		"split-window": "%2",
 	})
 	mgr.State.MainWindowID = "@5"
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
 
 	if _, err := ensureLayout(mgr); err != nil {
 		t.Fatalf("ensureLayout returned error: %v", err)
@@ -262,6 +291,7 @@ func TestEnsureLayout_InstallsKeybindings(t *testing.T) {
 		"split-window": "%2",
 	})
 	mgr.State.MainWindowID = "@5"
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
 
 	if _, err := ensureLayout(mgr); err != nil {
 		t.Fatalf("ensureLayout returned error: %v", err)

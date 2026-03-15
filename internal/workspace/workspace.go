@@ -174,8 +174,8 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 
 	agencyBin, _ := os.Executable()
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "%s gc --workspace-id %s" EXIT; docker exec -it %s bash -c claude'`,
-		agencyBin, ws.ID, ws.SandboxID,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; docker exec -it %s bash -c claude'`,
+		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)

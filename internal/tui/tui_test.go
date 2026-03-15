@@ -20,8 +20,27 @@ func newFakeTuiManager(t *testing.T, fakeOutputByCmd map[string]string) (mgr *wo
 	argsFile = filepath.Join(dir, "calls.txt")
 
 	// Build case statements for canned per-subcommand output.
+	// Always provide defaults for commands that ensureLayout's helpers call
+	// (show-environment, display-message, set-environment, set-option,
+	// set-hook, bind-key) so the script doesn't fail unexpectedly.
+	defaults := map[string]string{
+		"show-environment": "",
+		"display-message":  "",
+		"set-environment":  "",
+		"set-option":       "",
+		"set-hook":         "",
+		"bind-key":         "",
+	}
+	merged := make(map[string]string, len(defaults)+len(fakeOutputByCmd))
+	for k, v := range defaults {
+		merged[k] = v
+	}
+	for k, v := range fakeOutputByCmd {
+		merged[k] = v
+	}
+
 	cases := ""
-	for cmd, out := range fakeOutputByCmd {
+	for cmd, out := range merged {
 		cases += "  " + cmd + ") echo '" + out + "';;\n"
 	}
 
@@ -68,102 +87,67 @@ func readTuiCalls(t *testing.T, argsFile string) []string {
 	return cmds
 }
 
-// TestEnsureMainWindow_NoSplitWindow verifies that ensureMainWindow never
-// calls split-window. The main window must start as a single-pane sidebar;
-// a workspace pane is joined only when a workspace becomes active.
-func TestEnsureMainWindow_NoSplitWindow(t *testing.T) {
+// TestEnsureLayout_SplitsToTwoPanes verifies that ensureLayout calls split-window
+// when the main window has only one pane, creating the right-side workspace slot.
+func TestEnsureLayout_SplitsToTwoPanes(t *testing.T) {
 	mgr, argsFile := newFakeTuiManager(t, map[string]string{
 		"list-windows": "",   // no existing windows → triggers new-window
 		"new-window":   "@1", // fake window ID
-		"list-panes":   "%1", // one pane after creation
-		"resize-pane":  "",
+		"list-panes":   "%1", // one pane after creation → should trigger split
+		"split-window": "%2", // fake right pane ID
+		"set-option":   "",
 	})
 
-	if _, err := ensureMainWindow(mgr); err != nil {
-		// ensureMainWindow may return an error if, say, list-panes returns no
-		// usable output due to the simple fake script. That's fine — what we
-		// care about is that split-window was never invoked.
+	if _, err := ensureLayout(mgr); err != nil {
 		_ = err
 	}
 
 	calls := readTuiCalls(t, argsFile)
+	splitFound := false
 	for _, c := range calls {
 		if c == "split-window" {
-			t.Errorf("ensureMainWindow called split-window — this creates a spurious empty right pane; calls = %v", calls)
+			splitFound = true
 		}
+	}
+	if !splitFound {
+		t.Errorf("ensureLayout did not call split-window to create the right workspace pane; calls = %v", calls)
 	}
 }
 
-// TestStartup_ResizeSidebarAfterRejoin verifies the runSidebar invariant:
-// when an active workspace pane is rejoined into the main window on startup,
-// resize-pane is called on the sidebar AFTER join-pane (not before). Calling
-// ResizePane before JoinPane would leave the sidebar at 50% because JoinPane
-// resets pane proportions.
-func TestStartup_ResizeSidebarAfterRejoin(t *testing.T) {
-	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+// TestEnsureLayout_StoresWorkspacePaneID verifies that ensureLayout saves the
+// right pane ID to State.WorkspacePaneID after splitting.
+func TestEnsureLayout_StoresWorkspacePaneID(t *testing.T) {
+	mgr, _ := newFakeTuiManager(t, map[string]string{
 		"list-windows": "@5 agency",
-		"list-panes":   "%1",
-		"join-pane":    "",
-		"resize-pane":  "",
+		"list-panes":   "%1", // one pane → triggers split
+		"split-window": "%2", // fake right pane ID
+		"set-option":   "",
 	})
 	mgr.State.MainWindowID = "@5"
 
-	// Simulate an active workspace whose pane is NOT yet in the main window.
-	ws := &state.Workspace{
-		ID:     "ws-startup01",
-		PaneID: "%10", // not returned by fake list-panes → rejoin will call join-pane
-		State:  state.StateRunning,
-	}
-	mgr.State.Workspaces[ws.ID] = ws
-	mgr.State.ActiveWorkspaceID = ws.ID
-
-	// Replicate the runSidebar sequence directly.
-	leftPaneID, _ := ensureMainWindow(mgr)
-	rejoinActivePane(mgr)
-	if leftPaneID != "" {
-		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
+	if _, err := ensureLayout(mgr); err != nil {
+		t.Fatalf("ensureLayout returned error: %v", err)
 	}
 
-	calls := readTuiCalls(t, argsFile)
-
-	joinIdx, resizeIdx := -1, -1
-	for i, c := range calls {
-		switch c {
-		case "join-pane":
-			if joinIdx < 0 {
-				joinIdx = i
-			}
-		case "resize-pane":
-			if resizeIdx < 0 {
-				resizeIdx = i
-			}
-		}
-	}
-	if joinIdx < 0 {
-		t.Fatalf("join-pane not called; calls = %v", calls)
-	}
-	if resizeIdx < 0 {
-		t.Fatalf("resize-pane not called; calls = %v", calls)
-	}
-	if resizeIdx < joinIdx {
-		t.Errorf("resize-pane (pos %d) must come after join-pane (pos %d); calls = %v",
-			resizeIdx, joinIdx, calls)
+	if mgr.State.WorkspacePaneID != "%2" {
+		t.Errorf("WorkspacePaneID = %q, want %%2", mgr.State.WorkspacePaneID)
 	}
 }
 
-// TestEnsureMainWindow_ReuseExistingWindow verifies that ensureMainWindow
-// reuses the first non-workspace window found in the session rather than
-// always creating a new one.
-func TestEnsureMainWindow_ReuseExistingWindow(t *testing.T) {
+// TestEnsureLayout_ReuseExistingWindow verifies that ensureLayout reuses the
+// first non-workspace window found in the session rather than always creating
+// a new one.
+func TestEnsureLayout_ReuseExistingWindow(t *testing.T) {
 	mgr, argsFile := newFakeTuiManager(t, map[string]string{
 		"list-windows": "@5 existing",
-		"list-panes":   "%3",
-		"resize-pane":  "",
+		"list-panes":   "%3", // one pane → triggers split
+		"split-window": "%4", // fake right pane
+		"set-option":   "",
 	})
 
-	leftPane, err := ensureMainWindow(mgr)
+	leftPane, err := ensureLayout(mgr)
 	if err != nil {
-		t.Fatalf("ensureMainWindow unexpected error: %v", err)
+		t.Fatalf("ensureLayout unexpected error: %v", err)
 	}
 	if leftPane != "%3" {
 		t.Errorf("leftPane = %q, want %%3", leftPane)
@@ -173,7 +157,7 @@ func TestEnsureMainWindow_ReuseExistingWindow(t *testing.T) {
 	calls := readTuiCalls(t, argsFile)
 	for _, c := range calls {
 		if c == "new-window" {
-			t.Errorf("ensureMainWindow created a new window even though one already existed; calls = %v", calls)
+			t.Errorf("ensureLayout created a new window even though one already existed; calls = %v", calls)
 		}
 	}
 
@@ -214,6 +198,84 @@ func TestZeroStateView_NarrowFallback(t *testing.T) {
 	// Sidebar header should still appear.
 	if !strings.Contains(out, "Agency") {
 		t.Errorf("View() missing sidebar header in narrow fallback; output:\n%s", out)
+	}
+}
+
+// TestEnsureLayout_PersistsEnvVars verifies that ensureLayout calls
+// set-environment to persist pane IDs for crash recovery.
+func TestEnsureLayout_PersistsEnvVars(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-windows": "@5 agency",
+		"list-panes":   "%1",
+		"split-window": "%2",
+	})
+	mgr.State.MainWindowID = "@5"
+
+	if _, err := ensureLayout(mgr); err != nil {
+		t.Fatalf("ensureLayout returned error: %v", err)
+	}
+
+	calls := readTuiCalls(t, argsFile)
+	envFound := false
+	for _, c := range calls {
+		if c == "set-environment" {
+			envFound = true
+		}
+	}
+	if !envFound {
+		t.Errorf("ensureLayout did not call set-environment to persist pane IDs; calls = %v", calls)
+	}
+}
+
+// TestEnsureLayout_ProtectsWorkspacePane verifies that ensureLayout calls
+// set-option (for remain-on-exit) and set-hook (for pane-died respawn).
+func TestEnsureLayout_ProtectsWorkspacePane(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-windows": "@5 agency",
+		"list-panes":   "%1",
+		"split-window": "%2",
+	})
+	mgr.State.MainWindowID = "@5"
+
+	if _, err := ensureLayout(mgr); err != nil {
+		t.Fatalf("ensureLayout returned error: %v", err)
+	}
+
+	calls := readTuiCalls(t, argsFile)
+	hookFound := false
+	for _, c := range calls {
+		if c == "set-hook" {
+			hookFound = true
+		}
+	}
+	if !hookFound {
+		t.Errorf("ensureLayout did not call set-hook for pane-died respawn; calls = %v", calls)
+	}
+}
+
+// TestEnsureLayout_InstallsKeybindings verifies that ensureLayout calls
+// bind-key for focus navigation keybindings.
+func TestEnsureLayout_InstallsKeybindings(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-windows": "@5 agency",
+		"list-panes":   "%1",
+		"split-window": "%2",
+	})
+	mgr.State.MainWindowID = "@5"
+
+	if _, err := ensureLayout(mgr); err != nil {
+		t.Fatalf("ensureLayout returned error: %v", err)
+	}
+
+	calls := readTuiCalls(t, argsFile)
+	bindFound := false
+	for _, c := range calls {
+		if c == "bind-key" {
+			bindFound = true
+		}
+	}
+	if !bindFound {
+		t.Errorf("ensureLayout did not call bind-key for keybindings; calls = %v", calls)
 	}
 }
 

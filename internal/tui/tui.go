@@ -10,6 +10,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
@@ -113,8 +114,10 @@ func Run() error {
 	return runSidebar(projectDir)
 }
 
-// runAndAttach sets up the tmux session and main window, launches the sidebar
-// inside the left pane, then attaches the current terminal to the session.
+// runAndAttach sets up the tmux session, launches the sidebar inside a pane,
+// then attaches the current terminal to the session. It intentionally does NOT
+// split the window — runSidebar handles the 2-pane layout after the terminal is
+// attached so that tmux applies percentages against the real terminal size.
 // It does not acquire the lock — the sidebar process inside the pane does that.
 func runAndAttach(projectDir string) error {
 	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
@@ -138,9 +141,9 @@ func runAndAttach(projectDir string) error {
 	}
 
 	if !alreadyRunning {
-		leftPaneID, winErr := ensureMainWindow(mgr)
-		if winErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", winErr)
+		leftPaneID, findErr := findSidebarPane(mgr)
+		if findErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not find pane for sidebar: %v\n", findErr)
 		} else {
 			exe, exeErr := os.Executable()
 			if exeErr != nil {
@@ -157,6 +160,46 @@ func runAndAttach(projectDir string) error {
 	}
 
 	return mgr.Tmux.Attach()
+}
+
+// findSidebarPane finds or creates a single-pane window suitable for the
+// sidebar. It reuses the first non-workspace window, or creates a new one.
+// Does NOT split — the split is deferred to runSidebar's ensureLayout call.
+func findSidebarPane(mgr *workspace.Manager) (string, error) {
+	windows, err := mgr.Tmux.ListWindows()
+	if err != nil {
+		return "", err
+	}
+
+	// Skip windows belonging to workspaces.
+	workspaceWins := map[string]bool{}
+	for _, ws := range mgr.State.Workspaces {
+		if ws.TmuxWindow != "" {
+			workspaceWins[ws.TmuxWindow] = true
+		}
+	}
+
+	var winID string
+	for _, w := range windows {
+		if !workspaceWins[w.ID] {
+			winID = w.ID
+			break
+		}
+	}
+
+	if winID == "" {
+		winID, err = mgr.Tmux.NewWindow("agency")
+		if err != nil {
+			return "", fmt.Errorf("creating window: %w", err)
+		}
+	}
+
+	panes, err := mgr.Tmux.GetWindowPanes(winID)
+	if err != nil || len(panes) == 0 {
+		return "", fmt.Errorf("getting panes: %w", err)
+	}
+
+	return panes[0], nil
 }
 
 // runSidebar is the full sidebar TUI flow, run when already inside tmux.
@@ -199,17 +242,13 @@ func runSidebar(projectDir string) error {
 		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
-	// Ensure the main window is set up (sidebar lives here).
-	leftPaneID, winErr := ensureMainWindow(mgr)
+	// Ensure the 2-pane layout is set up (sidebar left, workspace shell right).
+	leftPaneID, winErr := ensureLayout(mgr)
 	if winErr != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not set up main window: %v\n", winErr)
 	}
 
-	// Rejoin the active workspace pane if it is not already in the main window.
-	// This must happen before the resize below: JoinPane resets proportions to 50/50.
-	rejoinActivePane(mgr)
-
-	// Apply the configured sidebar width after any rejoin that may have reset proportions.
+	// Apply the configured sidebar width.
 	// In zero state (no workspaces), skip resizing so the TUI occupies full terminal width
 	// and can render the welcome panel.
 	if leftPaneID != "" && len(mgr.List()) > 0 {
@@ -235,46 +274,98 @@ func runSidebar(projectDir string) error {
 	return nil
 }
 
-// rejoinActivePane re-joins the active workspace pane into the main window if
-// it is not already there. Guards against double-join after an unclean exit.
-func rejoinActivePane(mgr *workspace.Manager) {
-	if mgr.State.ActiveWorkspaceID == "" || mgr.State.MainWindowID == "" {
-		return
+// recoverLayoutFromEnv attempts to recover pane IDs from tmux session
+// environment variables. Returns (navPane, workspacePane, mainWindow, ok).
+func recoverLayoutFromEnv(mgr *workspace.Manager) (navPane, workspacePane, mainWindow string, ok bool) {
+	navPane, _ = mgr.Tmux.GetEnvironment(tmux.EnvNavPane)
+	workspacePane, _ = mgr.Tmux.GetEnvironment(tmux.EnvWorkspacePane)
+	mainWindow, _ = mgr.Tmux.GetEnvironment(tmux.EnvMainWindow)
+
+	if navPane == "" || workspacePane == "" || mainWindow == "" {
+		return "", "", "", false
 	}
-	ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]
-	if !ok || ws.PaneID == "" {
-		return
+
+	// Verify both panes actually exist in tmux.
+	if !mgr.Tmux.PaneExists(navPane) || !mgr.Tmux.PaneExists(workspacePane) {
+		return "", "", "", false
 	}
-	existingPanes, _ := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
-	if !paneInWindow(existingPanes, ws.PaneID) {
-		_ = mgr.Tmux.JoinPane(ws.PaneID, mgr.State.MainWindowID)
-	}
+
+	return navPane, workspacePane, mainWindow, true
 }
 
-// ensureMainWindow verifies that State.MainWindowID points to a real tmux window.
-// If it is empty or the window is gone, a new window is created, split
-// vertically, and the state is saved. Returns the left pane ID.
-func ensureMainWindow(mgr *workspace.Manager) (string, error) {
-	mainID := mgr.State.MainWindowID
+// persistLayoutEnv writes pane IDs to tmux session environment variables
+// for crash-resilient rediscovery.
+func persistLayoutEnv(mgr *workspace.Manager, navPane, wsPane, mainWin string) {
+	_ = mgr.Tmux.SetEnvironment(tmux.EnvNavPane, navPane)
+	_ = mgr.Tmux.SetEnvironment(tmux.EnvWorkspacePane, wsPane)
+	_ = mgr.Tmux.SetEnvironment(tmux.EnvMainWindow, mainWin)
+}
 
-	// One ListWindows call covers both the "verify existing" and "find fallback" cases.
+// protectWorkspacePane sets remain-on-exit and installs a pane-died hook
+// so that ctrl+d in the right pane respawns a fresh shell instead of killing it.
+func protectWorkspacePane(mgr *workspace.Manager, rightPaneID string) {
+	_ = mgr.Tmux.SetPaneOption(rightPaneID, "remain-on-exit", "on")
+	hookCmd := fmt.Sprintf(
+		"if-shell -F '#{==:#{pane_id},%s}' 'respawn-pane -t %s'",
+		rightPaneID, rightPaneID,
+	)
+	_ = mgr.Tmux.SetHook("respawn-workspace", "pane-died", hookCmd)
+}
+
+// ensureLayout verifies that State.MainWindowID points to a real tmux window
+// with a 2-pane horizontal split (left = sidebar TUI, right = workspace shell).
+// If the window is missing or gone it is created. If only one pane exists the
+// window is split and the right pane ID is stored in State.WorkspacePaneID.
+// Enables the tmux status bar so the session name is always visible.
+// Returns the left pane ID.
+func ensureLayout(mgr *workspace.Manager) (string, error) {
+	// Attempt crash recovery from tmux env vars first.
+	if navPane, wsPane, mainWin, ok := recoverLayoutFromEnv(mgr); ok {
+		mgr.State.MainWindowID = mainWin
+		mgr.State.WorkspacePaneID = wsPane
+		_ = mgr.SaveState()
+		finalizeLayout(mgr, wsPane)
+		return navPane, nil
+	}
+
+	winID, err := resolveMainWindow(mgr)
+	if err != nil {
+		return "", err
+	}
+	mgr.State.MainWindowID = winID
+
+	panes, err := mgr.Tmux.GetWindowPanes(winID)
+	if err != nil || len(panes) == 0 {
+		_ = mgr.SaveState()
+		return "", fmt.Errorf("getting window panes: %w", err)
+	}
+
+	// Split to create the right pane if not already split.
+	ensureRightPane(mgr, winID, panes)
+
+	finalizeLayout(mgr, mgr.State.WorkspacePaneID)
+	persistLayoutEnv(mgr, panes[0], mgr.State.WorkspacePaneID, winID)
+
+	return panes[0], mgr.SaveState()
+}
+
+// resolveMainWindow returns the window ID for the main Agency window.
+// It verifies State.MainWindowID is still valid, then falls back to reusing an
+// existing non-workspace window, and finally creates a new one.
+func resolveMainWindow(mgr *workspace.Manager) (string, error) {
+	mainID := mgr.State.MainWindowID
 	windows, listErr := mgr.Tmux.ListWindows()
 
+	// Check if the saved MainWindowID still exists.
 	if mainID != "" && listErr == nil {
 		for _, w := range windows {
 			if w.ID == mainID {
-				// Already good — return the left pane ID.
-				if panes, err := mgr.Tmux.GetWindowPanes(mainID); err == nil && len(panes) > 0 {
-					return panes[0], nil
-				}
-				return "", nil
+				return mainID, nil
 			}
 		}
 	}
 
-	// mainID is empty or the window is gone — reuse an existing non-workspace
-	// window, or create a new one.
-	var winID string
+	// Reuse the first non-workspace window if available.
 	if listErr == nil {
 		workspaceWins := map[string]bool{}
 		for _, ws := range mgr.State.Workspaces {
@@ -284,44 +375,75 @@ func ensureMainWindow(mgr *workspace.Manager) (string, error) {
 		}
 		for _, w := range windows {
 			if !workspaceWins[w.ID] {
-				winID = w.ID
-				break
+				return w.ID, nil
 			}
 		}
 	}
-	if winID == "" {
-		var err error
-		winID, err = mgr.Tmux.NewWindow("agency")
-		if err != nil {
-			return "", fmt.Errorf("creating main window: %w", err)
-		}
-	}
-	mgr.State.MainWindowID = winID
 
-	// Get panes and resize the left pane to the configured sidebar width.
-	panes, err := mgr.Tmux.GetWindowPanes(winID)
-	if err != nil || len(panes) == 0 {
-		_ = mgr.SaveState()
-		return "", fmt.Errorf("getting window panes: %w", err)
+	winID, err := mgr.Tmux.NewWindow("agency")
+	if err != nil {
+		return "", fmt.Errorf("creating main window: %w", err)
 	}
-
-	w := mgr.Cfg.TUI.SidebarWidth
-	if w <= 0 {
-		w = config.DefaultSidebarWidth
-	}
-	_ = mgr.Tmux.ResizePane(panes[0], w)
-
-	return panes[0], mgr.SaveState()
+	return winID, nil
 }
 
-// paneInWindow reports whether paneID is present in the given slice of pane IDs.
-func paneInWindow(panes []string, paneID string) bool {
-	for _, p := range panes {
-		if p == paneID {
-			return true
+// ensureRightPane splits the window if only one pane exists, or records an
+// existing right pane if WorkspacePaneID is unset.
+func ensureRightPane(mgr *workspace.Manager, winID string, panes []string) {
+	if len(panes) == 1 {
+		rightPaneID, splitErr := mgr.Tmux.SplitWindowHorizontalPercent(winID, 68)
+		if splitErr == nil && rightPaneID != "" {
+			mgr.State.WorkspacePaneID = rightPaneID
+		}
+	} else if mgr.State.WorkspacePaneID == "" {
+		mgr.State.WorkspacePaneID = panes[1]
+	}
+}
+
+// finalizeLayout applies common layout configuration: status bar, pane
+// protection, keybindings, and the custom status bar.
+func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {
+	_ = mgr.Tmux.SetOption("status", "on")
+	_ = mgr.Tmux.SetOption("status-position", "top")
+	if rightPaneID != "" {
+		protectWorkspacePane(mgr, rightPaneID)
+	}
+	installKeybindings(mgr)
+	applyStatusBar(mgr)
+}
+
+// installKeybindings sets up session-scoped key bindings for pane navigation.
+func installKeybindings(mgr *workspace.Manager) {
+	// C-Space: toggle last pane (quick switch between nav and workspace).
+	_ = mgr.Tmux.BindKey("C-Space", "last-pane")
+}
+
+// applyStatusBar configures the tmux status bar with project and workspace info.
+func applyStatusBar(mgr *workspace.Manager) {
+	wsCount := len(mgr.State.Workspaces)
+
+	activeName := ""
+	if mgr.State.ActiveWorkspaceID != "" {
+		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok {
+			activeName = ws.Name
+			if activeName == "" {
+				activeName = ws.Branch
+			}
 		}
 	}
-	return false
+
+	left := fmt.Sprintf(" agency · %s ", mgr.ProjectName)
+
+	right := fmt.Sprintf(" %d workspace(s) ", wsCount)
+	if activeName != "" {
+		right = fmt.Sprintf(" %s · %d workspace(s) ", activeName, wsCount)
+	}
+
+	_ = mgr.Tmux.SetOption("status-style", "bg=default,fg=default")
+	_ = mgr.Tmux.SetOption("status-left-length", "60")
+	_ = mgr.Tmux.SetOption("status-right-length", "60")
+	_ = mgr.Tmux.SetOption("status-left", left)
+	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
 // doQuitCleanup runs post-TUI workspace cleanup synchronously for fast operations

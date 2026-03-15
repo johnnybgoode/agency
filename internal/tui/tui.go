@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/johnnybgoode/agency/internal/config"
@@ -533,20 +534,25 @@ func applyStatusBar(mgr *workspace.Manager) {
 	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
-// doQuitCleanup runs post-TUI workspace cleanup synchronously for fast operations
-// (worktree removal, state updates) and dispatches container stops as non-blocking
-// background calls so the user isn't blocked waiting for docker.
+// doQuitCleanup stops all containers and cleans up clean worktrees on quit.
+// Container stops are fired as non-blocking background calls so the user isn't
+// blocked waiting for docker.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	ctx := context.Background()
 	for _, info := range infos {
-		switch {
-		case !info.IsActive && !info.IsDirty:
-			// INACTIVE + CLEAN: remove worktree, kill tmux window, purge state.
+		// Always stop the container, regardless of workspace state.
+		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
+			_ = mgr.Sandbox.StopBackground(info.WS.SandboxID, 10)
+		}
+		if info.IsActive {
+			info.WS.State = state.StatePaused
+			info.WS.UpdatedAt = time.Now().UTC()
+		}
+
+		if !info.IsDirty {
+			// CLEAN: remove worktree, kill tmux window, purge state.
 			_ = mgr.CleanupDoneWorkspace(ctx, info.WS)
-		case info.IsActive:
-			// ACTIVE (clean or dirty): fire background stop, transition to paused.
-			_ = mgr.StopWorkspaceBackground(ctx, info.WS)
-			// INACTIVE + DIRTY: keep everything, do nothing.
 		}
 	}
+	_ = mgr.SaveState()
 }

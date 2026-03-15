@@ -47,9 +47,10 @@ type State struct {
 	Project               string                `json:"project"`
 	BarePath              string                `json:"bare_path"`
 	TmuxSession           string                `json:"tmux_session"`
-	MainWindowID          string                `json:"main_window_id"`           // ID of the Agency main window (sidebar lives here)
-	ActiveWorkspaceID     string                `json:"active_workspace_id"`      // workspace ID whose pane is currently joined on the right
-	LastActiveWorkspaceID string                `json:"last_active_workspace_id"` // previously active workspace, for fallback on removal
+	MainWindowID          string                `json:"main_window_id"`              // ID of the Agency main window (sidebar lives here)
+	WorkspacePaneID       string                `json:"workspace_pane_id,omitempty"` // pane ID of the shell pane that lives in :0.1 when idle
+	ActiveWorkspaceID     string                `json:"active_workspace_id"`         // workspace ID whose pane is currently swapped into the right slot
+	LastActiveWorkspaceID string                `json:"last_active_workspace_id"`    // previously active workspace, for fallback on removal
 	PID                   int                   `json:"pid"`
 	UpdatedAt             time.Time             `json:"updated_at"`
 	Workspaces            map[string]*Workspace `json:"workspaces"`

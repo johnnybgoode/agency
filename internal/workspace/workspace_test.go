@@ -440,6 +440,7 @@ func newFakeTmuxManager(t *testing.T) (m *Manager, argsFile string) {
 
 	// The script appends one line per call so ordering can be verified.
 	// break-pane returns a fake new window ID; everything else exits 0.
+	// display-message always succeeds so PaneExists returns true by default.
 	script := "#!/bin/sh\n" +
 		`echo "$@" >> ` + argsFile + "\n" +
 		`subcmd="$1"` + "\n" +
@@ -447,6 +448,7 @@ func newFakeTmuxManager(t *testing.T) (m *Manager, argsFile string) {
 		`  break-pane) echo "@99";;` + "\n" +
 		`  new-window)  echo "@88";;` + "\n" +
 		`  list-panes)  echo "%5";;` + "\n" +
+		`  display-message) echo "%0";;` + "\n" +
 		`esac` + "\n"
 
 	scriptPath := filepath.Join(dir, "tmux")
@@ -467,6 +469,42 @@ func newFakeTmuxManager(t *testing.T) (m *Manager, argsFile string) {
 	}
 	if err := mgr.SaveState(); err != nil {
 		t.Fatalf("newFakeTmuxManager: SaveState: %v", err)
+	}
+	return mgr, argsFile
+}
+
+// newFakeTmuxManagerWithDeadPanes creates a Manager wired to a fake tmux that
+// fails display-message (PaneExists returns false) to simulate dead panes.
+func newFakeTmuxManagerWithDeadPanes(t *testing.T) (m *Manager, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile = filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`subcmd="$1"` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  display-message) exit 1;;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	mgr := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.NewWithBinaryPath("agency-testproject", scriptPath),
+		Sandbox:     nil,
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := mgr.SaveState(); err != nil {
+		t.Fatalf("newFakeTmuxManagerWithDeadPanes: SaveState: %v", err)
 	}
 	return mgr, argsFile
 }
@@ -493,139 +531,81 @@ func readCalls(t *testing.T, argsFile string) []string {
 	return cmds
 }
 
-// ----- SwitchActivePane -----
+// ----- SwapActivePane / SwapBackToShell -----
 
-// TestSwitchActivePane_BreaksPreviousBeforeJoin verifies the 2-pane invariant:
-// when a workspace is currently active SwitchActivePane must call break-pane
-// on it before calling join-pane for the incoming workspace.
-func TestSwitchActivePane_BreaksPreviousBeforeJoin(t *testing.T) {
+// TestSwapActivePane_CallsSwapPane verifies that SwapActivePane calls swap-pane
+// when no workspace is currently active (shell is in :0.1).
+func TestSwapActivePane_CallsSwapPane(t *testing.T) {
 	m, argsFile := newFakeTmuxManager(t)
-
-	// Set up an active workspace with a pane in the main window.
-	prevWS := &state.Workspace{
-		ID:         "ws-prev0001",
-		Name:       "Previous",
-		Branch:     "feat/prev",
-		State:      state.StateRunning,
-		PaneID:     "%10",
-		TmuxWindow: "@main",
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
-	}
-	addWorkspace(m, prevWS)
-	m.State.MainWindowID = "@main"
-	m.State.ActiveWorkspaceID = prevWS.ID
-
-	newWS := &state.Workspace{
-		ID:        "ws-new00001",
-		Name:      "New",
-		Branch:    "feat/new",
-		State:     state.StateRunning,
-		PaneID:    "%20",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	}
-
-	m.SwitchActivePane(newWS)
-
-	calls := readCalls(t, argsFile)
-
-	// break-pane must appear before join-pane.
-	breakIdx, joinIdx := -1, -1
-	for i, c := range calls {
-		switch c {
-		case "break-pane":
-			if breakIdx < 0 {
-				breakIdx = i
-			}
-		case "join-pane":
-			if joinIdx < 0 {
-				joinIdx = i
-			}
-		}
-	}
-	if breakIdx < 0 {
-		t.Fatalf("break-pane was never called; calls = %v", calls)
-	}
-	if joinIdx < 0 {
-		t.Fatalf("join-pane was never called; calls = %v", calls)
-	}
-	if breakIdx > joinIdx {
-		t.Errorf("break-pane (pos %d) must precede join-pane (pos %d); calls = %v", breakIdx, joinIdx, calls)
-	}
-
-	// State should be updated.
-	if m.State.ActiveWorkspaceID != newWS.ID {
-		t.Errorf("ActiveWorkspaceID = %q, want %q", m.State.ActiveWorkspaceID, newWS.ID)
-	}
-	if newWS.TmuxWindow != "@main" {
-		t.Errorf("new ws TmuxWindow = %q, want %q", newWS.TmuxWindow, "@main")
-	}
-	// Previous workspace's TmuxWindow should have been updated to the new window ID.
-	if prevWS.TmuxWindow != "@99" {
-		t.Errorf("prev ws TmuxWindow = %q, want %q (fake break-pane output)", prevWS.TmuxWindow, "@99")
-	}
-}
-
-// TestSwitchActivePane_JoinsDirectlyWhenNoActive verifies that when no
-// workspace is currently active, join-pane is called without break-pane.
-func TestSwitchActivePane_JoinsDirectlyWhenNoActive(t *testing.T) {
-	m, argsFile := newFakeTmuxManager(t)
-	m.State.MainWindowID = "@main"
-	// No active workspace.
+	m.State.WorkspacePaneID = "%shell"
 
 	ws := &state.Workspace{
 		ID:        "ws-first001",
 		PaneID:    "%5",
+		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
+	addWorkspace(m, ws)
 
-	m.SwitchActivePane(ws)
+	if err := m.SwapActivePane(ws.ID); err != nil {
+		t.Fatalf("SwapActivePane returned error: %v", err)
+	}
 
 	calls := readCalls(t, argsFile)
+	swapFound := false
 	for _, c := range calls {
-		if c == "break-pane" {
-			t.Errorf("break-pane must not be called when no workspace is active; calls = %v", calls)
+		if c == "swap-pane" {
+			swapFound = true
 		}
 	}
-	joinFound := false
-	for _, c := range calls {
-		if c == "join-pane" {
-			joinFound = true
-		}
-	}
-	if !joinFound {
-		t.Errorf("join-pane was not called; calls = %v", calls)
+	if !swapFound {
+		t.Errorf("swap-pane was not called; calls = %v", calls)
 	}
 	if m.State.ActiveWorkspaceID != ws.ID {
 		t.Errorf("ActiveWorkspaceID = %q, want %q", m.State.ActiveWorkspaceID, ws.ID)
 	}
 }
 
-// TestSwitchActivePane_NoopWhenMainWindowEmpty verifies that SwitchActivePane
-// is a no-op when no main window has been established.
-func TestSwitchActivePane_NoopWhenMainWindowEmpty(t *testing.T) {
+// TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty verifies that SwapActivePane
+// is a no-op when WorkspacePaneID (the shell pane) has not been set.
+func TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty(t *testing.T) {
 	m, argsFile := newFakeTmuxManager(t)
-	// No MainWindowID set.
+	// WorkspacePaneID not set.
 
-	ws := &state.Workspace{ID: "ws-noop0001", PaneID: "%5", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	m.SwitchActivePane(ws)
+	ws := &state.Workspace{
+		ID:        "ws-noop0001",
+		PaneID:    "%5",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	_ = m.SwapActivePane(ws.ID)
 
 	calls := readCalls(t, argsFile)
 	if len(calls) != 0 {
-		t.Errorf("expected no tmux calls when MainWindowID is empty; got %v", calls)
+		t.Errorf("expected no tmux calls when WorkspacePaneID is empty; got %v", calls)
 	}
 }
 
-// TestSwitchActivePane_NoopWhenPaneIDEmpty verifies that SwitchActivePane
-// is a no-op when the incoming workspace has no pane yet.
-func TestSwitchActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
+// TestSwapActivePane_NoopWhenPaneIDEmpty verifies that SwapActivePane is a
+// no-op when the workspace has no pane ID yet.
+func TestSwapActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
 	m, argsFile := newFakeTmuxManager(t)
-	m.State.MainWindowID = "@main"
+	m.State.WorkspacePaneID = "%shell"
 
-	ws := &state.Workspace{ID: "ws-nopane01", PaneID: "", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
-	m.SwitchActivePane(ws)
+	ws := &state.Workspace{
+		ID:        "ws-nopane01",
+		PaneID:    "",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	_ = m.SwapActivePane(ws.ID)
 
 	calls := readCalls(t, argsFile)
 	if len(calls) != 0 {
@@ -633,132 +613,106 @@ func TestSwitchActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
 	}
 }
 
-// TestSwitchActivePane_ResizesSidebarAfterJoin verifies that SwitchActivePane
-// calls resize-pane on the sidebar pane after join-pane, restoring the sidebar
-// to its configured width (JoinPane resets pane proportions to 50/50).
-func TestSwitchActivePane_ResizesSidebarAfterJoin(t *testing.T) {
+// TestSwapActivePane_SwapsBackFirstWhenActive verifies that when switching from
+// one workspace to another, swap-pane is called twice: once to restore the
+// previous workspace's pane, then once to bring in the new workspace's pane.
+func TestSwapActivePane_SwapsBackFirstWhenActive(t *testing.T) {
 	m, argsFile := newFakeTmuxManager(t)
-	m.State.MainWindowID = "@main"
-	// No active workspace — simplest path: straight join then resize.
+	m.State.WorkspacePaneID = "%shell"
 
-	ws := &state.Workspace{
-		ID:        "ws-resize001",
-		PaneID:    "%20",
+	prevWS := &state.Workspace{
+		ID:        "ws-prev0001",
+		PaneID:    "%10",
+		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
+	addWorkspace(m, prevWS)
+	m.State.ActiveWorkspaceID = prevWS.ID
 
-	m.SwitchActivePane(ws)
-
-	calls := readCalls(t, argsFile)
-
-	joinIdx, resizeIdx := -1, -1
-	for i, c := range calls {
-		switch c {
-		case "join-pane":
-			if joinIdx < 0 {
-				joinIdx = i
-			}
-		case "resize-pane":
-			if resizeIdx < 0 {
-				resizeIdx = i
-			}
-		}
-	}
-	if joinIdx < 0 {
-		t.Fatalf("join-pane not called; calls = %v", calls)
-	}
-	if resizeIdx < 0 {
-		t.Fatalf("resize-pane not called after join; calls = %v", calls)
-	}
-	if resizeIdx < joinIdx {
-		t.Errorf("resize-pane (pos %d) must come after join-pane (pos %d); calls = %v", resizeIdx, joinIdx, calls)
-	}
-}
-
-// TestSwitchActivePane_ResizesAfterBreakAndJoin verifies the full
-// break → join → resize sequence when switching between workspaces.
-func TestSwitchActivePane_ResizesAfterBreakAndJoin(t *testing.T) {
-	m, argsFile := newFakeTmuxManager(t)
-
-	prev := &state.Workspace{
-		ID:         "ws-prev0002",
-		PaneID:     "%10",
-		TmuxWindow: "@main",
-		State:      state.StateRunning,
-		CreatedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
-	}
-	addWorkspace(m, prev)
-	m.State.MainWindowID = "@main"
-	m.State.ActiveWorkspaceID = prev.ID
-
-	next := &state.Workspace{
-		ID:        "ws-next0001",
+	newWS := &state.Workspace{
+		ID:        "ws-new00001",
 		PaneID:    "%20",
+		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
+	addWorkspace(m, newWS)
 
-	m.SwitchActivePane(next)
+	if err := m.SwapActivePane(newWS.ID); err != nil {
+		t.Fatalf("SwapActivePane returned error: %v", err)
+	}
 
 	calls := readCalls(t, argsFile)
 
-	// Expected order: break-pane → join-pane → resize-pane.
-	breakIdx, joinIdx, resizeIdx := -1, -1, -1
-	for i, c := range calls {
-		switch c {
-		case "break-pane":
-			if breakIdx < 0 {
-				breakIdx = i
-			}
-		case "join-pane":
-			if joinIdx < 0 {
-				joinIdx = i
-			}
-		case "resize-pane":
-			if resizeIdx < 0 {
-				resizeIdx = i
-			}
-		}
-	}
-	if breakIdx < 0 || joinIdx < 0 || resizeIdx < 0 {
-		t.Fatalf("expected break-pane, join-pane, resize-pane; got calls = %v", calls)
-	}
-	if breakIdx >= joinIdx || joinIdx >= resizeIdx {
-		t.Errorf("wrong order: break-pane=%d join-pane=%d resize-pane=%d; calls = %v",
-			breakIdx, joinIdx, resizeIdx, calls)
-	}
-}
-
-// TestSwitchActivePane_UpdatesMainWindowTitle verifies that SwitchActivePane
-// renames the main window to show the active workspace name.
-func TestSwitchActivePane_UpdatesMainWindowTitle(t *testing.T) {
-	m, argsFile := newFakeTmuxManager(t)
-	m.State.MainWindowID = "@main"
-
-	ws := &state.Workspace{
-		ID:        "ws-title001",
-		Name:      "My Feature",
-		PaneID:    "%20",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	}
-
-	m.SwitchActivePane(ws)
-
-	calls := readCalls(t, argsFile)
-
-	// rename-window should be called with the workspace name.
-	renameFound := false
+	// swap-pane must be called exactly twice (swap-back + swap-forward).
+	swapCount := 0
 	for _, c := range calls {
-		if c == "rename-window" {
-			renameFound = true
-			break
+		if c == "swap-pane" {
+			swapCount++
 		}
 	}
-	if !renameFound {
-		t.Errorf("rename-window was not called; calls = %v", calls)
+	if swapCount != 2 {
+		t.Errorf("expected 2 swap-pane calls when switching workspaces, got %d; calls = %v", swapCount, calls)
+	}
+
+	if m.State.ActiveWorkspaceID != newWS.ID {
+		t.Errorf("ActiveWorkspaceID = %q, want %q", m.State.ActiveWorkspaceID, newWS.ID)
+	}
+	if m.State.LastActiveWorkspaceID != prevWS.ID {
+		t.Errorf("LastActiveWorkspaceID = %q, want %q", m.State.LastActiveWorkspaceID, prevWS.ID)
+	}
+}
+
+// TestSwapBackToShell_CallsSwapPane verifies that SwapBackToShell calls
+// swap-pane and clears ActiveWorkspaceID.
+func TestSwapBackToShell_CallsSwapPane(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.WorkspacePaneID = "%shell"
+
+	ws := &state.Workspace{
+		ID:        "ws-active01",
+		PaneID:    "%5",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+	m.State.ActiveWorkspaceID = ws.ID
+
+	if err := m.SwapBackToShell(); err != nil {
+		t.Fatalf("SwapBackToShell returned error: %v", err)
+	}
+
+	calls := readCalls(t, argsFile)
+	swapFound := false
+	for _, c := range calls {
+		if c == "swap-pane" {
+			swapFound = true
+		}
+	}
+	if !swapFound {
+		t.Errorf("swap-pane was not called; calls = %v", calls)
+	}
+	if m.State.ActiveWorkspaceID != "" {
+		t.Errorf("ActiveWorkspaceID = %q, want empty string", m.State.ActiveWorkspaceID)
+	}
+}
+
+// TestSwapBackToShell_NoopWhenNotActive verifies that SwapBackToShell is a
+// no-op when no workspace is active.
+func TestSwapBackToShell_NoopWhenNotActive(t *testing.T) {
+	m, argsFile := newFakeTmuxManager(t)
+	m.State.WorkspacePaneID = "%shell"
+	// ActiveWorkspaceID is empty.
+
+	if err := m.SwapBackToShell(); err != nil {
+		t.Fatalf("SwapBackToShell returned error: %v", err)
+	}
+
+	calls := readCalls(t, argsFile)
+	if len(calls) != 0 {
+		t.Errorf("expected no tmux calls when no workspace is active; got %v", calls)
 	}
 }
 
@@ -1182,5 +1136,143 @@ func TestAssessQuitStatuses_AllStatesClassified(t *testing.T) {
 	}
 	if inactiveCount != len(inactiveStates) {
 		t.Errorf("inactive count: got %d, want %d", inactiveCount, len(inactiveStates))
+	}
+}
+
+// ----- Dead pane handling -----
+
+// TestSwapActivePane_DeadWorkspacePane verifies that SwapActivePane returns an
+// error and clears WorkspacePaneID when the shell pane is dead.
+func TestSwapActivePane_DeadWorkspacePane(t *testing.T) {
+	m, _ := newFakeTmuxManagerWithDeadPanes(t)
+	m.State.WorkspacePaneID = "%dead"
+
+	ws := &state.Workspace{
+		ID:        "ws-deadshell",
+		PaneID:    "%5",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	err := m.SwapActivePane(ws.ID)
+	if err == nil {
+		t.Fatal("expected error for dead workspace pane, got nil")
+	}
+	if m.State.WorkspacePaneID != "" {
+		t.Errorf("WorkspacePaneID should be cleared; got %q", m.State.WorkspacePaneID)
+	}
+}
+
+// TestSwapActivePane_DeadTargetPane verifies that SwapActivePane returns an
+// error and clears ws.PaneID when the target workspace pane is dead.
+func TestSwapActivePane_DeadTargetPane(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	// display-message succeeds for "%shell" but fails for anything else.
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`case "$1" in` + "\n" +
+		`  display-message)` + "\n" +
+		`    for arg in "$@"; do` + "\n" +
+		`      case "$arg" in` + "\n" +
+		`        %shell) echo "%shell"; exit 0;;` + "\n" +
+		`      esac` + "\n" +
+		`    done` + "\n" +
+		`    exit 1;;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.NewWithBinaryPath("agency-testproject", scriptPath),
+		Sandbox:     nil,
+		Cfg:         config.DefaultConfig(),
+	}
+	_ = m.SaveState()
+
+	m.State.WorkspacePaneID = "%shell"
+	ws := &state.Workspace{
+		ID:        "ws-deadtarget",
+		PaneID:    "%deadpane",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	err := m.SwapActivePane(ws.ID)
+	if err == nil {
+		t.Fatal("expected error for dead target pane, got nil")
+	}
+	if ws.PaneID != "" {
+		t.Errorf("ws.PaneID should be cleared; got %q", ws.PaneID)
+	}
+}
+
+// TestSwapBackToShell_DeadActivePaneClearsState verifies that SwapBackToShell
+// clears ActiveWorkspaceID when the active workspace's pane is dead.
+func TestSwapBackToShell_DeadActivePaneClearsState(t *testing.T) {
+	m, _ := newFakeTmuxManagerWithDeadPanes(t)
+	m.State.WorkspacePaneID = "%shell"
+
+	ws := &state.Workspace{
+		ID:        "ws-deadback",
+		PaneID:    "%dead",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+	m.State.ActiveWorkspaceID = ws.ID
+
+	if err := m.SwapBackToShell(); err != nil {
+		t.Fatalf("SwapBackToShell returned error: %v", err)
+	}
+
+	if m.State.ActiveWorkspaceID != "" {
+		t.Errorf("ActiveWorkspaceID should be cleared; got %q", m.State.ActiveWorkspaceID)
+	}
+	if ws.PaneID != "" {
+		t.Errorf("ws.PaneID should be cleared; got %q", ws.PaneID)
+	}
+}
+
+// TestCleanupActiveWorkspaceID_DeadPaneClearsActive verifies that
+// cleanupActiveWorkspaceID clears the active workspace when its pane is dead.
+func TestCleanupActiveWorkspaceID_DeadPaneClearsActive(t *testing.T) {
+	m, _ := newFakeTmuxManagerWithDeadPanes(t)
+	m.State.WorkspacePaneID = "%deadshell"
+
+	ws := &state.Workspace{
+		ID:        "ws-cleanup01",
+		PaneID:    "%deadpane",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+	m.State.ActiveWorkspaceID = ws.ID
+
+	changed := m.cleanupActiveWorkspaceID()
+	if !changed {
+		t.Error("expected cleanupActiveWorkspaceID to report changes")
+	}
+	if m.State.ActiveWorkspaceID != "" {
+		t.Errorf("ActiveWorkspaceID should be cleared; got %q", m.State.ActiveWorkspaceID)
+	}
+	if m.State.WorkspacePaneID != "" {
+		t.Errorf("WorkspacePaneID should be cleared; got %q", m.State.WorkspacePaneID)
 	}
 }

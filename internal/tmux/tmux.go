@@ -4,6 +4,7 @@ package tmux
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"strings"
@@ -32,6 +33,7 @@ type Client struct {
 // binary path once; all subsequent calls reuse the cached path.
 func New(sessionName string) *Client {
 	path, _ := exec.LookPath("tmux")
+	slog.Debug("tmux client created", "session", sessionName, "binary", path)
 	return &Client{SessionName: sessionName, tmuxPath: path}
 }
 
@@ -47,12 +49,16 @@ func (c *Client) run(args ...string) (string, error) {
 	if c.tmuxPath == "" {
 		return "", errors.New("tmux is not installed")
 	}
+	slog.Debug("tmux exec", "args", args)
 	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	out, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		slog.Debug("tmux command failed", "args", args, "error", err)
+		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(args, " "), err, result)
 	}
-	return strings.TrimSpace(string(out)), nil
+	slog.Debug("tmux exec done", "args", args, "output", result)
+	return result, nil
 }
 
 // SessionExists reports whether the session already exists.
@@ -61,7 +67,9 @@ func (c *Client) SessionExists() bool {
 		return false
 	}
 	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run() //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
-	return err == nil
+	exists := err == nil
+	slog.Debug("session exists check", "session", c.SessionName, "exists", exists)
+	return exists
 }
 
 // EnsureSession creates the session if it does not already exist.
@@ -69,6 +77,7 @@ func (c *Client) EnsureSession() error {
 	if c.SessionExists() {
 		return nil
 	}
+	slog.Info("creating tmux session", "session", c.SessionName)
 	_, err := c.run("new-session", "-d", "-s", c.SessionName)
 	return err
 }
@@ -226,6 +235,7 @@ func (c *Client) SplitWindowHorizontalPercent(windowID string, pct int) (string,
 
 // KillSession kills the entire tmux session (called after graceful quit cleanup).
 func (c *Client) KillSession() error {
+	slog.Info("killing tmux session", "session", c.SessionName)
 	_, err := c.run("kill-session", "-t", c.SessionName)
 	return err
 }
@@ -239,6 +249,7 @@ func (c *Client) DetachClients() error {
 
 // Attach attaches the current terminal to the session interactively.
 func (c *Client) Attach() error {
+	slog.Info("attaching to tmux session", "session", c.SessionName)
 	if c.tmuxPath == "" {
 		return errors.New("tmux is not installed")
 	}

@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestDefault(t *testing.T) {
@@ -138,6 +140,51 @@ func TestWriteCreatesParentDir(t *testing.T) {
 	var decoded State
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Errorf("state file is not valid JSON: %v", err)
+	}
+}
+
+func TestSessionStartedAtRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	// Non-nil SessionStartedAt round-trips correctly.
+	ts := time.Date(2026, 3, 15, 10, 30, 0, 0, time.UTC)
+	s := Default("proj", "/bare")
+	s.SessionStartedAt = &ts
+	if err := Write(path, s); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if got.SessionStartedAt == nil {
+		t.Fatal("SessionStartedAt should be non-nil after round-trip")
+	}
+	if !got.SessionStartedAt.Equal(ts) {
+		t.Errorf("SessionStartedAt = %v, want %v", *got.SessionStartedAt, ts)
+	}
+
+	// Nil SessionStartedAt is omitted from JSON.
+	s2 := Default("proj", "/bare")
+	s2.SessionStartedAt = nil
+	path2 := filepath.Join(dir, "state2.json")
+	if err := Write(path2, s2); err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	data, err := os.ReadFile(path2)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if strings.Contains(string(data), "session_started_at") {
+		t.Error("nil SessionStartedAt should be omitted from JSON")
+	}
+	got2, err := Read(path2)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if got2.SessionStartedAt != nil {
+		t.Errorf("SessionStartedAt should be nil, got %v", got2.SessionStartedAt)
 	}
 }
 

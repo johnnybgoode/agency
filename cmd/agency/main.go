@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/johnnybgoode/agency/internal/config"
+	"github.com/johnnybgoode/agency/internal/logging"
 	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tui"
@@ -21,10 +23,55 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// logCleanup is set by PersistentPreRunE and called by PersistentPostRunE to
+// close the log file.
+var logCleanup func()
+
 var rootCmd = &cobra.Command{
 	Use:          "agency",
 	Short:        "Coding agent workspace manager",
 	SilenceUsage: true,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		projectDir, err := project.FindProjectDir()
+		if err != nil {
+			// Not in a project (e.g. version, init) — skip logging setup.
+			return nil
+		}
+
+		statePath := filepath.Join(projectDir, ".agency", "state.json")
+		s, err := state.Read(statePath)
+		if err != nil {
+			// State file doesn't exist yet — skip logging setup.
+			return nil
+		}
+
+		if s.SessionStartedAt == nil {
+			now := time.Now().UTC()
+			s.SessionStartedAt = &now
+			_ = state.Write(statePath, s)
+		}
+
+		levelStr, _ := cmd.Flags().GetString("log-level")
+		level, err := logging.ParseLevel(levelStr)
+		if err != nil {
+			return err
+		}
+
+		cleanup, err := logging.Setup(projectDir, level, *s.SessionStartedAt)
+		if err != nil {
+			return fmt.Errorf("setting up logging: %w", err)
+		}
+		logCleanup = cleanup
+
+		slog.Info("agency starting", "project", projectDir, "pid", os.Getpid())
+		return nil
+	},
+	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		if logCleanup != nil {
+			logCleanup()
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return tui.Run()
 	},
@@ -65,6 +112,7 @@ var initCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "warning: could not enforce global config permissions: %v\n", err)
 		}
 
+		slog.Info("project initialized", "project", projectName)
 		fmt.Printf("Initialized agency project: %s\n", projectName)
 		fmt.Println()
 		fmt.Println("To set up the tmux popup keybinding, add this to your tmux.conf:")
@@ -105,6 +153,7 @@ var topLevelNewCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("creating workspace: %w", err)
 		}
+		slog.Info("workspace created", "id", ws.ID, "name", ws.Name, "branch", ws.Branch)
 		fmt.Printf("Created workspace %s (%s) for branch %s\n", ws.ID, ws.Name, ws.Branch)
 		return nil
 	},
@@ -126,6 +175,7 @@ var workspaceNewCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("creating workspace: %w", err)
 		}
+		slog.Info("workspace created", "id", ws.ID, "name", ws.Name, "branch", ws.Branch)
 		fmt.Printf("Created workspace %s (%s) for branch %s\n", ws.ID, ws.Name, ws.Branch)
 		return nil
 	},
@@ -172,6 +222,7 @@ var rmCmd = &cobra.Command{
 		if err := mgr.Remove(context.Background(), id); err != nil {
 			return fmt.Errorf("removing workspace: %w", err)
 		}
+		slog.Info("workspace removed", "id", id)
 		fmt.Printf("Removed workspace %s\n", id)
 		return nil
 	},
@@ -245,6 +296,7 @@ var gcCmd = &cobra.Command{
 		}
 
 		total := len(orphanWorktrees) + len(orphanContainers)
+		slog.Info("gc scan complete", "orphan_worktrees", len(orphanWorktrees), "orphan_containers", len(orphanContainers))
 
 		if total == 0 {
 			fmt.Println("No orphans found.")
@@ -282,6 +334,7 @@ var gcCmd = &cobra.Command{
 		// Remove orphan worktrees.
 		for _, wt := range orphanWorktrees {
 			if err := worktree.Remove(barePath, wt.Path); err != nil {
+				slog.Warn("gc: failed to remove worktree", "path", wt.Path, "error", err)
 				fmt.Fprintf(os.Stderr, "warning: removing worktree %s: %v\n", wt.Path, err)
 			} else {
 				fmt.Printf("Removed worktree %s\n", wt.Path)
@@ -292,6 +345,7 @@ var gcCmd = &cobra.Command{
 		for i, cid := range orphanContainers {
 			if mgr.Sandbox != nil {
 				if err := mgr.Sandbox.Remove(ctx, cid); err != nil {
+					slog.Warn("gc: failed to remove container", "name", orphanContainerNames[i], "error", err)
 					fmt.Fprintf(os.Stderr, "warning: removing container %s: %v\n", orphanContainerNames[i], err)
 				} else {
 					fmt.Printf("Removed container %s\n", orphanContainerNames[i])
@@ -310,6 +364,7 @@ func loadManager() (*workspace.Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	slog.Debug("loadManager", "projectDir", projectDir)
 
 	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
 	if err != nil {
@@ -325,6 +380,7 @@ func loadManager() (*workspace.Manager, error) {
 }
 
 func init() {
+	rootCmd.PersistentFlags().String("log-level", "error", "Log level: debug, info, warn, error")
 	initCmd.Flags().String("remote", "", "Remote repository URL")
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
 	gcCmd.Flags().String("workspace-id", "", "Run single-workspace cleanup (used by EXIT trap)")

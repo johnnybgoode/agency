@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -117,6 +118,7 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	switch msg.String() {
 	case "y":
 		id := m.confirmID
+		slog.Info("deletion confirmed", "workspace", id)
 		m.confirming = false
 		m.confirmID = ""
 		m.removing[id] = true
@@ -281,6 +283,7 @@ func (m listModel) buildQuitModal() DangerModal {
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
+		slog.Info("quit requested")
 		m.quitStep = quitAssessing
 		mgr := m.manager
 		return m, func() tea.Msg {
@@ -289,11 +292,13 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		}
 
 	case "n":
+		slog.Info("new workspace popup requested")
 		return m, m.newWorkspaceCmd()
 
 	case "enter":
 		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
 			ws := m.workspaces[m.cursor]
+			slog.Info("workspace selected", "workspace", ws.ID)
 			activeID := m.manager.State.ActiveWorkspaceID
 			mainWindowID := m.manager.State.MainWindowID
 			if ws.PaneID != "" && mainWindowID != "" {
@@ -313,6 +318,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 
 	case "d":
 		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
+			slog.Info("deletion requested", "workspace", m.workspaces[m.cursor].ID)
 			m.confirming = true
 			m.confirmID = m.workspaces[m.cursor].ID
 		}
@@ -391,6 +397,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case workspaceCreatedMsg:
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
+			slog.Error("workspace creation failed", "error", msg.err)
 			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil
@@ -407,6 +414,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
+			slog.Error("workspace removal failed", "workspace", msg.id, "error", msg.err)
 			m.err = friendlyError(msg.err)
 		} else {
 			m.err = nil

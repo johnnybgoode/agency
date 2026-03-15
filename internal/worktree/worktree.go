@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,7 @@ func Create(bareDir, projectName, branch string) (string, error) {
 	destPath := filepath.Join(filepath.Dir(bareDir), projectName+"-"+slug)
 
 	if _, err := os.Stat(destPath); err == nil {
+		slog.Debug("worktree path collision, adding suffix", "path", destPath)
 		// Path already exists — append a 4-char random hex suffix.
 		b := make([]byte, 2)
 		if _, err := rand.Read(b); err != nil {
@@ -59,6 +61,7 @@ func Create(bareDir, projectName, branch string) (string, error) {
 		return "", fmt.Errorf("git worktree add: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
 
+	slog.Info("worktree created", "branch", branch, "path", destPath)
 	return destPath, nil
 }
 
@@ -102,11 +105,13 @@ func List(bareDir string) ([]Info, error) {
 		results = append(results, current)
 	}
 
+	slog.Debug("worktree list", "count", len(results))
 	return results, nil
 }
 
 // Remove forcefully removes the worktree at wtPath from the bare repo.
 func Remove(bareDir, wtPath string) error {
+	slog.Info("removing worktree", "path", wtPath)
 	cmd := exec.Command("git", "-C", bareDir, "worktree", "remove", "--force", wtPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree remove: %w\n%s", err, strings.TrimSpace(string(out)))
@@ -136,9 +141,11 @@ func IsDirty(worktreePath string) (bool, error) {
 	}
 	if strings.TrimSpace(string(branchOut)) == "" {
 		// HEAD is not on any remote branch — local-only commits exist.
+		slog.Debug("worktree dirty: unpushed commits", "path", worktreePath)
 		return true, nil
 	}
 
+	slog.Debug("worktree clean", "path", worktreePath)
 	return false, nil
 }
 
@@ -159,6 +166,7 @@ func Init(projectDir, remote string) error {
 
 	// Case 1: existing regular git clone.
 	if gitErr == nil && gitInfo.IsDir() {
+		slog.Error("existing .git directory found", "path", gitPath)
 		return fmt.Errorf(
 			"converting existing git clone to bare repo is not yet supported; " +
 				"please clone bare manually with: git clone --bare <remote> .bare",
@@ -167,6 +175,7 @@ func Init(projectDir, remote string) error {
 
 	// Case 2: bare repo already set up.
 	if bareErr == nil && bareInfo.IsDir() {
+		slog.Info("bare repo exists, skipping clone", "path", barePath)
 		if err := os.MkdirAll(toolPath, 0o700); err != nil {
 			return fmt.Errorf("creating .agency directory: %w", err)
 		}
@@ -178,6 +187,7 @@ func Init(projectDir, remote string) error {
 		return errors.New("remote is required when initializing a new project directory")
 	}
 
+	slog.Info("cloning bare repo", "remote", remote, "path", barePath)
 	cloneCmd := exec.Command("git", "clone", "--bare", remote, barePath)
 	if out, err := cloneCmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git clone --bare: %w\n%s", err, strings.TrimSpace(string(out)))

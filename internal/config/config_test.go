@@ -1,45 +1,13 @@
 package config
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-// captureStderr redirects os.Stderr to a pipe for the duration of fn,
-// returning whatever was written to it.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("os.Pipe: %v", err)
-	}
-
-	orig := os.Stderr
-	os.Stderr = w
-
-	fn()
-
-	os.Stderr = orig
-	w.Close()
-
-	var buf strings.Builder
-	tmp := make([]byte, 4096)
-	for {
-		n, readErr := r.Read(tmp)
-		if n > 0 {
-			buf.Write(tmp[:n])
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	r.Close()
-
-	return buf.String()
-}
 
 func TestWorkspaceConfigPath(t *testing.T) {
 	worktreePath := "/some/project/my-project-abc123"
@@ -60,6 +28,17 @@ func TestWorkspaceConfigPathIsInsideTool(t *testing.T) {
 	}
 }
 
+// captureSlog redirects slog to a buffer for the duration of fn, returning whatever was logged.
+func captureSlog(t *testing.T, fn func()) string {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(old)
+	fn()
+	return buf.String()
+}
+
 func TestLoadPermissionWarning(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.toml")
@@ -71,7 +50,7 @@ func TestLoadPermissionWarning(t *testing.T) {
 	}
 
 	var loadErr error
-	stderr := captureStderr(t, func() {
+	logOutput := captureSlog(t, func() {
 		_, loadErr = Load(cfgPath)
 	})
 
@@ -79,11 +58,11 @@ func TestLoadPermissionWarning(t *testing.T) {
 		t.Fatalf("Load returned unexpected error: %v", loadErr)
 	}
 
-	if !strings.Contains(stderr, "warning") {
-		t.Errorf("expected a warning on stderr for 0o644 permissions, got: %q", stderr)
+	if !strings.Contains(logOutput, "insecure") {
+		t.Errorf("expected a warning log for 0o644 permissions, got: %q", logOutput)
 	}
-	if !strings.Contains(stderr, "0o644") {
-		t.Errorf("expected stderr to mention the actual permission 0o644, got: %q", stderr)
+	if !strings.Contains(logOutput, "0o644") {
+		t.Errorf("expected log to mention the actual permission 0o644, got: %q", logOutput)
 	}
 }
 
@@ -97,7 +76,7 @@ func TestLoadPermissionOK(t *testing.T) {
 	}
 
 	var loadErr error
-	stderr := captureStderr(t, func() {
+	logOutput := captureSlog(t, func() {
 		_, loadErr = Load(cfgPath)
 	})
 
@@ -105,8 +84,8 @@ func TestLoadPermissionOK(t *testing.T) {
 		t.Fatalf("Load returned unexpected error: %v", loadErr)
 	}
 
-	if strings.Contains(stderr, "warning") {
-		t.Errorf("unexpected warning on stderr for 0o600 permissions: %q", stderr)
+	if strings.Contains(logOutput, "insecure") {
+		t.Errorf("unexpected insecure warning for 0o600 permissions: %q", logOutput)
 	}
 }
 

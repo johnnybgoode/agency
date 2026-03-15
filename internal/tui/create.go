@@ -2,6 +2,8 @@
 package tui
 
 import (
+	"log/slog"
+
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -51,6 +53,7 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) { //nolint:gocri
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "enter":
+			slog.Debug("create form submitted", "name", m.nameInput.Value(), "branch", m.branchInput.Value())
 			m.submitted = true
 			return m, nil
 		case "esc":

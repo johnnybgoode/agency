@@ -409,6 +409,29 @@ func ensureRightPane(mgr *workspace.Manager, winID string, panes []string) {
 	}
 }
 
+// ensureSplitOnFirstWorkspace creates the right-pane split when workspaces
+// exist but no split has been created yet. Called from the sidebar's tick
+// handler as a safety net for the popup-initiated create flow.
+func ensureSplitOnFirstWorkspace(mgr *workspace.Manager) {
+	if mgr.State.WorkspacePaneID != "" || len(mgr.State.Workspaces) == 0 || mgr.State.MainWindowID == "" {
+		return
+	}
+
+	panes, err := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
+	if err != nil || len(panes) == 0 {
+		return
+	}
+
+	ensureRightPane(mgr, mgr.State.MainWindowID, panes)
+	if mgr.State.WorkspacePaneID != "" {
+		// Resize the left pane to sidebar width.
+		_ = mgr.Tmux.ResizePane(panes[0], mgr.SidebarWidth())
+		protectWorkspacePane(mgr, mgr.State.WorkspacePaneID)
+		persistLayoutEnv(mgr, panes[0], mgr.State.WorkspacePaneID, mgr.State.MainWindowID)
+		_ = mgr.SaveState()
+	}
+}
+
 // finalizeLayout applies common layout configuration: status bar, pane
 // protection, keybindings, and the custom status bar.
 func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {

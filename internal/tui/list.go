@@ -301,9 +301,9 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 					// Already active — focus the pane by selecting the main window.
 					_ = m.manager.Tmux.SelectWindow(mainWindowID)
 				} else {
-					m.manager.SwitchActivePane(ws)
-					_ = m.manager.SaveState()
+					_ = m.manager.SwapActivePane(ws.ID)
 					_ = m.manager.Tmux.SelectWindow(mainWindowID)
+					applyStatusBar(m.manager)
 				}
 			} else if ws.TmuxWindow != "" {
 				// Fallback: just select the window.
@@ -369,6 +369,12 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor = len(m.workspaces) - 1
 			}
 		}
+		// Create the right-pane split when the first workspace appears.
+		// This is a safety net for the case where the popup's SwapActivePane
+		// couldn't create the split (e.g., timing issues with display-popup).
+		ensureSplitOnFirstWorkspace(m.manager)
+		// Update status bar with current workspace info.
+		applyStatusBar(m.manager)
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
 
 	case tea.WindowSizeMsg:

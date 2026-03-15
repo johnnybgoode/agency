@@ -173,8 +173,14 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	}
 
 	agencyBin, _ := os.Executable()
+	// The wrapper bash:
+	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
+	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
+	//    inside the container (for cancellation) without killing the wrapper
+	//  - while loop: restarts docker exec if Claude exits (ctrl-d, crash, etc.)
+	//    so the workspace pane stays alive until intentionally removed
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; docker exec -it %s bash -c claude'`,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while true; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
 		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
@@ -284,15 +290,11 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}
 
-	// Kill the workspace's tmux window. If this workspace's pane is currently
-	// visible in the right slot of the main window, swap it back to its own
-	// window first so the shell pane is restored in :0.1.
+	// If this workspace's pane is currently visible in the right slot of
+	// the main window, swap it back to its own window first so the shell
+	// pane is restored in :0.1.
 	if m.State.ActiveWorkspaceID == workspaceID && ws.PaneID != "" && m.State.WorkspacePaneID != "" {
 		_ = m.Tmux.SwapPane(ws.PaneID, m.State.WorkspacePaneID)
-		m.State.ActiveWorkspaceID = ""
-	}
-	if ws.TmuxWindow != "" {
-		_ = m.Tmux.KillWindow(ws.TmuxWindow)
 	}
 
 	// Clear active/last-active pointers if they referred to the removed workspace.
@@ -303,8 +305,19 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		m.State.LastActiveWorkspaceID = ""
 	}
 
+	// Delete from state and persist BEFORE killing the tmux window. When
+	// the window is killed, the EXIT trap fires gc. gc reads state, finds
+	// the workspace already removed, and exits cleanly — no race.
+	tmuxWindow := ws.TmuxWindow
 	delete(m.State.Workspaces, workspaceID)
-	return m.SaveState()
+	if err := m.SaveState(); err != nil {
+		return err
+	}
+
+	if tmuxWindow != "" {
+		_ = m.Tmux.KillWindow(tmuxWindow)
+	}
+	return nil
 }
 
 // reconcileResult holds the three parallel query results used by Reconcile.

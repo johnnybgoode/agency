@@ -361,20 +361,24 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tickMsg:
-		// Reload workspaces from state file on each tick.
-		if s, err := state.Read(m.manager.StatePath); err == nil {
-			m.manager.State = s
-			m.workspaces = m.manager.List()
-			if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
-				m.cursor = len(m.workspaces) - 1
+		// Skip all state access during async removal to avoid data races
+		// with the Remove goroutine modifying state concurrently.
+		if len(m.removing) == 0 {
+			// Reload workspaces from state file on each tick.
+			if s, err := state.Read(m.manager.StatePath); err == nil {
+				m.manager.State = s
+				m.workspaces = m.manager.List()
+				if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+					m.cursor = len(m.workspaces) - 1
+				}
 			}
+			// Detect dead/displaced panes and clear stale state.
+			verifyLayoutIntegrity(m.manager)
+			// Create the right-pane split when the first workspace appears.
+			ensureSplitOnFirstWorkspace(m.manager)
+			// Update status bar with current workspace info.
+			applyStatusBar(m.manager)
 		}
-		// Create the right-pane split when the first workspace appears.
-		// This is a safety net for the case where the popup's SwapActivePane
-		// couldn't create the split (e.g., timing issues with display-popup).
-		ensureSplitOnFirstWorkspace(m.manager)
-		// Update status bar with current workspace info.
-		applyStatusBar(m.manager)
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
 
 	case tea.WindowSizeMsg:
@@ -397,6 +401,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workspaceRemovedMsg:
 		delete(m.removing, msg.id)
+		// Force reload from disk to get the authoritative post-removal state.
+		if s, err := state.Read(m.manager.StatePath); err == nil {
+			m.manager.State = s
+		}
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
@@ -406,6 +414,9 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}
+		// Collapse right pane when all workspaces are gone (return to zero state).
+		verifyLayoutIntegrity(m.manager)
+		applyStatusBar(m.manager)
 
 	case reconcileDoneMsg:
 		m.workspaces = m.manager.List()

@@ -30,6 +30,7 @@ func newFakeTuiManager(t *testing.T, fakeOutputByCmd map[string]string) (mgr *wo
 		"set-option":       "",
 		"set-hook":         "",
 		"bind-key":         "",
+		"kill-pane":        "",
 	}
 	merged := make(map[string]string, len(defaults)+len(fakeOutputByCmd))
 	for k, v := range defaults {
@@ -306,6 +307,52 @@ func TestEnsureLayout_InstallsKeybindings(t *testing.T) {
 	}
 	if !bindFound {
 		t.Errorf("ensureLayout did not call bind-key for keybindings; calls = %v", calls)
+	}
+}
+
+// TestVerifyLayoutIntegrity_CollapsesOnZeroWorkspaces verifies that
+// verifyLayoutIntegrity kills the right pane and clears WorkspacePaneID
+// when there are no workspaces remaining (zero-state collapse).
+func TestVerifyLayoutIntegrity_CollapsesOnZeroWorkspaces(t *testing.T) {
+	mgr, argsFile := newFakeTuiManager(t, map[string]string{
+		"list-panes": "%1 %2",
+	})
+	mgr.State.MainWindowID = "@5"
+	mgr.State.WorkspacePaneID = "%2"
+	// No workspaces → should collapse.
+
+	verifyLayoutIntegrity(mgr)
+
+	if mgr.State.WorkspacePaneID != "" {
+		t.Errorf("WorkspacePaneID = %q, want empty after zero-state collapse", mgr.State.WorkspacePaneID)
+	}
+	calls := readTuiCalls(t, argsFile)
+	killFound := false
+	for _, c := range calls {
+		if c == "kill-pane" {
+			killFound = true
+		}
+	}
+	if !killFound {
+		t.Errorf("verifyLayoutIntegrity did not call kill-pane to collapse layout; calls = %v", calls)
+	}
+}
+
+// TestVerifyLayoutIntegrity_ClearsDisplacedWorkspacePane verifies that
+// verifyLayoutIntegrity clears WorkspacePaneID when the pane is not in
+// the main window (e.g., after a workspace pane died and collapsed).
+func TestVerifyLayoutIntegrity_ClearsDisplacedWorkspacePane(t *testing.T) {
+	mgr, _ := newFakeTuiManager(t, map[string]string{
+		"list-panes": "%1", // only sidebar pane — %2 is gone
+	})
+	mgr.State.MainWindowID = "@5"
+	mgr.State.WorkspacePaneID = "%2"
+	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
+
+	verifyLayoutIntegrity(mgr)
+
+	if mgr.State.WorkspacePaneID != "" {
+		t.Errorf("WorkspacePaneID = %q, want empty after displaced pane cleared", mgr.State.WorkspacePaneID)
 	}
 }
 

@@ -409,6 +409,61 @@ func ensureRightPane(mgr *workspace.Manager, winID string, panes []string) {
 	}
 }
 
+// verifyLayoutIntegrity checks that pane IDs in state still correspond to
+// live panes in the correct tmux window. Clears stale references so that
+// ensureSplitOnFirstWorkspace can recreate the layout on the next tick.
+func verifyLayoutIntegrity(mgr *workspace.Manager) {
+	if mgr.State.MainWindowID == "" {
+		return
+	}
+	changed := false
+
+	// Collapse back to zero state when all workspaces are gone.
+	if len(mgr.State.Workspaces) == 0 && mgr.State.WorkspacePaneID != "" {
+		_ = mgr.Tmux.KillPane(mgr.State.WorkspacePaneID)
+		mgr.State.WorkspacePaneID = ""
+		mgr.State.ActiveWorkspaceID = ""
+		_ = mgr.SaveState()
+		return
+	}
+
+	// Verify WorkspacePaneID is alive and in the main window.
+	if mgr.State.WorkspacePaneID != "" {
+		panes, err := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
+		if err == nil {
+			found := false
+			for _, p := range panes {
+				if p == mgr.State.WorkspacePaneID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				mgr.State.WorkspacePaneID = ""
+				changed = true
+			}
+		}
+	}
+
+	// Verify active workspace's pane is still alive.
+	if mgr.State.ActiveWorkspaceID != "" {
+		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok {
+			if ws.PaneID != "" && !mgr.Tmux.PaneExists(ws.PaneID) {
+				ws.PaneID = ""
+				mgr.State.ActiveWorkspaceID = ""
+				changed = true
+			}
+		} else {
+			mgr.State.ActiveWorkspaceID = ""
+			changed = true
+		}
+	}
+
+	if changed {
+		_ = mgr.SaveState()
+	}
+}
+
 // ensureSplitOnFirstWorkspace creates the right-pane split when workspaces
 // exist but no split has been created yet. Called from the sidebar's tick
 // handler as a safety net for the popup-initiated create flow.

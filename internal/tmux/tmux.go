@@ -176,6 +176,12 @@ func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
 	return panes, nil
 }
 
+// KillPane destroys a pane by its pane ID.
+func (c *Client) KillPane(paneID string) error {
+	_, err := c.run("kill-pane", "-t", paneID)
+	return err
+}
+
 // ResizePane resizes the pane identified by paneID to the given width (columns).
 func (c *Client) ResizePane(paneID string, width int) error {
 	_, err := c.run("resize-pane", "-t", paneID, "-x", fmt.Sprintf("%d", width))

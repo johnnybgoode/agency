@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/project"
@@ -180,6 +181,34 @@ var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Run garbage collection on stale workspaces",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		workspaceID, _ := cmd.Flags().GetString("workspace-id")
+		if workspaceID != "" {
+			mgr, err := loadManager()
+			if err != nil {
+				return err
+			}
+			ctx := context.Background()
+			ws, ok := mgr.State.Workspaces[workspaceID]
+			if !ok {
+				return nil // already cleaned up; exit quietly
+			}
+			dirty, _ := worktree.IsDirty(ws.WorktreePath)
+			if ws.SandboxID != "" && mgr.Sandbox != nil {
+				_ = mgr.Sandbox.Stop(ctx, ws.SandboxID, 10)
+				_ = mgr.Sandbox.Remove(ctx, ws.SandboxID)
+			}
+			if !dirty {
+				if ws.WorktreePath != "" {
+					_ = worktree.Remove(mgr.State.BarePath, ws.WorktreePath)
+				}
+				delete(mgr.State.Workspaces, ws.ID)
+			} else {
+				ws.State = state.StatePaused
+				ws.UpdatedAt = time.Now().UTC()
+			}
+			return mgr.SaveState()
+		}
+
 		force, _ := cmd.Flags().GetBool("force")
 
 		mgr, err := loadManager()
@@ -298,6 +327,7 @@ func loadManager() (*workspace.Manager, error) {
 func init() {
 	initCmd.Flags().String("remote", "", "Remote repository URL")
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
+	gcCmd.Flags().String("workspace-id", "", "Run single-workspace cleanup (used by EXIT trap)")
 	topLevelNewCmd.Flags().Bool("popup", false, "Run interactive create form (for use in tmux popup)")
 
 	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd)

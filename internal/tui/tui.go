@@ -146,7 +146,8 @@ func runAndAttach(projectDir string) error {
 			if exeErr != nil {
 				exe = "agency"
 			}
-			cmd := fmt.Sprintf("cd %q && exec %q", projectDir, exe)
+			// Loop restarts agency on non-zero exit (crash). Exit 0 (graceful quit) breaks the loop.
+			cmd := fmt.Sprintf("cd %q && while ! %q; do true; done", projectDir, exe)
 			if err := mgr.Tmux.SendKeysToPane(leftPaneID, cmd); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not start sidebar in pane: %v\n", err)
 			}
@@ -221,9 +222,14 @@ func runSidebar(projectDir string) error {
 	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)
 	p := tea.NewProgram(model)
-	_, err = p.Run()
+	finalModel, err := p.Run()
 	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	if lm, ok := finalModel.(listModel); ok && lm.shouldKillSession {
+		doQuitCleanup(mgr, lm.quitInfos)
+		_ = mgr.Tmux.KillSession()
 	}
 
 	return nil
@@ -316,4 +322,22 @@ func paneInWindow(panes []string, paneID string) bool {
 		}
 	}
 	return false
+}
+
+// doQuitCleanup runs post-TUI workspace cleanup synchronously for fast operations
+// (worktree removal, state updates) and dispatches container stops as non-blocking
+// background calls so the user isn't blocked waiting for docker.
+func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
+	ctx := context.Background()
+	for _, info := range infos {
+		switch {
+		case !info.IsActive && !info.IsDirty:
+			// INACTIVE + CLEAN: remove worktree, kill tmux window, purge state.
+			_ = mgr.CleanupDoneWorkspace(ctx, info.WS)
+		case info.IsActive:
+			// ACTIVE (clean or dirty): fire background stop, transition to paused.
+			_ = mgr.StopWorkspaceBackground(ctx, info.WS)
+			// INACTIVE + DIRTY: keep everything, do nothing.
+		}
+	}
 }

@@ -129,6 +129,14 @@ func (m *Manager) Stop(ctx context.Context, containerID string, timeoutSecs int)
 	return err
 }
 
+// StopBackground fires `docker stop` without waiting for it to complete.
+// The docker daemon processes the stop independently; this returns as soon
+// as the docker CLI child process has been launched.
+func (m *Manager) StopBackground(containerID string, timeoutSecs int) error {
+	cmd := exec.Command("docker", "stop", "-t", fmt.Sprintf("%d", timeoutSecs), containerID) //nolint:gosec // containerID is an internal docker container ID, not user input
+	return cmd.Start()
+}
+
 // Remove force-removes a container (equivalent to `docker rm -f`).
 func (m *Manager) Remove(ctx context.Context, containerID string) error {
 	_, err := m.docker(ctx, "rm", "-f", containerID)

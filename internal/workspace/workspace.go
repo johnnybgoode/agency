@@ -646,13 +646,22 @@ func (m *Manager) SwapActivePane(wsID string) error {
 	}
 
 	// Create the right-side split on demand if it doesn't exist yet
-	// (first workspace in zero state).
+	// (first workspace in zero state). Re-check the actual pane count first:
+	// the sidebar's ensureSplitOnFirstWorkspace may have already created the
+	// split concurrently, in which case we reuse the existing right pane
+	// rather than creating a second split.
 	if m.State.WorkspacePaneID == "" && m.State.MainWindowID != "" {
-		rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
-		if err != nil {
-			return fmt.Errorf("creating workspace pane split: %w", err)
+		existingPanes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID)
+		if pErr == nil && len(existingPanes) >= 2 {
+			// Split already exists — adopt the right pane.
+			m.State.WorkspacePaneID = existingPanes[1]
+		} else {
+			rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
+			if err != nil {
+				return fmt.Errorf("creating workspace pane split: %w", err)
+			}
+			m.State.WorkspacePaneID = rightPaneID
 		}
-		m.State.WorkspacePaneID = rightPaneID
 		// Resize the left pane to the sidebar width now that we have 2 panes.
 		if panes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID); pErr == nil && len(panes) > 0 {
 			_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())

@@ -568,10 +568,11 @@ func TestSwapActivePane_CallsSwapPane(t *testing.T) {
 }
 
 // TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty verifies that SwapActivePane
-// is a no-op when WorkspacePaneID (the shell pane) has not been set.
+// is a no-op when WorkspacePaneID (the shell pane) has not been set and there
+// is no MainWindowID set either.
 func TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty(t *testing.T) {
 	m, argsFile := newFakeTmuxManager(t)
-	// WorkspacePaneID not set.
+	// WorkspacePaneID not set, MainWindowID not set.
 
 	ws := &state.Workspace{
 		ID:        "ws-noop0001",
@@ -586,7 +587,78 @@ func TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty(t *testing.T) {
 
 	calls := readCalls(t, argsFile)
 	if len(calls) != 0 {
-		t.Errorf("expected no tmux calls when WorkspacePaneID is empty; got %v", calls)
+		t.Errorf("expected no tmux calls when WorkspacePaneID and MainWindowID are empty; got %v", calls)
+	}
+}
+
+// TestSwapActivePane_ReusesExistingRightPaneWhenAlreadySplit verifies that
+// SwapActivePane does NOT call split-window when the main window already has
+// two panes (e.g. because the sidebar's ensureSplitOnFirstWorkspace ran
+// concurrently). It should reuse the existing right pane instead.
+func TestSwapActivePane_ReusesExistingRightPaneWhenAlreadySplit(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	// list-panes returns two pane IDs simulating an already-split window.
+	// display-message succeeds so PaneExists returns true.
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`case "$1" in` + "\n" +
+		`  list-panes)  printf '%%1\n%%2\n';;` + "\n" +
+		`  display-message) echo "%%0";;` + "\n" +
+		`  resize-pane) ;;` + "\n" +
+		`  swap-pane) ;;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.NewWithBinaryPath("agency-testproject", scriptPath),
+		Sandbox:     nil,
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	// MainWindowID set, WorkspacePaneID empty — simulates the race where the
+	// sidebar's tick already split the window but the popup's manager still
+	// has stale in-memory state.
+	m.State.MainWindowID = "@1"
+
+	ws := &state.Workspace{
+		ID:        "ws-nosplit01",
+		PaneID:    "%5",
+		State:     state.StateRunning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.SwapActivePane(ws.ID); err != nil {
+		t.Fatalf("SwapActivePane returned error: %v", err)
+	}
+
+	// split-window must NOT have been called.
+	data, _ := os.ReadFile(argsFile)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if strings.HasPrefix(line, "split-window") {
+			t.Errorf("split-window should not be called when window already has 2 panes; got line=%q", line)
+		}
+	}
+
+	// WorkspacePaneID should be set to the second pane returned by list-panes.
+	if m.State.WorkspacePaneID != "%2" {
+		t.Errorf("WorkspacePaneID = %q, want %%2", m.State.WorkspacePaneID)
 	}
 }
 

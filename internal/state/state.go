@@ -4,6 +4,7 @@ package state
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -53,6 +54,7 @@ type State struct {
 	LastActiveWorkspaceID string                `json:"last_active_workspace_id"`    // previously active workspace, for fallback on removal
 	PID                   int                   `json:"pid"`
 	UpdatedAt             time.Time             `json:"updated_at"`
+	SessionStartedAt      *time.Time            `json:"session_started_at,omitempty"`
 	Workspaces            map[string]*Workspace `json:"workspaces"`
 }
 
@@ -80,6 +82,7 @@ func Read(path string) (*State, error) {
 	if s.Workspaces == nil {
 		s.Workspaces = make(map[string]*Workspace)
 	}
+	slog.Debug("state read", "path", path, "workspaces", len(s.Workspaces))
 	return &s, nil
 }
 
@@ -106,6 +109,7 @@ func Write(path string, s *State) error {
 		return fmt.Errorf("renaming state file: %w", err)
 	}
 
+	slog.Debug("state written", "path", path)
 	return nil
 }
 

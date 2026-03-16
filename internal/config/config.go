@@ -3,6 +3,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -63,7 +64,7 @@ func DefaultConfig() *Config {
 		},
 		Sandbox: SandboxConfig{
 			Type:   "docker",
-			Image:  "claude-sandbox:latest",
+			Image:  "agency:latest",
 			Memory: "4g",
 			CPUs:   2,
 		},
@@ -107,6 +108,7 @@ func EnforceGlobalConfigPerms(path string) error {
 // the defaults. Paths that do not exist are silently skipped. Credential
 // fields in any path after the first trigger a warning to stderr.
 func Load(paths ...string) (*Config, error) {
+	slog.Debug("loading config", "paths", paths)
 	base := DefaultConfig()
 
 	for i, path := range paths {
@@ -115,7 +117,7 @@ func Load(paths ...string) (*Config, error) {
 			if info, err := os.Stat(path); err == nil {
 				perm := info.Mode().Perm()
 				if perm&0o177 != 0 {
-					fmt.Fprintf(os.Stderr, "warning: global config %s has permissions 0o%o, should be 0o600\n", path, perm)
+					slog.Warn("insecure config permissions", "path", path, "permissions", fmt.Sprintf("0o%o", perm))
 				}
 			}
 		}
@@ -123,10 +125,12 @@ func Load(paths ...string) (*Config, error) {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
+				slog.Debug("config file not found, skipping", "path", path)
 				continue
 			}
 			return nil, fmt.Errorf("reading config %s: %w", path, err)
 		}
+		slog.Debug("config file loaded", "path", path)
 
 		var override Config
 		if err := toml.Unmarshal(data, &override); err != nil {
@@ -135,7 +139,7 @@ func Load(paths ...string) (*Config, error) {
 
 		if i != 0 {
 			if override.Credentials.AnthropicAPIKey != "" || override.Credentials.GithubToken != "" {
-				fmt.Fprintf(os.Stderr, "warning: credentials found in %s — consider storing credentials only in the global config\n", path)
+				slog.Warn("credentials in non-global config", "path", path)
 			}
 		}
 
@@ -145,9 +149,15 @@ func Load(paths ...string) (*Config, error) {
 	// Fall back to host environment variables for unset credentials.
 	if base.Credentials.AnthropicAPIKey == "" {
 		base.Credentials.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
+		if base.Credentials.AnthropicAPIKey != "" {
+			slog.Debug("credential from env", "key", "ANTHROPIC_API_KEY")
+		}
 	}
 	if base.Credentials.GithubToken == "" {
 		base.Credentials.GithubToken = os.Getenv("GITHUB_TOKEN")
+		if base.Credentials.GithubToken != "" {
+			slog.Debug("credential from env", "key", "GITHUB_TOKEN")
+		}
 	}
 
 	return base, nil

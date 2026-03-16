@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,9 +57,11 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 	var sbm *sandbox.Manager
 	if sm, err := sandbox.New(); err == nil {
 		sbm = sm
+	} else {
+		slog.Warn("docker unavailable", "error", err)
 	}
-	// Docker unavailable is non-fatal; sbm stays nil.
 
+	slog.Info("workspace manager initialized", "project", projectName, "workspaces", len(s.Workspaces))
 	return &Manager{
 		StatePath:   statePath,
 		ProjectDir:  projectDir,
@@ -99,10 +102,12 @@ func (m *Manager) validateCreate(name, branch string) error {
 // provisionWorktree creates the git worktree for ws and updates the workspace
 // fields accordingly.
 func (m *Manager) provisionWorktree(ws *state.Workspace) error {
+	slog.Debug("provisioning worktree", "workspace", ws.ID, "branch", ws.Branch)
 	wtPath, err := worktree.Create(m.State.BarePath, m.ProjectName, ws.Branch)
 	if err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
+	slog.Debug("worktree created", "workspace", ws.ID, "path", wtPath)
 	ws.State = state.StateProvisioning
 	ws.WorktreePath = wtPath
 	ws.UpdatedAt = time.Now().UTC()
@@ -114,6 +119,7 @@ func (m *Manager) provisionWorktree(ws *state.Workspace) error {
 
 // provisionContainer creates and starts the Docker container for ws.
 func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, cfg *config.Config) error {
+	slog.Debug("provisioning container", "workspace", ws.ID)
 	if m.Sandbox == nil {
 		return errors.New("docker is not available")
 	}
@@ -151,6 +157,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	ws.SandboxID = containerID
+	slog.Debug("container created", "workspace", ws.ID, "container", containerID)
 
 	if err := m.Sandbox.Start(ctx, containerID); err != nil {
 		return fmt.Errorf("starting sandbox: %w", err)
@@ -161,6 +168,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 // provisionTmux opens a new tmux window for ws, captures the pane ID, and
 // launches the agent inside the container.
 func (m *Manager) provisionTmux(ws *state.Workspace) error {
+	slog.Debug("provisioning tmux window", "workspace", ws.ID, "name", ws.Name)
 	windowID, err := m.Tmux.NewWindow(ws.Name)
 	if err != nil {
 		return fmt.Errorf("creating tmux window: %w", err)
@@ -193,6 +201,7 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 // tmux window. On any error after the initial state entry is written the
 // workspace is marked as failed before returning the error.
 func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Workspace, error) {
+	slog.Info("creating workspace", "name", name, "branch", branch)
 	if err := m.validateCreate(name, branch); err != nil {
 		return nil, err
 	}
@@ -214,6 +223,7 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 	}
 
 	fail := func(err error) (*state.Workspace, error) {
+		slog.Error("workspace creation failed", "workspace", id, "step", string(ws.State), "error", err)
 		msg := err.Error()
 		fromState := string(ws.State)
 		ws.FailedFrom = &fromState
@@ -260,12 +270,14 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		_ = m.Tmux.SelectWindow(ws.TmuxWindow)
 	}
 
+	slog.Info("workspace created successfully", "workspace", ws.ID, "name", ws.Name, "branch", ws.Branch)
 	return ws, nil
 }
 
 // Remove tears down a workspace: stops/removes its container, deletes the
 // worktree, kills the tmux window, and removes the workspace from state.
 func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
+	slog.Info("removing workspace", "workspace", workspaceID)
 	ws, ok := m.State.Workspaces[workspaceID]
 	if !ok {
 		return fmt.Errorf("workspace %s not found", workspaceID)
@@ -333,6 +345,7 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 	if tmuxWindow != "" {
 		_ = m.Tmux.KillWindow(tmuxWindow)
 	}
+	slog.Info("workspace removed successfully", "workspace", workspaceID)
 	return nil
 }
 
@@ -439,6 +452,7 @@ func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeS
 // workspace states that have drifted from reality.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	res := m.gatherReconcileResources(ctx)
+	slog.Debug("reconcile resources gathered", "windows", len(res.windows), "containers", len(res.containers), "worktrees", len(res.worktrees))
 
 	windowSet, containerIDSet, worktreeSet := buildLookupSets(&res)
 	toDelete, changed := m.reconcileWorkspaces(&res, windowSet, containerIDSet, worktreeSet)
@@ -515,6 +529,7 @@ func (m *Manager) reconcileRunning(
 		return false, true
 	}
 	if res.windowsErr == nil && ws.TmuxWindow != "" && !windowSet[ws.TmuxWindow] {
+		slog.Warn("tmux window disappeared, recreating", "workspace", ws.ID, "old_window", ws.TmuxWindow)
 		if newWin, err := m.Tmux.NewWindow(worktree.Slugify(ws.Branch)); err == nil {
 			_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", ws.SandboxID))
 			ws.TmuxWindow = newWin
@@ -618,6 +633,7 @@ func (m *Manager) SidebarWidth() int {
 // No-op when ws.PaneID is empty. If WorkspacePaneID is empty (first workspace,
 // zero-state → split), the right pane is created on demand.
 func (m *Manager) SwapActivePane(wsID string) error {
+	slog.Debug("swapping active pane", "workspace", wsID)
 	ws, ok := m.State.Workspaces[wsID]
 	if !ok || ws.PaneID == "" {
 		return nil
@@ -774,7 +790,11 @@ func (m *Manager) List() []*state.Workspace {
 // SaveState persists current state to disk, updating the PID field first.
 func (m *Manager) SaveState() error {
 	m.State.PID = os.Getpid()
-	return state.Write(m.StatePath, m.State)
+	if err := state.Write(m.StatePath, m.State); err != nil {
+		slog.Error("failed to save state", "path", m.StatePath, "error", err)
+		return err
+	}
+	return nil
 }
 
 // QuitInfo holds quit assessment data for a single workspace.
@@ -834,6 +854,7 @@ func (m *Manager) AssessQuitStatuses(ctx context.Context) ([]QuitInfo, error) {
 // StopWorkspace stops the sandbox container and transitions ws to StatePaused.
 // No-op if no container is running. Does not remove the worktree or state.
 func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error {
+	slog.Info("stopping workspace", "workspace", ws.ID)
 	if ws.SandboxID != "" && m.Sandbox != nil {
 		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 10)
 	}
@@ -857,6 +878,7 @@ func (m *Manager) StopWorkspaceBackground(ctx context.Context, ws *state.Workspa
 // CleanupDoneWorkspace removes the worktree, kills the tmux window, and purges
 // the workspace from state. Only call for INACTIVE+CLEAN workspaces.
 func (m *Manager) CleanupDoneWorkspace(ctx context.Context, ws *state.Workspace) error {
+	slog.Info("cleaning up done workspace", "workspace", ws.ID)
 	if ws.WorktreePath != "" {
 		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}

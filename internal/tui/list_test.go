@@ -50,7 +50,7 @@ func TestFriendlyError(t *testing.T) {
 		},
 		{
 			name:        "no such image",
-			input:       errors.New("No such image: claude-sandbox:latest"),
+			input:       errors.New("No such image: agency:latest"),
 			wantContain: "sandbox image not found",
 		},
 		{

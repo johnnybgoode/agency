@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 )
@@ -36,9 +37,11 @@ type Manager struct{}
 // startup is fast; any daemon-reachability error surfaces on the first real
 // operation (Create, Start, etc.).
 func New() (*Manager, error) {
-	if _, err := exec.LookPath("docker"); err != nil {
+	path, err := exec.LookPath("docker")
+	if err != nil {
 		return nil, errors.New("docker is not installed")
 	}
+	slog.Debug("docker binary found", "path", path)
 	return &Manager{}, nil
 }
 
@@ -46,12 +49,24 @@ func New() (*Manager, error) {
 // trimmed stdout. Any non-zero exit is returned as an error together with the
 // combined output so callers have full context.
 func (m *Manager) docker(ctx context.Context, args ...string) (string, error) {
+	slog.Debug("docker exec", "args", args)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
+	result := strings.TrimSpace(string(out))
 	if err != nil {
-		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		slog.Error("docker command failed", "args", args, "error", err, "output", truncateLog(result, 200))
+		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, result)
 	}
-	return strings.TrimSpace(string(out)), nil
+	slog.Debug("docker exec done", "args", args, "output_len", len(result))
+	return result, nil
+}
+
+// truncateLog returns s truncated to maxLen characters with "..." appended if truncated.
+func truncateLog(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // defaultCapDrop is applied when CreateOpts.CapDrop is nil or empty.
@@ -70,6 +85,7 @@ var defaultCapAdd = []string{
 // Create runs `docker create` with the provided options and returns the
 // container ID assigned by the daemon.
 func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) {
+	slog.Info("creating container", "name", opts.Name, "image", opts.Image)
 	capDrop := opts.CapDrop
 	if len(capDrop) == 0 {
 		capDrop = defaultCapDrop
@@ -119,12 +135,14 @@ func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) 
 
 // Start starts a previously created (stopped) container.
 func (m *Manager) Start(ctx context.Context, containerID string) error {
+	slog.Info("starting container", "container", containerID)
 	_, err := m.docker(ctx, "start", containerID)
 	return err
 }
 
 // Stop stops a running container, waiting up to timeoutSecs before killing it.
 func (m *Manager) Stop(ctx context.Context, containerID string, timeoutSecs int) error {
+	slog.Info("stopping container", "container", containerID, "timeout", timeoutSecs)
 	_, err := m.docker(ctx, "stop", "-t", fmt.Sprintf("%d", timeoutSecs), containerID)
 	return err
 }
@@ -139,6 +157,7 @@ func (m *Manager) StopBackground(containerID string, timeoutSecs int) error {
 
 // Remove force-removes a container (equivalent to `docker rm -f`).
 func (m *Manager) Remove(ctx context.Context, containerID string) error {
+	slog.Info("removing container", "container", containerID)
 	_, err := m.docker(ctx, "rm", "-f", containerID)
 	return err
 }
@@ -164,6 +183,7 @@ func (m *Manager) ListByProject(ctx context.Context, prefix string) ([]Container
 		return nil, err
 	}
 
+	slog.Debug("listing containers by project", "prefix", prefix)
 	var containers []ContainerInfo
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -108,6 +109,7 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	slog.Info("TUI starting", "projectDir", projectDir)
 
 	if os.Getenv("TMUX") == "" {
 		return runAndAttach(projectDir)
@@ -121,6 +123,7 @@ func Run() error {
 // attached so that tmux applies percentages against the real terminal size.
 // It does not acquire the lock — the sidebar process inside the pane does that.
 func runAndAttach(projectDir string) error {
+	slog.Info("bootstrapping tmux session", "projectDir", projectDir)
 	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -205,6 +208,7 @@ func findSidebarPane(mgr *workspace.Manager) (string, error) {
 
 // runSidebar is the full sidebar TUI flow, run when already inside tmux.
 func runSidebar(projectDir string) error {
+	slog.Info("running sidebar", "projectDir", projectDir)
 	// Auto-init .agency/ if missing (e.g. bare repo exists but tool dir was never created).
 	if !project.IsDir(filepath.Join(projectDir, ".agency")) {
 		if err := worktree.Init(projectDir, ""); err != nil {
@@ -230,12 +234,14 @@ func runSidebar(projectDir string) error {
 			return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
 		}
 		// PID is dead — stale lock. Force-remove and retry.
+		slog.Warn("removing stale lock", "stalePID", s.PID)
 		_ = os.Remove(lockPath)
 		lock, err = state.AcquireLock(lockPath)
 		if err != nil {
 			return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
 		}
 	}
+	slog.Debug("lock acquired", "path", lockPath)
 	defer lock.Release() //nolint:errcheck // lock cleanup on shutdown
 
 	mgr, err := workspace.NewManager(projectDir, cfg)
@@ -269,6 +275,9 @@ func runSidebar(projectDir string) error {
 
 	if lm, ok := finalModel.(listModel); ok && lm.shouldKillSession {
 		doQuitCleanup(mgr, lm.quitInfos)
+		// Clear SessionStartedAt so next launch gets a fresh session log.
+		mgr.State.SessionStartedAt = nil
+		_ = mgr.SaveState()
 		_ = mgr.Tmux.KillSession()
 	}
 
@@ -291,6 +300,7 @@ func recoverLayoutFromEnv(mgr *workspace.Manager) (navPane, workspacePane, mainW
 		return "", "", "", false
 	}
 
+	slog.Info("layout recovered from env vars", "navPane", navPane, "workspacePane", workspacePane, "mainWindow", mainWindow)
 	return navPane, workspacePane, mainWindow, true
 }
 
@@ -538,8 +548,10 @@ func applyStatusBar(mgr *workspace.Manager) {
 // Container stops are fired as non-blocking background calls so the user isn't
 // blocked waiting for docker.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
+	slog.Info("quit cleanup starting", "workspaces", len(infos))
 	ctx := context.Background()
 	for _, info := range infos {
+		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
 		// Always stop the container, regardless of workspace state.
 		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
 			_ = mgr.Sandbox.StopBackground(info.WS.SandboxID, 10)

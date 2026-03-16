@@ -794,28 +794,55 @@ func (m *Manager) List() []*state.Workspace {
 
 // findDockerfileFS returns an fs.FS for the Docker build context directory.
 // Resolution order:
-//  1. configured dockerfile_dir (if non-empty and exists)
-//  2. "docker/" relative to the agency executable directory
-//  3. "docker/" one level above the agency executable directory
+//  1. AGENCY_DOCKER_DIR environment variable (if set and contains a Dockerfile)
+//  2. configured dockerfile_dir (if non-empty and exists)
+//  3. "docker/" relative to the agency executable directory (up to 3 levels)
+//  4. "docker/" found by walking up from the current working directory
 //
 // Returns nil if no suitable directory is found; EnsureImage will then
-// return a descriptive error.
+// return a descriptive error including how to set AGENCY_DOCKER_DIR.
 func findDockerfileFS(configuredDir string) fs.FS {
-	candidates := []string{}
+	var candidates []string
+
+	if dir := os.Getenv("AGENCY_DOCKER_DIR"); dir != "" {
+		candidates = append(candidates, dir)
+	}
 	if configuredDir != "" {
 		candidates = append(candidates, configuredDir)
 	}
+
+	// Walk up from the executable location (handles binary built in-tree).
 	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates,
-			filepath.Join(exeDir, "docker"),
-			filepath.Join(exeDir, "..", "docker"),
-		)
+		dir := filepath.Dir(exe)
+		for range 4 {
+			candidates = append(candidates, filepath.Join(dir, "docker"))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
 	}
+
+	// Walk up from the current working directory (handles running from source).
+	if cwd, err := os.Getwd(); err == nil {
+		dir := cwd
+		for range 4 {
+			candidates = append(candidates, filepath.Join(dir, "docker"))
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
 	for _, dir := range candidates {
-		if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
-			slog.Debug("found Dockerfile directory", "dir", dir)
-			return os.DirFS(dir)
+		clean := filepath.Clean(dir)
+		dockerfilePath := filepath.Join(clean, "Dockerfile")
+		if _, err := os.Stat(dockerfilePath); err == nil {
+			slog.Debug("found Dockerfile directory", "dir", filepath.Base(clean)) //nolint:gosec // log only the base name to avoid log injection
+			return os.DirFS(clean)
 		}
 	}
 	return nil

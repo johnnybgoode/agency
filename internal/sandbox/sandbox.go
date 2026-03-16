@@ -209,7 +209,7 @@ func (m *Manager) EnsureImage(ctx context.Context, image string, buildContextFS 
 		return nil
 	}
 	if buildContextFS == nil {
-		return fmt.Errorf("image %q not found locally and no build context provided; build it manually with: docker build -t %s <path-to-agency>/docker", image, image)
+		return fmt.Errorf("image %q not found locally; set AGENCY_DOCKER_DIR to the agency source docker/ directory or build manually with: docker build -t %s <path-to-agency>/docker", image, image)
 	}
 
 	slog.Info("image not found, building from embedded context", "image", image)

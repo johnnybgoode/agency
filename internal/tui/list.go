@@ -166,6 +166,14 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 	}
 }
 
+// installerCmdFor returns the shell command string used to run the agent
+// installer inside the container identified by containerID.
+// Single quotes around the bash -c argument prevent the host shell from
+// expanding ~ before the command reaches the container.
+func installerCmdFor(containerID string) string {
+	return fmt.Sprintf("docker exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", containerID)
+}
+
 // installAgentsCmd opens an interactive agent installer popup for the workspace,
 // then sends C-d (EOF) to the workspace pane to exit Claude. The trapCmd loop
 // restarts Claude with --continue so new agents are immediately available.
@@ -176,7 +184,7 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupWidth = 80
 	const popupHeight = 30
 	tmuxClient := m.manager.Tmux
-	installerCmd := fmt.Sprintf("docker exec -it %s bash ~/subagents/install-agents.sh --install-dir local", ws.SandboxID)
+	installerCmd := installerCmdFor(ws.SandboxID)
 	paneID := ws.PaneID
 	return func() tea.Msg {
 		_ = tmuxClient.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -144,6 +145,10 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 	cfgPath := config.ProjectConfigPath(m.ProjectDir)
 	if _, err := os.Stat(cfgPath); err == nil {
 		configMount = cfgPath
+	}
+
+	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, findDockerfileFS(cfg.Sandbox.DockerfileDir)); err != nil {
+		return fmt.Errorf("ensuring sandbox image: %w", err)
 	}
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
@@ -785,6 +790,35 @@ func (m *Manager) List() []*state.Workspace {
 		return workspaces[i].CreatedAt.Before(workspaces[j].CreatedAt)
 	})
 	return workspaces
+}
+
+// findDockerfileFS returns an fs.FS for the Docker build context directory.
+// Resolution order:
+//  1. configured dockerfile_dir (if non-empty and exists)
+//  2. "docker/" relative to the agency executable directory
+//  3. "docker/" one level above the agency executable directory
+//
+// Returns nil if no suitable directory is found; EnsureImage will then
+// return a descriptive error.
+func findDockerfileFS(configuredDir string) fs.FS {
+	candidates := []string{}
+	if configuredDir != "" {
+		candidates = append(candidates, configuredDir)
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(exeDir, "docker"),
+			filepath.Join(exeDir, "..", "docker"),
+		)
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "Dockerfile")); err == nil {
+			slog.Debug("found Dockerfile directory", "dir", dir)
+			return os.DirFS(dir)
+		}
+	}
+	return nil
 }
 
 // SaveState persists current state to disk, updating the PID field first.

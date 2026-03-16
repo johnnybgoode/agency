@@ -1,4 +1,4 @@
-.PHONY: build build-host install test clean
+.PHONY: build build-install install test clean
 
 BINARY := agency
 BUILD_DIR := ./bin
@@ -7,8 +7,8 @@ CMD := ./cmd/agency
 build:
 	go build -o $(BUILD_DIR)/$(BINARY) $(CMD)
 
-build-host:
-	go build -o ~/bin/${BINARY} ${CMD}
+build-install:
+	go build -o $(HOME)/bin/$(BINARY) $(CMD)
 
 install:
 	go install $(CMD)

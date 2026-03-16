@@ -5,8 +5,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -169,6 +173,88 @@ func (m *Manager) IsRunning(ctx context.Context, containerID string) (bool, erro
 		return false, err
 	}
 	return out == "true", nil
+}
+
+// ImageExists reports whether the named image is present in the local Docker
+// image store. A non-zero exit from `docker image inspect` is treated as "not
+// found" rather than an error so callers can distinguish missing-image from
+// daemon failures via the returned bool.
+func (m *Manager) ImageExists(ctx context.Context, image string) (bool, error) {
+	slog.Debug("checking image existence", "image", image)
+	_, err := m.docker(ctx, "image", "inspect", "--format", "{{.Id}}", image)
+	if err != nil {
+		// docker exits non-zero when the image is absent — not a hard error.
+		return false, nil
+	}
+	return true, nil
+}
+
+// BuildImage runs `docker build -t <image> <contextDir>` to build the named
+// image from the supplied build context directory.
+func (m *Manager) BuildImage(ctx context.Context, image, contextDir string) error {
+	slog.Info("building image", "image", image, "context", contextDir)
+	_, err := m.docker(ctx, "build", "-t", image, contextDir)
+	return err
+}
+
+// EnsureImage checks whether image exists locally and, if not, builds it from
+// buildContextFS. buildContextFS must contain a Dockerfile at its root. If
+// buildContextFS is nil and the image is absent, an error is returned.
+func (m *Manager) EnsureImage(ctx context.Context, image string, buildContextFS fs.FS) error {
+	exists, err := m.ImageExists(ctx, image)
+	if err != nil {
+		return fmt.Errorf("checking image %q: %w", image, err)
+	}
+	if exists {
+		return nil
+	}
+	if buildContextFS == nil {
+		return fmt.Errorf("image %q not found locally; set AGENCY_DOCKER_DIR to the agency source docker/ directory or build manually with: docker build -t %s <path-to-agency>/docker", image, image)
+	}
+
+	slog.Info("image not found, building from embedded context", "image", image)
+
+	tmpDir, err := os.MkdirTemp("", "agency-build-*")
+	if err != nil {
+		return fmt.Errorf("creating temp build context: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := extractFS(tmpDir, buildContextFS); err != nil {
+		return fmt.Errorf("extracting build context: %w", err)
+	}
+
+	return m.BuildImage(ctx, image, tmpDir)
+}
+
+// extractFS copies all files from src into the directory at destDir.
+func extractFS(destDir string, src fs.FS) error {
+	return fs.WalkDir(src, ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		dest := filepath.Join(destDir, path)
+		if d.IsDir() {
+			return os.MkdirAll(dest, 0o750)
+		}
+		f, err := src.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		_, err = io.Copy(out, f)
+		return err
+	})
 }
 
 // ListByProject returns all containers (running or stopped) whose names begin

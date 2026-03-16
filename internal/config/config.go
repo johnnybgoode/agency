@@ -29,10 +29,11 @@ type AgentConfig struct {
 
 // SandboxConfig holds sandbox-specific configuration.
 type SandboxConfig struct {
-	Type   string `toml:"type"`
-	Image  string `toml:"image"`
-	Memory string `toml:"memory"`
-	CPUs   int    `toml:"cpus"`
+	Type          string `toml:"type"`
+	Image         string `toml:"image"`
+	Memory        string `toml:"memory"`
+	CPUs          int    `toml:"cpus"`
+	DockerfileDir string `toml:"dockerfile_dir"`
 }
 
 // CredentialsConfig holds sensitive credential configuration.

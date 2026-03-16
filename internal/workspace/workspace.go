@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/johnnybgoode/agency/internal/agencyimage"
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
@@ -146,6 +148,10 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		configMount = cfgPath
 	}
 
+	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, dockerBuildContext(cfg.Sandbox.DockerfileDir)); err != nil {
+		return fmt.Errorf("ensuring sandbox image: %w", err)
+	}
+
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
 		Image:         cfg.Sandbox.Image,
 		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
@@ -185,11 +191,12 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
 	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
 	//    inside the container (for cancellation) without killing the wrapper
-	//  - while loop: restarts docker exec if Claude exits (ctrl-d, crash, etc.)
-	//    so the workspace pane stays alive until intentionally removed
+	//  - while loop condition: checks container existence before each exec so
+	//    the loop exits cleanly when Remove() deletes the container, preventing
+	//    "No such container" errors from flooding the workspace pane
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while true; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
-		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
+		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
@@ -640,13 +647,22 @@ func (m *Manager) SwapActivePane(wsID string) error {
 	}
 
 	// Create the right-side split on demand if it doesn't exist yet
-	// (first workspace in zero state).
+	// (first workspace in zero state). Re-check the actual pane count first:
+	// the sidebar's ensureSplitOnFirstWorkspace may have already created the
+	// split concurrently, in which case we reuse the existing right pane
+	// rather than creating a second split.
 	if m.State.WorkspacePaneID == "" && m.State.MainWindowID != "" {
-		rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
-		if err != nil {
-			return fmt.Errorf("creating workspace pane split: %w", err)
+		existingPanes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID)
+		if pErr == nil && len(existingPanes) >= 2 {
+			// Split already exists — adopt the right pane.
+			m.State.WorkspacePaneID = existingPanes[1]
+		} else {
+			rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
+			if err != nil {
+				return fmt.Errorf("creating workspace pane split: %w", err)
+			}
+			m.State.WorkspacePaneID = rightPaneID
 		}
-		m.State.WorkspacePaneID = rightPaneID
 		// Resize the left pane to the sidebar width now that we have 2 panes.
 		if panes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID); pErr == nil && len(panes) > 0 {
 			_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
@@ -785,6 +801,23 @@ func (m *Manager) List() []*state.Workspace {
 		return workspaces[i].CreatedAt.Before(workspaces[j].CreatedAt)
 	})
 	return workspaces
+}
+
+// dockerBuildContext returns the fs.FS to use as the Docker build context when
+// building the sandbox image. The embedded build context (Dockerfile +
+// docker-entrypoint.sh compiled into the binary) is the default, so the image
+// can be built on any machine with Docker — no local copy of the agency source
+// is required. An on-disk override is honored when dockerfile_dir is set in
+// config, allowing custom images.
+func dockerBuildContext(configuredDir string) fs.FS {
+	if configuredDir != "" {
+		if _, err := os.Stat(filepath.Join(configuredDir, "Dockerfile")); err == nil {
+			slog.Debug("using configured dockerfile_dir for image build", "dir", configuredDir)
+			return os.DirFS(configuredDir)
+		}
+		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
+	}
+	return agencyimage.BuildContextFS
 }
 
 // SaveState persists current state to disk, updating the PID field first.

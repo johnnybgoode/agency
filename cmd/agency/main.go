@@ -380,7 +380,7 @@ func loadManager() (*workspace.Manager, error) {
 }
 
 func init() {
-	rootCmd.PersistentFlags().String("log-level", "error", "Log level: debug, info, warn, error")
+	rootCmd.PersistentFlags().String("log-level", "info", "Log level: debug, info, warn, error")
 	initCmd.Flags().String("remote", "", "Remote repository URL")
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
 	gcCmd.Flags().String("workspace-id", "", "Run single-workspace cleanup (used by EXIT trap)")

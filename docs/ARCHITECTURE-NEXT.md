@@ -12,11 +12,11 @@ This doc reflects the evolution of the project from a simple sandbox environment
 
 This section outlines fundamental requirements of the system that are essential to the user and coding agents working seamlessly across multiple concurrent workspaces.
 
- - TUI: a Go TUI (bubbletea/tview) that wraps tmux. The TUI runs as a full-screen modal view in the primary tmux window. Workspaces run in background tmux windows. The user switches between the TUI management view and individual workspace windows. A keybinding (e.g. `prefix + m`) returns to the TUI management view. Detach/reattach is handled natively by tmux.
+ - TUI: a Go TUI (bubbletea) that wraps tmux. The TUI runs as a persistent sidebar in the left pane of the main tmux window. The right pane shows the active workspace's Claude Code session. Workspace panes are swapped in/out of the right slot via `swap-pane`. Detach/reattach is handled natively by tmux.
  - CLI: cli to invoke the TUI in a given project. Provides flags/options for project-level configuration
  - Sandboxes: each workspace takes place in a Docker container managed via Docker Desktop. On macOS, Docker Desktop's Linux VM provides sufficient host OS isolation — container code cannot reach the macOS host without a hypervisor exploit. Workspaces have r/w access to their worktree. Project and global config files are mounted read-only into the sandbox (e.g. at `/etc/agency/config.toml`). Credentials are injected via environment variables (never mounted as files). 1:1 relationship between workspaces and sandboxes.
  - Worktrees: each workspace operates on an independent branch and copy of the codebase. 1:1 relationship between workspaces and worktrees
- - Agent communication: agents can create epics, issues, plans, and tasks to track their work via beads. Beads live in the project repo and are available per-worktree via git. Task updates propagate at commit-level latency (not real-time). Agent-to-agent communication is deferred to a future version.
+ - Agent communication: (future) agents will be able to create epics, issues, plans, and tasks to track their work via beads. Beads would live in the project repo and be available per-worktree via git. Task updates would propagate at commit-level latency (not real-time). Agent-to-agent communication is deferred to a future version.
  - Agent and project settings: Three-tier settings cascade (global → project → workspace-local) using TOML config files. Users can manage settings (environment vars, credentials, sandbox settings, ...) and agent defaults (permissions, mcp, subagents, ...) per-project. Agent settings may also be managed locally per-workspace (e.g. adding an MCP, enabling a subagent) without affecting other workspaces.
 
 ## Architecture
@@ -61,7 +61,7 @@ This section outlines fundamental requirements of the system that are essential 
        │                             │    │                             │    │                             │
        │ ┌─────────────────────────┐ │    │ ┌─────────────────────────┐ │    │ ┌─────────────────────────┐ │
        │ │Agent & subagents        │ │    │ │Agent & subagents        │ │    │ │Agent & subagents        │ │
-       │ │Epics/Issues (beads)     │ │    │ │Epics/Issues (beads)     │ │    │ │Epics/Issues (beads)     │ │
+       │ │                         │ │    │ │Epics/Issues (beads)     │ │    │ │Epics/Issues (beads)     │ │
        │ │Worktree                 │ │    │ │Worktree                 │ │    │ │Worktree                 │ │
        │ │Workspace-local settings │ │    │ │Workspace-local settings │ │    │ │Workspace-local settings │ │
        │ │                         │ │    │ │                         │ │    │ │                         │ │
@@ -73,11 +73,13 @@ This section outlines fundamental requirements of the system that are essential 
 
 The tool is a Go binary that owns a tmux session for the project. On launch, it renders the TUI as a full-screen modal view in the active tmux window. Workspaces run in background tmux windows. Creating or selecting a workspace switches to that workspace's tmux window. A keybinding (e.g. `prefix + m`) returns to the TUI management view. This is simpler than sidebar/popup approaches and works with any tmux version.
 
-**Orchestration model:** The Go TUI creates and attaches to a tmux session for the project. It interacts with tmux programatically ([japiotr123/go-tmux][2], [owenthereal/tmux][3]) to manage workspace windows. Each new workspace triggers the sequence: create worktree → start sandbox → create tmux window → launch agent. Workspaces are interactive: the tool creates the worktree, sandbox, and tmux window, launches the agent CLI, and switches to that window. The user types instructions directly into the agent. Headless/scripted workspace creation is deferred to a future version.
+**Orchestration model:** The Go binary creates and attaches to a tmux session for the project. It interacts with tmux via direct `tmux` CLI calls (exec, not a Go library). Each new workspace triggers the sequence: create worktree → start sandbox → create tmux window → launch agent → swap pane into main window. Workspaces are interactive: the user types instructions directly into the agent's Claude Code session. Non-interactive workspace creation is supported via `agency new <name> <branch>`.
+
+**Layout:** The main tmux window is split into two panes. The left pane runs the bubbletea sidebar TUI. The right pane shows the active workspace's Claude Code session, swapped in via `swap-pane`. Layout state is persisted to tmux session environment variables for crash recovery.
 
 **Detach/reattach:** tmux handles this natively. The user detaches (`<prefix> d`), all agents continue running in their windows, and the user reattaches later. On reattach (or after a TUI crash), the Go binary reconnects to the existing tmux session and re-discovers running workspaces via state reconciliation (see State Recovery).
 
-A lightweight CLI exists to invoke the tool within a project (e.g. `agency`, `agency gc [project]`) and set project-level settings.
+A CLI provides direct access to operations: `agency init`, `agency new`, `agency workspace list`, `agency workspace rm`, `agency gc`, `agency version`.
 
 
 ### Sandboxing
@@ -89,7 +91,7 @@ Security is a first principle; sandboxed workspace runtimes are essential. Sandb
  - v1 uses standard Docker containers via Docker Desktop. On macOS, Docker Desktop's Linux VM provides sufficient host OS isolation. Per-workspace microVM isolation (gVisor on Linux, Apple Containers on macOS 26+) is deferred to a future version via a pluggable provider interface.
  - Each workspace gets its own container by default, i.e. only the workspace worktree is mounted.
  - Sandbox network access is governed by Docker network policies. No custom network filtering layer is needed. The network policy can be configured per project.
- - The sandbox image is configurable via `sandbox.image` (default provided by the tool, overridable per-project). Example: `sandbox.image = "claude-sandbox:latest"`.
+ - The sandbox image is configurable via `sandbox.image` (default provided by the tool, overridable per-project). Example: `sandbox.image = "agency:latest"`.
 
 **Volume Mounts**
 
@@ -274,13 +276,9 @@ Each workspace is reconciled:
  - `flock` on `<project>/.agency/lock` with `LOCK_EX | LOCK_NB` for race-free exclusion.
 
 
-### Communication
+### Communication (Future)
 
-Task management is key for long-running workspaces. Agents create and complete issues to track their progress via beads, which stores issues within the project repo.
-
-Each worktree has its own copy of `.beads/`. Changes are visible across workspaces after git push/pull, meaning task updates propagate at commit-level latency (not real-time). This is sufficient for v1 — agents can track their own work and the user can see progress across workspaces by pulling updates.
-
-Real-time agent-to-agent communication (shared mutable state, message passing) is explicitly deferred to a future version. The v1 communication model is: agent → beads (git) → orchestrator/user.
+Agent-to-agent communication and task tracking (beads) are not yet implemented. The planned model: agents create and complete issues tracked within the project repo, with updates propagating at commit-level latency via git. Real-time communication is deferred to a future version.
 
 
 ### Settings
@@ -305,7 +303,7 @@ permissions = "auto-accept"
 
 [sandbox]
 type = "docker"
-image = "claude-sandbox:latest"
+image = "agency:latest"
 memory = "4g"
 cpus = 2
 
@@ -366,10 +364,12 @@ Merge computed once at workspace creation. Config changes require workspace rest
 ### Implementation
 
 The tool is implemented in Go. Key dependencies:
- - TUI: bubbletea or tview
+ - CLI: spf13/cobra
+ - TUI: charmbracelet/bubbletea + lipgloss
  - Config: pelletier/go-toml
  - tmux interaction: exec calls to `tmux` CLI
- - Docker interaction: [docker/go-sdk][4] (official Go SDK)
+ - Docker interaction: exec calls to `docker` CLI
+ - Logging: stdlib log/slog with per-session log files
 
 ### Appendix
 
@@ -387,7 +387,7 @@ The tool is implemented in Go. Key dependencies:
  3. Known limitations (v1)
    - Git submodules: known issues with worktrees (shared `.git/modules`). Unsupported/best-effort in v1.
    - Network access: sandbox network access is controlled by [Docker Sandbox network policies][1] in v1.
-   - Beads latency: task updates propagate at git commit/push level, not real-time.
+   - Beads (agent task tracking) not yet implemented.
  4. Complete architecture diagram
 
                               ┌─────────────────────────────────────────────────────┐
@@ -431,7 +431,7 @@ The tool is implemented in Go. Key dependencies:
                           │                             │    │                             │    │                             │
                           │  Agent Instance             │    │  Agent Instance             │    │  Agent Instance             │
                           │                             │    │                             │    │                             │
-                          │  Epics/Issues (beads)       │    │  Epics/Issues (beads)       │    │  Epics/Issues (beads)       │
+                          ││    ││    ││
                           │                             │    │                             │    │                             │
                           │  Worktree                   │    │  Worktree                   │    │  Worktree                   │
                           │                             │    │                             │    │                             │
@@ -443,6 +443,3 @@ The tool is implemented in Go. Key dependencies:
 ### References
 
  [1]: https://docs.docker.com/engine/network/ "Docker network documentation"
- [2]: https://pkg.go.dev/github.com/japiotr123/go-tmux "japiotr123/go-tmux"
- [3]: https://pkg.go.dev/github.com/owenthereal/tmux "owenthereal/tmux"
- [4]: https://github.com/docker/go-sdk "docker/go-sdk official Go SDK"

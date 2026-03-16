@@ -1,14 +1,14 @@
-package agencyimage_test
+package templates_test
 
 import (
 	"io/fs"
 	"testing"
 
-	"github.com/johnnybgoode/agency/internal/agencyimage"
+	"github.com/johnnybgoode/agency/internal/templates"
 )
 
 func TestBuildContextFS_ContainsDockerfile(t *testing.T) {
-	data, err := fs.ReadFile(agencyimage.BuildContextFS, "Dockerfile")
+	data, err := fs.ReadFile(templates.BuildContextFS, "Dockerfile")
 	if err != nil {
 		t.Fatalf("Dockerfile not found in embedded build context: %v", err)
 	}
@@ -18,7 +18,7 @@ func TestBuildContextFS_ContainsDockerfile(t *testing.T) {
 }
 
 func TestBuildContextFS_ContainsEntrypoint(t *testing.T) {
-	data, err := fs.ReadFile(agencyimage.BuildContextFS, "docker-entrypoint.sh")
+	data, err := fs.ReadFile(templates.BuildContextFS, "docker-entrypoint.sh")
 	if err != nil {
 		t.Fatalf("docker-entrypoint.sh not found in embedded build context: %v", err)
 	}

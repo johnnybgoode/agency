@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnnybgoode/agency/internal/agencyimage"
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/templates"
 	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
@@ -846,7 +846,7 @@ func dockerBuildContext(configuredDir string) fs.FS {
 		}
 		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
 	}
-	return agencyimage.BuildContextFS
+	return templates.BuildContextFS
 }
 
 // SaveState persists current state to disk, updating the PID field first.

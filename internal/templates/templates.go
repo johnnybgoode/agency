@@ -1,8 +1,8 @@
-// Package agencyimage embeds the Docker build context for the default agency
+// Package templates embeds the Docker build context for the default agency
 // sandbox image (agency:latest) directly into the binary, so the image can be
 // built on any machine that has Docker — no local copy of the agency source is
 // required.
-package agencyimage
+package templates
 
 import "embed"
 

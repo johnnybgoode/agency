@@ -173,9 +173,15 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	}
 
 	agencyBin, _ := os.Executable()
+	// The wrapper bash:
+	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
+	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
+	//    inside the container (for cancellation) without killing the wrapper
+	//  - while loop: restarts docker exec if Claude exits (ctrl-d, crash, etc.)
+	//    so the workspace pane stays alive until intentionally removed
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "%s gc --workspace-id %s" EXIT; docker exec -it %s bash -c claude'`,
-		agencyBin, ws.ID, ws.SandboxID,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while true; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
+		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
@@ -239,8 +245,8 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(err)
 	}
 
-	// Step 5: join new pane into main window so sidebar stays visible, then mark running.
-	m.SwitchActivePane(ws)
+	// Step 5: swap new workspace pane into the visible right slot, then mark running.
+	_ = m.SwapActivePane(ws.ID)
 	ws.State = state.StateRunning
 	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
@@ -284,18 +290,11 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		_ = worktree.Remove(m.State.BarePath, ws.WorktreePath)
 	}
 
-	// Kill the workspace's tmux pane/window. When the workspace is the active
-	// one, its pane has been joined into the main window (ws.TmuxWindow ==
-	// MainWindowID). Killing the main window would destroy the sidebar, so
-	// break the pane back out to a throwaway window and kill that instead.
-	if ws.TmuxWindow != "" {
-		if ws.TmuxWindow == m.State.MainWindowID && ws.PaneID != "" {
-			if newWin, err := m.Tmux.BreakPane(m.State.MainWindowID, ws.PaneID); err == nil {
-				_ = m.Tmux.KillWindow(newWin)
-			}
-		} else {
-			_ = m.Tmux.KillWindow(ws.TmuxWindow)
-		}
+	// If this workspace's pane is currently visible in the right slot of
+	// the main window, swap it back to its own window first so the shell
+	// pane is restored in :0.1.
+	if m.State.ActiveWorkspaceID == workspaceID && ws.PaneID != "" && m.State.WorkspacePaneID != "" {
+		_ = m.Tmux.SwapPane(ws.PaneID, m.State.WorkspacePaneID)
 	}
 
 	// Clear active/last-active pointers if they referred to the removed workspace.
@@ -306,8 +305,35 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		m.State.LastActiveWorkspaceID = ""
 	}
 
-	delete(m.State.Workspaces, workspaceID)
-	return m.SaveState()
+	// Re-read state from disk before saving to pick up any concurrent
+	// changes (e.g., a popup process creating a new workspace). Then apply
+	// our deletion to the fresh state so we don't overwrite those changes.
+	tmuxWindow := ws.TmuxWindow
+	if freshState, readErr := state.Read(m.StatePath); readErr == nil {
+		// Preserve our pointer cleanups on the fresh state.
+		if freshState.ActiveWorkspaceID == workspaceID {
+			freshState.ActiveWorkspaceID = ""
+		}
+		if freshState.LastActiveWorkspaceID == workspaceID {
+			freshState.LastActiveWorkspaceID = ""
+		}
+		delete(freshState.Workspaces, workspaceID)
+		m.State = freshState
+	} else {
+		delete(m.State.Workspaces, workspaceID)
+	}
+
+	// Persist BEFORE killing the tmux window. When the window is killed,
+	// the EXIT trap fires gc. gc reads state, finds the workspace already
+	// removed, and exits cleanly — no race.
+	if err := m.SaveState(); err != nil {
+		return err
+	}
+
+	if tmuxWindow != "" {
+		_ = m.Tmux.KillWindow(tmuxWindow)
+	}
+	return nil
 }
 
 // reconcileResult holds the three parallel query results used by Reconcile.
@@ -352,12 +378,17 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 
 // cleanupActiveWorkspaceID clears ActiveWorkspaceID and LastActiveWorkspaceID
 // if they refer to workspaces that no longer exist or are not running.
+// Also verifies that referenced panes actually exist in tmux.
 // Returns true if a change was made.
 func (m *Manager) cleanupActiveWorkspaceID() bool {
 	changed := false
 	if m.State.ActiveWorkspaceID != "" {
 		activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]
 		if !ok || activeWS.State != state.StateRunning {
+			m.State.ActiveWorkspaceID = ""
+			changed = true
+		} else if activeWS.PaneID != "" && !m.Tmux.PaneExists(activeWS.PaneID) {
+			activeWS.PaneID = ""
 			m.State.ActiveWorkspaceID = ""
 			changed = true
 		}
@@ -368,6 +399,11 @@ func (m *Manager) cleanupActiveWorkspaceID() bool {
 			m.State.LastActiveWorkspaceID = ""
 			changed = true
 		}
+	}
+	// Verify WorkspacePaneID (shell pane) is still alive.
+	if m.State.WorkspacePaneID != "" && !m.Tmux.PaneExists(m.State.WorkspacePaneID) {
+		m.State.WorkspacePaneID = ""
+		changed = true
 	}
 	return changed
 }
@@ -576,35 +612,106 @@ func (m *Manager) SidebarWidth() int {
 	return w
 }
 
-// SwitchActivePane updates the main window so ws's pane occupies the right
-// slot. If another workspace pane is currently joined, it is broken back to
-// its own detached window first to maintain the single-right-pane invariant.
-// After joining, the sidebar pane is resized to the configured width because
-// JoinPane resets pane proportions to 50/50.
-// Updates the main window title to reflect the active workspace name.
-// No-op when MainWindowID or ws.PaneID is empty.
-func (m *Manager) SwitchActivePane(ws *state.Workspace) {
-	if m.State.MainWindowID == "" || ws.PaneID == "" {
-		return
+// SwapActivePane swaps the given workspace's pane into the visible right slot
+// of the main window (:0.1) using tmux swap-pane. If another workspace is
+// currently active, its pane is swapped back to its own window first.
+// No-op when ws.PaneID is empty. If WorkspacePaneID is empty (first workspace,
+// zero-state → split), the right pane is created on demand.
+func (m *Manager) SwapActivePane(wsID string) error {
+	ws, ok := m.State.Workspaces[wsID]
+	if !ok || ws.PaneID == "" {
+		return nil
 	}
-	if m.State.ActiveWorkspaceID != "" && m.State.ActiveWorkspaceID != ws.ID {
-		// Record previous active workspace before switching.
+
+	// Create the right-side split on demand if it doesn't exist yet
+	// (first workspace in zero state).
+	if m.State.WorkspacePaneID == "" && m.State.MainWindowID != "" {
+		rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
+		if err != nil {
+			return fmt.Errorf("creating workspace pane split: %w", err)
+		}
+		m.State.WorkspacePaneID = rightPaneID
+		// Resize the left pane to the sidebar width now that we have 2 panes.
+		if panes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID); pErr == nil && len(panes) > 0 {
+			_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
+		}
+		_ = m.SaveState()
+	}
+
+	if m.State.WorkspacePaneID == "" {
+		return nil
+	}
+
+	// Verify WorkspacePaneID (shell pane) exists.
+	if !m.Tmux.PaneExists(m.State.WorkspacePaneID) {
+		m.State.WorkspacePaneID = ""
+		_ = m.SaveState()
+		return fmt.Errorf("workspace shell pane is dead; layout will be recreated")
+	}
+
+	// Verify the target workspace's pane exists.
+	if !m.Tmux.PaneExists(ws.PaneID) {
+		ws.PaneID = ""
+		_ = m.SaveState()
+		return fmt.Errorf("workspace %s pane is dead", wsID)
+	}
+
+	// If another workspace is currently visible, swap it back first.
+	if m.State.ActiveWorkspaceID != "" && m.State.ActiveWorkspaceID != wsID {
 		m.State.LastActiveWorkspaceID = m.State.ActiveWorkspaceID
-		if activeWS, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok && activeWS.PaneID != "" {
-			if newWinID, err := m.Tmux.BreakPane(m.State.MainWindowID, activeWS.PaneID); err == nil {
-				activeWS.TmuxWindow = newWinID
+		if activeWS, ok2 := m.State.Workspaces[m.State.ActiveWorkspaceID]; ok2 && activeWS.PaneID != "" {
+			// Verify the active workspace's pane is still alive before swapping back.
+			if m.Tmux.PaneExists(activeWS.PaneID) {
+				if err := m.Tmux.SwapPane(activeWS.PaneID, m.State.WorkspacePaneID); err != nil {
+					return err
+				}
+			} else {
+				// Active pane is dead — just clear the reference.
+				activeWS.PaneID = ""
+				m.State.ActiveWorkspaceID = ""
 			}
 		}
 	}
-	_ = m.Tmux.JoinPane(ws.PaneID, m.State.MainWindowID)
-	ws.TmuxWindow = m.State.MainWindowID
-	m.State.ActiveWorkspaceID = ws.ID
-	// Update the main window title to show the active workspace name.
-	_ = m.Tmux.RenameWindow(m.State.MainWindowID, ws.Name)
-	// Restore sidebar width; JoinPane resets pane proportions to 50/50.
-	if panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID); err == nil && len(panes) > 0 {
-		_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
+
+	// Swap workspace pane into :0.1 (shell goes to workspace's window).
+	if err := m.Tmux.SwapPane(m.State.WorkspacePaneID, ws.PaneID); err != nil {
+		return err
 	}
+	m.State.ActiveWorkspaceID = wsID
+	return m.SaveState()
+}
+
+// SwapBackToShell swaps the active workspace pane back to its own window,
+// restoring the shell pane to :0.1. No-op when no workspace is active.
+func (m *Manager) SwapBackToShell() error {
+	if m.State.ActiveWorkspaceID == "" || m.State.WorkspacePaneID == "" {
+		return nil
+	}
+	ws, ok := m.State.Workspaces[m.State.ActiveWorkspaceID]
+	if !ok || ws.PaneID == "" {
+		m.State.ActiveWorkspaceID = ""
+		return m.SaveState()
+	}
+
+	// Verify both panes exist before swapping.
+	if !m.Tmux.PaneExists(ws.PaneID) {
+		ws.PaneID = ""
+		m.State.ActiveWorkspaceID = ""
+		return m.SaveState()
+	}
+	if !m.Tmux.PaneExists(m.State.WorkspacePaneID) {
+		m.State.WorkspacePaneID = ""
+		m.State.ActiveWorkspaceID = ""
+		return m.SaveState()
+	}
+
+	// ws.PaneID is currently in :0.1; WorkspacePaneID (shell) is in ws's window.
+	// Swap: ws pane goes back to its window, shell comes to :0.1.
+	if err := m.Tmux.SwapPane(ws.PaneID, m.State.WorkspacePaneID); err != nil {
+		return err
+	}
+	m.State.ActiveWorkspaceID = ""
+	return m.SaveState()
 }
 
 // SwitchToLastActive switches the active pane to the last active workspace.
@@ -619,8 +726,7 @@ func (m *Manager) SwitchToLastActive() bool {
 	if !ok || ws.PaneID == "" || ws.State != state.StateRunning {
 		return false
 	}
-	m.SwitchActivePane(ws)
-	return true
+	return m.SwapActivePane(id) == nil
 }
 
 // FindOrphanWorktrees returns worktrees registered in the project's bare repo

@@ -114,8 +114,10 @@ func Remove(bareDir, wtPath string) error {
 	return nil
 }
 
-// IsDirty returns true if the worktree has uncommitted changes or local-only
-// commits. If no upstream branch is configured, it is always considered dirty.
+// IsDirty returns true if the worktree has uncommitted changes or if HEAD
+// does not match any remote ref. A worktree is considered clean (not dirty)
+// only when git status is empty AND HEAD is reachable by at least one remote
+// branch (e.g., origin/main, origin/feat/foo).
 func IsDirty(worktreePath string) (bool, error) {
 	// Check for uncommitted changes.
 	statusOut, err := exec.Command("git", "-C", worktreePath, "status", "--porcelain").Output()
@@ -126,17 +128,18 @@ func IsDirty(worktreePath string) (bool, error) {
 		return true, nil
 	}
 
-	// Check if upstream branch exists; no upstream = always dirty.
-	if err := exec.Command("git", "-C", worktreePath, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").Run(); err != nil {
+	// Check if HEAD matches at least one remote ref.
+	branchOut, err := exec.Command("git", "-C", worktreePath, "branch", "-r", "--contains", "HEAD").Output()
+	if err != nil {
+		// Command failed — treat as dirty (safe default).
+		return true, nil
+	}
+	if strings.TrimSpace(string(branchOut)) == "" {
+		// HEAD is not on any remote branch — local-only commits exist.
 		return true, nil
 	}
 
-	// Check for local-only commits.
-	logOut, err := exec.Command("git", "-C", worktreePath, "log", "--oneline", "@{u}..").Output()
-	if err != nil {
-		return false, fmt.Errorf("git log: %w", err)
-	}
-	return strings.TrimSpace(string(logOut)) != "", nil
+	return false, nil
 }
 
 // Init prepares a project directory for use with worktrees. It handles three

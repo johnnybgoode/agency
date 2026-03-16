@@ -15,6 +15,13 @@ type Window struct {
 	Name string
 }
 
+// Tmux session environment variable keys for crash-resilient pane rediscovery.
+const (
+	EnvNavPane       = "AGENCY_NAV_PANE"
+	EnvWorkspacePane = "AGENCY_WORKSPACE_PANE"
+	EnvMainWindow    = "AGENCY_MAIN_WINDOW"
+)
+
 // Client is a thin wrapper around the tmux CLI, scoped to a single session.
 type Client struct {
 	SessionName string
@@ -169,6 +176,12 @@ func (c *Client) GetWindowPanes(windowID string) ([]string, error) {
 	return panes, nil
 }
 
+// KillPane destroys a pane by its pane ID.
+func (c *Client) KillPane(paneID string) error {
+	_, err := c.run("kill-pane", "-t", paneID)
+	return err
+}
+
 // ResizePane resizes the pane identified by paneID to the given width (columns).
 func (c *Client) ResizePane(paneID string, width int) error {
 	_, err := c.run("resize-pane", "-t", paneID, "-x", fmt.Sprintf("%d", width))
@@ -190,6 +203,25 @@ func (c *Client) DisplayPopup(cmd string, width, height, x int) error {
 	args = append(args, cmd)
 	_, err := c.run(args...)
 	return err
+}
+
+// SwapPane swaps two panes by their pane IDs. -d prevents the active pane from
+// changing (i.e. the currently focused pane stays focused after the swap).
+func (c *Client) SwapPane(targetPaneID, sourcePaneID string) error {
+	_, err := c.run("swap-pane", "-d", "-t", targetPaneID, "-s", sourcePaneID)
+	return err
+}
+
+// SetOption sets a tmux option on the session.
+func (c *Client) SetOption(option, value string) error {
+	_, err := c.run("set-option", "-t", c.SessionName, option, value)
+	return err
+}
+
+// SplitWindowHorizontalPercent splits windowID horizontally, giving the new
+// right pane pct% of the total width. Returns the new right pane ID.
+func (c *Client) SplitWindowHorizontalPercent(windowID string, pct int) (string, error) {
+	return c.run("split-window", "-h", "-p", fmt.Sprintf("%d", pct), "-t", c.SessionName+":"+windowID, "-P", "-F", "#{pane_id}")
 }
 
 // KillSession kills the entire tmux session (called after graceful quit cleanup).
@@ -218,4 +250,55 @@ func (c *Client) Attach() error {
 		return fmt.Errorf("tmux attach-session -t %s: %w", c.SessionName, err)
 	}
 	return nil
+}
+
+// SetEnvironment sets a session-scoped environment variable.
+func (c *Client) SetEnvironment(key, value string) error {
+	_, err := c.run("set-environment", "-t", c.SessionName, key, value)
+	return err
+}
+
+// GetEnvironment reads a session-scoped environment variable.
+// Returns ("", nil) if unset.
+func (c *Client) GetEnvironment(key string) (string, error) {
+	out, err := c.run("show-environment", "-t", c.SessionName, key)
+	if err != nil {
+		// tmux returns error when the variable is not set.
+		return "", nil
+	}
+	// Output format: "KEY=value"
+	if idx := strings.Index(out, "="); idx >= 0 {
+		return out[idx+1:], nil
+	}
+	return "", nil
+}
+
+// PaneExists checks whether a pane ID is alive in the tmux server.
+func (c *Client) PaneExists(paneID string) bool {
+	_, err := c.run("display-message", "-p", "-t", paneID, "#{pane_id}")
+	return err == nil
+}
+
+// SetPaneOption sets a pane-level option (e.g., remain-on-exit).
+func (c *Client) SetPaneOption(paneID, option, value string) error {
+	_, err := c.run("set-option", "-p", "-t", paneID, option, value)
+	return err
+}
+
+// RespawnPane respawns a dead pane (one with remain-on-exit on).
+func (c *Client) RespawnPane(paneID string) error {
+	_, err := c.run("respawn-pane", "-t", paneID)
+	return err
+}
+
+// SetHook installs a session-scoped tmux hook.
+func (c *Client) SetHook(name, trigger, command string) error {
+	_, err := c.run("set-hook", "-t", c.SessionName, trigger, command)
+	return err
+}
+
+// BindKey installs a session-scoped key binding (no prefix required).
+func (c *Client) BindKey(key, tmuxCommand string) error {
+	_, err := c.run("bind-key", "-n", "-T", "root", key, tmuxCommand)
+	return err
 }

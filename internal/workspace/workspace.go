@@ -154,7 +154,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
 		Image:         cfg.Sandbox.Image,
-		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
+		Name:          "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
 		WorktreeMount: ws.WorktreePath,
 		ConfigMount:   configMount,
 		Env:           env,
@@ -622,7 +622,7 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 // substring --filter does not accidentally match containers belonging to a
 // project whose name starts with the same characters.
 func (m *Manager) ContainerPrefix() string {
-	return "claude-sb-" + m.ProjectName + "-"
+	return "agency-sb-" + m.ProjectName + "-"
 }
 
 // SidebarWidthPercent returns the configured sidebar width percentage.

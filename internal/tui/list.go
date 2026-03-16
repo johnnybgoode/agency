@@ -166,6 +166,29 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 	}
 }
 
+// installAgentsCmd opens an interactive agent installer popup for the workspace,
+// then sends C-d (EOF) to the workspace pane to exit Claude. The trapCmd loop
+// restarts Claude with --continue so new agents are immediately available.
+// Only valid for RUNNING workspaces.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
+	const popupWidth = 80
+	const popupHeight = 30
+	tmuxClient := m.manager.Tmux
+	installerCmd := fmt.Sprintf("docker exec -it %s bash ~/subagents/install-agents.sh --install-dir local", ws.SandboxID)
+	paneID := ws.PaneID
+	return func() tea.Msg {
+		_ = tmuxClient.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
+		// Send C-d (EOF) to exit the current Claude session in the workspace pane.
+		// The trapCmd loop then restarts Claude with --continue.
+		if paneID != "" {
+			_ = tmuxClient.SendRawKeyToPane(paneID, "C-d")
+		}
+		return tickMsg{}
+	}
+}
+
 // handleQuitMsg processes messages while a quit flow is in progress.
 //
 //nolint:gocritic // bubbletea model must use value receivers
@@ -279,7 +302,7 @@ func (m listModel) buildQuitModal() DangerModal {
 
 // handleNormalKey handles key presses in normal (non-confirming) mode.
 //
-//nolint:gocritic // bubbletea model must use value receivers
+//nolint:gocritic,gocyclo // bubbletea model must use value receivers; key dispatch is inherently branchy
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -313,6 +336,14 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 			} else if ws.TmuxWindow != "" {
 				// Fallback: just select the window.
 				_ = m.manager.Tmux.SelectWindow(ws.TmuxWindow)
+			}
+		}
+
+	case "s":
+		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
+			ws := m.workspaces[m.cursor]
+			if ws.State == state.StateRunning && ws.SandboxID != "" {
+				return m, m.installAgentsCmd(ws)
 			}
 		}
 
@@ -650,9 +681,9 @@ func (m listModel) renderSidebar() string {
 	default:
 		ws := m.workspaces[m.cursor]
 		if ws.ID == activeID {
-			hint = " [⏎] focus  [n] [d]"
+			hint = " [⏎] focus  [n] [d] [s]"
 		} else {
-			hint = " [⏎] switch  [n] [d]"
+			hint = " [⏎] switch  [n] [d] [s]"
 		}
 	}
 	rows = append(rows, row(hint), bottom)

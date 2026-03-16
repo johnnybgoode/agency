@@ -19,7 +19,7 @@ if [ ! -d "$AGENTS_TARGET" ] && [ -x "$HOME/subagents/install-agents.sh" ]; then
 fi
 
 if [ -d /app/.beads ]; then
- cd /app && bd dolt start
+  cd /app && bd dolt start
 fi
 
 exec "$@"

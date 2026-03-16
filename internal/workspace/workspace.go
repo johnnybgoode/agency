@@ -834,7 +834,7 @@ func (m *Manager) List() []*state.Workspace {
 
 // dockerBuildContext returns the fs.FS to use as the Docker build context when
 // building the sandbox image. The embedded build context (Dockerfile +
-// docker-entrypoint.sh compiled into the binary) is the default, so the image
+// entrypoint.sh compiled into the binary) is the default, so the image
 // can be built on any machine with Docker — no local copy of the agency source
 // is required. An on-disk override is honored when dockerfile_dir is set in
 // config, allowing custom images.
@@ -846,7 +846,11 @@ func dockerBuildContext(configuredDir string) fs.FS {
 		}
 		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
 	}
-	return templates.BuildContextFS
+	sub, err := templates.Sub("docker")
+	if err != nil {
+		panic("embedded docker template missing: " + err.Error())
+	}
+	return sub
 }
 
 // SaveState persists current state to disk, updating the PID field first.

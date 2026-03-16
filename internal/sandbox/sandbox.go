@@ -123,8 +123,9 @@ func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) 
 		args = append(args, "-e", env)
 	}
 
-	// Entrypoint command: bash -c claude
-	args = append(args, opts.Image, "bash", "-c", "claude")
+	// No CMD override — let the image default (sleep infinity) keep the
+	// container alive so docker exec can launch interactive claude sessions.
+	args = append(args, opts.Image)
 
 	// Use stdout-only output for docker create to avoid stderr warnings
 	// polluting the container ID.
@@ -189,11 +190,16 @@ func (m *Manager) ImageExists(ctx context.Context, image string) (bool, error) {
 	return true, nil
 }
 
-// BuildImage runs `docker build -t <image> <contextDir>` to build the named
-// image from the supplied build context directory.
+// BuildImage runs `docker build --no-cache -t <image> <contextDir>` to build
+// the named image from the supplied build context directory.
+// --no-cache is required to prevent Docker from reusing stale intermediate
+// layers (e.g. a COPY layer from a previous build with different embedded
+// files); the image is only built when it does not already exist, so the
+// extra cost is paid at most once per environment.
 func (m *Manager) BuildImage(ctx context.Context, image, contextDir string) error {
 	slog.Info("building image", "image", image, "context", contextDir)
-	_, err := m.docker(ctx, "build", "-t", image, contextDir)
+	out, err := m.docker(ctx, "build", "--no-cache", "-t", image, contextDir)
+	slog.Debug("docker build output", "image", image, "output", out)
 	return err
 }
 
@@ -209,7 +215,7 @@ func (m *Manager) EnsureImage(ctx context.Context, image string, buildContextFS 
 		return nil
 	}
 	if buildContextFS == nil {
-		return fmt.Errorf("image %q not found locally; set AGENCY_DOCKER_DIR to the agency source docker/ directory or build manually with: docker build -t %s <path-to-agency>/docker", image, image)
+		return fmt.Errorf("image %q not found locally and no build context provided; build manually with: docker build -t %s <path-to-agency>/internal/templates/docker", image, image)
 	}
 
 	slog.Info("image not found, building from embedded context", "image", image)
@@ -237,6 +243,7 @@ func extractFS(destDir string, src fs.FS) error {
 		if d.IsDir() {
 			return os.MkdirAll(dest, 0o750)
 		}
+		slog.Debug("extracting build context file", "file", path)
 		f, err := src.Open(path)
 		if err != nil {
 			return err

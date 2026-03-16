@@ -191,11 +191,12 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
 	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
 	//    inside the container (for cancellation) without killing the wrapper
-	//  - while loop: restarts docker exec if Claude exits (ctrl-d, crash, etc.)
-	//    so the workspace pane stays alive until intentionally removed
+	//  - while loop condition: checks container existence before each exec so
+	//    the loop exits cleanly when Remove() deletes the container, preventing
+	//    "No such container" errors from flooding the workspace pane
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while true; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
-		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
+		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)

@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/johnnybgoode/agency/internal/agencyimage"
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
@@ -147,7 +148,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		configMount = cfgPath
 	}
 
-	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, findDockerfileFS(cfg.Sandbox.DockerfileDir)); err != nil {
+	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, dockerBuildContext(cfg.Sandbox.DockerfileDir)); err != nil {
 		return fmt.Errorf("ensuring sandbox image: %w", err)
 	}
 
@@ -792,60 +793,21 @@ func (m *Manager) List() []*state.Workspace {
 	return workspaces
 }
 
-// findDockerfileFS returns an fs.FS for the Docker build context directory.
-// Resolution order:
-//  1. AGENCY_DOCKER_DIR environment variable (if set and contains a Dockerfile)
-//  2. configured dockerfile_dir (if non-empty and exists)
-//  3. "docker/" relative to the agency executable directory (up to 3 levels)
-//  4. "docker/" found by walking up from the current working directory
-//
-// Returns nil if no suitable directory is found; EnsureImage will then
-// return a descriptive error including how to set AGENCY_DOCKER_DIR.
-func findDockerfileFS(configuredDir string) fs.FS {
-	var candidates []string
-
-	if dir := os.Getenv("AGENCY_DOCKER_DIR"); dir != "" {
-		candidates = append(candidates, dir)
-	}
+// dockerBuildContext returns the fs.FS to use as the Docker build context when
+// building the sandbox image. The embedded build context (Dockerfile +
+// docker-entrypoint.sh compiled into the binary) is the default, so the image
+// can be built on any machine with Docker — no local copy of the agency source
+// is required. An on-disk override is honored when dockerfile_dir is set in
+// config, allowing custom images.
+func dockerBuildContext(configuredDir string) fs.FS {
 	if configuredDir != "" {
-		candidates = append(candidates, configuredDir)
-	}
-
-	// Walk up from the executable location (handles binary built in-tree).
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		for range 4 {
-			candidates = append(candidates, filepath.Join(dir, "docker"))
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
+		if _, err := os.Stat(filepath.Join(configuredDir, "Dockerfile")); err == nil {
+			slog.Debug("using configured dockerfile_dir for image build", "dir", configuredDir)
+			return os.DirFS(configuredDir)
 		}
+		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
 	}
-
-	// Walk up from the current working directory (handles running from source).
-	if cwd, err := os.Getwd(); err == nil {
-		dir := cwd
-		for range 4 {
-			candidates = append(candidates, filepath.Join(dir, "docker"))
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
-
-	for _, dir := range candidates {
-		clean := filepath.Clean(dir)
-		dockerfilePath := filepath.Join(clean, "Dockerfile")
-		if _, err := os.Stat(dockerfilePath); err == nil {
-			slog.Debug("found Dockerfile directory", "dir", filepath.Base(clean)) //nolint:gosec // log only the base name to avoid log injection
-			return os.DirFS(clean)
-		}
-	}
-	return nil
+	return agencyimage.BuildContextFS
 }
 
 // SaveState persists current state to disk, updating the PID field first.

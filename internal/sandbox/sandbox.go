@@ -289,7 +289,7 @@ func extractFS(destDir string, src fs.FS) error {
 			return os.MkdirAll(dest, 0o750)
 		}
 		slog.Debug("extracting build context file", "file", path)
-		f, err := src.Open(path) //nolint:gosec // G304: path from embedded FS, controlled content
+		f, err := src.Open(path)
 		if err != nil {
 			return err
 		}

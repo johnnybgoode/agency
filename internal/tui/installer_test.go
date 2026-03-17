@@ -96,6 +96,13 @@ func (f *fakePopupRunner) DisplayPopup(cmd string, width, height, x int) error {
 	return nil
 }
 
+func (f *fakePopupRunner) SendKeysToPane(paneID, keys string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sentKeys = append(f.sentKeys, sentKey{paneID: paneID, key: keys})
+	return f.keyErr
+}
+
 func (f *fakePopupRunner) SendRawKeyToPane(paneID, key string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -158,6 +165,58 @@ func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {
 		if k.key == "C-d" {
 			t.Errorf("C-d should not be sent when no new agents were installed; sentKeys = %v", keys)
 		}
+	}
+}
+
+// TestInstall_SendsReloadPlugins_BeforeCd verifies that /reload-plugins is sent
+// to the workspace pane before C-d so the running Claude session picks up the
+// new agents before exiting.
+func TestInstall_SendsReloadPlugins_BeforeCd(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%77"
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-reload",
+		State:        state.StateRunning,
+		SandboxID:    "container-reload",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	// cmdFn creates a new agent file so the restart path is taken.
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	reloadIdx := -1
+	cdIdx := -1
+	for i, k := range keys {
+		switch k.key {
+		case "/reload-plugins":
+			reloadIdx = i
+		case "C-d":
+			cdIdx = i
+		}
+	}
+	if reloadIdx < 0 {
+		t.Errorf("/reload-plugins not sent; sentKeys = %v", keys)
+	}
+	if cdIdx < 0 {
+		t.Errorf("C-d not sent; sentKeys = %v", keys)
+	}
+	if reloadIdx >= 0 && cdIdx >= 0 && reloadIdx >= cdIdx {
+		t.Errorf("/reload-plugins (idx %d) must come before C-d (idx %d); sentKeys = %v", reloadIdx, cdIdx, keys)
 	}
 }
 

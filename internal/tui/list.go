@@ -65,6 +65,7 @@ type quitAssessedMsg struct {
 // The default implementation delegates to *tmux.Client; tests inject a fake.
 type popupRunner interface {
 	DisplayPopup(cmd string, width, height, x int) error
+	SendKeysToPane(paneID, keys string) error
 	SendRawKeyToPane(paneID, key string) error
 }
 
@@ -230,6 +231,7 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 		before := agentFiles(agentsDir)
 		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
 		if paneID != "" && hasNewAgents(agentsDir, before) {
+			_ = popup.SendKeysToPane(paneID, "/reload-plugins")
 			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}
 		return tickMsg{}

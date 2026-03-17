@@ -33,8 +33,8 @@ func FindProjectDir() (string, error) {
 	)
 }
 
-// IsDir reports whether path exists and is a directory.
+// IsDir reports whether path exists and is a directory (not following symlinks).
 func IsDir(path string) bool {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	return err == nil && info.IsDir()
 }

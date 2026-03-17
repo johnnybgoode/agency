@@ -39,7 +39,14 @@ func Slugify(branch string) string {
 // Create adds a new git worktree for the given branch inside a bare repository.
 // bareDir is the path to the bare repo. projectName is used when constructing
 // the destination directory name. The resulting worktree path is returned.
+//
+// Returns an error if branch starts with '-', which would be misinterpreted as
+// a flag by git.
 func Create(bareDir, projectName, branch string) (string, error) {
+	if strings.HasPrefix(branch, "-") {
+		return "", fmt.Errorf("branch name cannot start with '-': %q", branch)
+	}
+
 	slug := Slugify(branch)
 	destPath := filepath.Join(filepath.Dir(bareDir), projectName+"-"+slug)
 
@@ -54,9 +61,11 @@ func Create(bareDir, projectName, branch string) (string, error) {
 	}
 
 	// Attempt to create the branch; ignore the error in case it already exists.
-	_ = exec.Command("git", "-C", bareDir, "branch", branch).Run()
+	// Use -- to prevent branch name from being interpreted as a flag.
+	_ = exec.Command("git", "-C", bareDir, "branch", "--", branch).Run()
 
-	cmd := exec.Command("git", "-C", bareDir, "worktree", "add", destPath, branch)
+	// Use -- to prevent branch name and destPath from being interpreted as flags.
+	cmd := exec.Command("git", "-C", bareDir, "worktree", "add", "--", destPath, branch)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("git worktree add: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -149,6 +158,29 @@ func IsDirty(worktreePath string) (bool, error) {
 	return false, nil
 }
 
+// validateRemoteURL returns an error if remote is not a valid HTTPS or SSH URL.
+func validateRemoteURL(remote string) error {
+	if remote == "" {
+		return nil // empty is handled separately
+	}
+	// Allow HTTPS and SSH formats
+	if strings.HasPrefix(remote, "https://") {
+		return nil
+	}
+	// SSH format: git@host:path or ssh://user@host/path
+	if strings.HasPrefix(remote, "git@") || strings.HasPrefix(remote, "ssh://") {
+		return nil
+	}
+	// Local paths (for testing) — allow absolute paths
+	if strings.HasPrefix(remote, "/") {
+		return nil
+	}
+	if strings.HasPrefix(remote, "http://") {
+		return fmt.Errorf("insecure remote URL %q: use https:// instead of http://", remote)
+	}
+	return fmt.Errorf("remote URL %q must use https://, git@, or ssh:// scheme", remote)
+}
+
 // Init prepares a project directory for use with worktrees. It handles three
 // cases depending on the current state of projectDir:
 //
@@ -157,6 +189,10 @@ func IsDirty(worktreePath string) (bool, error) {
 //   - Neither       → clone remote as a bare repo into .bare/, create an
 //     initial worktree named "<basename>-main", and create .agency/.
 func Init(projectDir, remote string) error {
+	if err := validateRemoteURL(remote); err != nil {
+		return err
+	}
+
 	gitPath := filepath.Join(projectDir, ".git")
 	barePath := filepath.Join(projectDir, ".bare")
 	toolPath := filepath.Join(projectDir, ".agency")

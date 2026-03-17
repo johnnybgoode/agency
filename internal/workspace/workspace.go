@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -84,14 +85,33 @@ func generateID() string {
 	return "ws-" + hex.EncodeToString(b)
 }
 
-// validateCreate checks that name and branch are non-empty and that no active
-// workspace already uses the given branch.
+// workspaceIDRe matches the expected workspace ID format: ws-<8 hex chars>.
+var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
+
+// validateWorkspaceID returns an error if id does not match the expected
+// workspace ID format (ws-<8hex>).
+func validateWorkspaceID(id string) error {
+	if !workspaceIDRe.MatchString(id) {
+		return fmt.Errorf("invalid workspace ID %q: must match ws-[a-f0-9]{8}", id)
+	}
+	return nil
+}
+
+// validateCreate checks that name and branch are non-empty, that neither
+// starts with '-' (which would be interpreted as a flag by git), and that no
+// active workspace already uses the given branch.
 func (m *Manager) validateCreate(name, branch string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("workspace name cannot be empty")
 	}
+	if strings.HasPrefix(name, "-") {
+		return errors.New("workspace name cannot start with '-'")
+	}
 	if strings.TrimSpace(branch) == "" {
 		return errors.New("branch name cannot be empty")
+	}
+	if strings.HasPrefix(branch, "-") {
+		return errors.New("branch name cannot start with '-'")
 	}
 	for _, existing := range m.State.Workspaces {
 		if existing.Branch == branch && existing.State != state.StateDone && existing.State != state.StateFailed {
@@ -126,19 +146,36 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		return errors.New("docker is not available")
 	}
 
-	// Build environment variables.
+	// Build non-sensitive environment variables (passed as -e).
 	var env []string
-	if key := cfg.Credentials.AnthropicAPIKey; key != "" {
-		env = append(env, "ANTHROPIC_API_KEY="+key)
-	}
-	if tok := cfg.Credentials.GithubToken; tok != "" {
-		env = append(env, "GITHUB_TOKEN="+tok)
-	}
 	if v := os.Getenv("GIT_USER"); v != "" {
 		env = append(env, "GIT_USER="+v)
 	}
 	if v := os.Getenv("GIT_EMAIL"); v != "" {
 		env = append(env, "GIT_EMAIL="+v)
+	}
+
+	// Write sensitive credentials to a temp env-file (mode 0600) so they
+	// are not visible via `docker inspect`.
+	var envFilePath string
+	var sensitiveEnv []string
+	if key := cfg.Credentials.AnthropicAPIKey; key != "" {
+		sensitiveEnv = append(sensitiveEnv, "ANTHROPIC_API_KEY="+key)
+	}
+	if tok := cfg.Credentials.GithubToken; tok != "" {
+		sensitiveEnv = append(sensitiveEnv, "GITHUB_TOKEN="+tok)
+	}
+	if len(sensitiveEnv) > 0 {
+		tmpDir, err := os.MkdirTemp("", "agency-env-*")
+		if err != nil {
+			return fmt.Errorf("creating temp dir for env file: %w", err)
+		}
+		defer os.RemoveAll(tmpDir)
+		envFilePath = filepath.Join(tmpDir, "credentials")
+		content := strings.Join(sensitiveEnv, "\n") + "\n"
+		if err := os.WriteFile(envFilePath, []byte(content), 0o600); err != nil {
+			return fmt.Errorf("writing env file: %w", err)
+		}
 	}
 
 	// Determine whether the project config file should be mounted.
@@ -167,6 +204,9 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		ConfigMount:     configMount,
 		SharedHomeMount: sharedHome,
 		Env:             env,
+		EnvFile:         envFilePath,
+		Memory:          cfg.Sandbox.Memory,
+		CPUs:            cfg.Sandbox.CPUs,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sandbox: %w", err)
@@ -183,7 +223,14 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 // buildTrapCmd constructs the bash wrapper command for the tmux window.
 // When resume is true, RESUME is initialized to "--continue" so claude
 // picks up where it left off instead of starting fresh.
-func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) string {
+// Returns an error if the workspace's SandboxID or ID fails validation.
+func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error) {
+	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
+		return "", fmt.Errorf("buildTrapCmd: %w", err)
+	}
+	if err := validateWorkspaceID(ws.ID); err != nil {
+		return "", fmt.Errorf("buildTrapCmd: %w", err)
+	}
 	agencyBin, _ := os.Executable()
 	resumeVal := ""
 	if resume {
@@ -192,7 +239,7 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) string {
 	return fmt.Sprintf(
 		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=%q; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
 		m.ProjectDir, agencyBin, ws.ID, resumeVal, ws.SandboxID, ws.SandboxID,
-	)
+	), nil
 }
 
 // provisionTmux opens a new tmux window for ws, captures the pane ID, and
@@ -217,7 +264,10 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//  - while loop condition: checks container existence before each exec so
 	//    the loop exits cleanly when Remove() deletes the container, preventing
 	//    "No such container" errors from flooding the workspace pane
-	trapCmd := m.buildTrapCmd(ws, false)
+	trapCmd, err := m.buildTrapCmd(ws, false)
+	if err != nil {
+		return fmt.Errorf("building trap command: %w", err)
+	}
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
 	}
@@ -239,7 +289,10 @@ func (m *Manager) resumeTmux(ws *state.Workspace) error {
 		ws.PaneID = panes[0]
 	}
 
-	trapCmd := m.buildTrapCmd(ws, true)
+	trapCmd, err := m.buildTrapCmd(ws, true)
+	if err != nil {
+		return fmt.Errorf("building trap command for resume: %w", err)
+	}
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window for resume: %w", err)
 	}
@@ -578,7 +631,11 @@ func (m *Manager) reconcileRunning(
 	if res.windowsErr == nil && ws.TmuxWindow != "" && !windowSet[ws.TmuxWindow] {
 		slog.Warn("tmux window disappeared, recreating", "workspace", ws.ID, "old_window", ws.TmuxWindow)
 		if newWin, err := m.Tmux.NewWindow(worktree.Slugify(ws.Branch)); err == nil {
-			_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", ws.SandboxID))
+			if validateErr := sandbox.ValidateContainerID(ws.SandboxID); validateErr != nil {
+				slog.Warn("skipping docker exec: invalid container ID", "workspace", ws.ID, "error", validateErr)
+			} else {
+				_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", ws.SandboxID))
+			}
 			ws.TmuxWindow = newWin
 			// Capture new pane ID.
 			if panes, err := m.Tmux.GetWindowPanes(newWin); err == nil && len(panes) > 0 {
@@ -950,7 +1007,9 @@ func dockerBuildContext(configuredDir string) fs.FS {
 	return sub
 }
 
-// SaveState persists current state to disk, updating the PID field first.
+// SaveState persists current state to disk. Callers must hold the project flock
+// before mutating State to prevent concurrent writes from popup processes.
+// The PID field is refreshed on every write so the lock owner is always current.
 func (m *Manager) SaveState() error {
 	m.State.PID = os.Getpid()
 	if err := state.Write(m.StatePath, m.State); err != nil {

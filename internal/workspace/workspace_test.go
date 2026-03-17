@@ -470,10 +470,10 @@ func TestProvisionTmux_TrapCmdChecksContainerExistence(t *testing.T) {
 	}
 
 	ws := &state.Workspace{
-		ID:        "ws-trapcmd01",
+		ID:        "ws-ac1d0001",
 		Name:      "Test",
 		Branch:    "feat/test",
-		SandboxID: "abc123containerid",
+		SandboxID: "abc123def456",
 		State:     state.StateProvisioning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -535,10 +535,10 @@ func TestProvisionTmux_TrapCmdUsesContinueOnRestart(t *testing.T) {
 	}
 
 	ws := &state.Workspace{
-		ID:        "ws-continue01",
+		ID:        "ws-c0de0001",
 		Name:      "Test",
 		Branch:    "feat/test",
-		SandboxID: "abc123containerid",
+		SandboxID: "abc123def456",
 		State:     state.StateProvisioning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -1569,17 +1569,20 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			m := newTestManager(t)
 			ws := &state.Workspace{
-				ID:        "ws-trap0001",
+				ID:        "ws-ab12cd34",
 				Name:      "Trap Test",
 				Branch:    "feat/trap",
-				SandboxID: "containerabc123",
+				SandboxID: "abc123def456",
 				State:     state.StatePaused,
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
 			}
 			addWorkspace(m, ws)
 
-			cmd := m.buildTrapCmd(ws, tt.resume)
+			cmd, err := m.buildTrapCmd(ws, tt.resume)
+			if err != nil {
+				t.Fatalf("buildTrapCmd(resume=%v): unexpected error: %v", tt.resume, err)
+			}
 
 			if !strings.Contains(cmd, tt.wantResumeVal) {
 				t.Errorf("buildTrapCmd(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantResumeVal, cmd)

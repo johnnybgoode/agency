@@ -11,8 +11,21 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
+
+var containerIDRe = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+
+// ValidateContainerID returns an error if id is not a valid Docker container ID.
+// A valid container ID consists of 12 to 64 lowercase hexadecimal characters.
+func ValidateContainerID(id string) error {
+	if !containerIDRe.MatchString(id) {
+		return fmt.Errorf("invalid container ID %q: must match [a-f0-9]{12,64}", id)
+	}
+	return nil
+}
 
 // CreateOpts holds all options required to create a sandbox container.
 type CreateOpts struct {
@@ -21,9 +34,12 @@ type CreateOpts struct {
 	WorktreeMount   string   // host path mounted to /app inside the container
 	ConfigMount     string   // host path mounted to /etc/agency/config.toml (read-only)
 	SharedHomeMount string   // host path mounted read-only at /home/agent/.shared-base
-	Env             []string // environment variables in KEY=VALUE form
+	Env             []string // non-sensitive environment variables in KEY=VALUE form
+	EnvFile         string   // path to a file containing sensitive KEY=VALUE pairs (passed via --env-file)
 	CapDrop         []string
 	CapAdd          []string
+	Memory          string // e.g. "4g" — passed as --memory to docker create
+	CPUs            int    // e.g. 2 — passed as --cpus to docker create
 }
 
 // ContainerInfo is a summary of a running or stopped container.
@@ -49,19 +65,39 @@ func New() (*Manager, error) {
 	return &Manager{}, nil
 }
 
+// redactArgs returns a copy of args with sensitive -e KEY=VALUE pairs redacted.
+// The value portion is replaced with KEY=REDACTED for any key containing
+// API_KEY, TOKEN, or SECRET (case-insensitive).
+func redactArgs(args []string) []string {
+	result := make([]string, len(args))
+	copy(result, args)
+	for i, arg := range result {
+		if i > 0 && result[i-1] == "-e" {
+			if idx := strings.Index(arg, "="); idx >= 0 {
+				key := arg[:idx]
+				upper := strings.ToUpper(key)
+				if strings.Contains(upper, "API_KEY") || strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") {
+					result[i] = key + "=REDACTED"
+				}
+			}
+		}
+	}
+	return result
+}
+
 // docker is a shared helper that runs a docker sub-command and returns the
 // trimmed stdout. Any non-zero exit is returned as an error together with the
 // combined output so callers have full context.
 func (m *Manager) docker(ctx context.Context, args ...string) (string, error) {
-	slog.Debug("docker exec", "args", args)
+	slog.Debug("docker exec", "args", redactArgs(args))
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if err != nil {
-		slog.Error("docker command failed", "args", args, "error", err, "output", truncateLog(result, 200))
+		slog.Error("docker command failed", "args", redactArgs(args), "error", err, "output", truncateLog(result, 200))
 		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, result)
 	}
-	slog.Debug("docker exec done", "args", args, "output_len", len(result))
+	slog.Debug("docker exec done", "args", redactArgs(args), "output_len", len(result))
 	return result, nil
 }
 
@@ -83,7 +119,6 @@ var defaultCapAdd = []string{
 	"SETGID",
 	"DAC_OVERRIDE",
 	"FOWNER",
-	"NET_RAW",
 }
 
 // Create runs `docker create` with the provided options and returns the
@@ -119,6 +154,16 @@ func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) 
 		args = append(args, "-v", opts.SharedHomeMount+":/home/agent/.shared-base:ro")
 	}
 
+	if opts.Memory != "" {
+		args = append(args, "--memory", opts.Memory)
+	}
+	if opts.CPUs > 0 {
+		args = append(args, "--cpus", strconv.Itoa(opts.CPUs))
+	}
+
+	if opts.EnvFile != "" {
+		args = append(args, "--env-file", opts.EnvFile)
+	}
 	for _, env := range opts.Env {
 		args = append(args, "-e", env)
 	}

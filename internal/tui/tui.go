@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,7 +90,7 @@ func RunQuitPopup() error {
 	qm := finalModel.(quitPopupModel)
 	resultPath := filepath.Join(projectDir, ".agency", QuitResultFile)
 	data, _ := json.Marshal(QuitResultData{Confirmed: qm.result.Confirmed})
-	return os.WriteFile(resultPath, data, 0o644)
+	return os.WriteFile(resultPath, data, 0o600)
 }
 
 // popupWrapper is a thin bubbletea model that wraps the create form for popup mode.
@@ -259,6 +260,53 @@ func findSidebarPane(mgr *workspace.Manager) (string, error) {
 	return panes[0], nil
 }
 
+// acquireSidebarLock acquires the agency flock, handling the stale-lock case
+// where the previous holder's PID is dead or was reused by another process.
+func acquireSidebarLock(lockPath, statePath string) (*state.Lock, error) {
+	lock, err := state.AcquireLock(lockPath)
+	if err == nil {
+		slog.Debug("lock acquired", "path", lockPath)
+		return lock, nil
+	}
+
+	// Check whether the process that holds the lock is still alive.
+	s, readErr := state.Read(statePath)
+	if readErr != nil || s.PID <= 0 {
+		return nil, fmt.Errorf("acquiring lock: %w", err)
+	}
+
+	// Nonce cross-check: read the nonce currently in the lock file and
+	// compare it against the nonce stored in state.json. A mismatch means
+	// the lock file was rewritten by a different process instance (PID
+	// reuse), so we treat it as stale regardless of IsProcessAlive.
+	lockFileNonce := ""
+	if data, readNonceErr := os.ReadFile(lockPath); readNonceErr == nil {
+		lockFileNonce = strings.TrimSpace(string(data))
+	}
+	nonceMismatch := s.LockNonce != "" && lockFileNonce != "" && lockFileNonce != s.LockNonce
+
+	if !nonceMismatch && state.IsProcessAlive(s.PID) {
+		return nil, fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
+	}
+
+	// Either the PID is dead or the nonce doesn't match (PID was reused by
+	// a different process). The flock was auto-released when the dead
+	// process's file descriptor closed on exit; simply retry acquisition on
+	// the same file. Removing the file first would open a TOCTOU window
+	// where another process could steal the lock between Remove and OpenFile.
+	if nonceMismatch {
+		slog.Warn("stale lock detected via nonce mismatch (PID reuse)", "stalePID", s.PID, "stateNonce", s.LockNonce, "lockNonce", lockFileNonce)
+	} else {
+		slog.Warn("stale lock detected, retrying acquisition", "stalePID", s.PID)
+	}
+	lock, err = state.AcquireLock(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("acquiring lock after stale process detected: %w", err)
+	}
+	slog.Debug("lock acquired", "path", lockPath)
+	return lock, nil
+}
+
 // runSidebar is the full sidebar TUI flow, run when already inside tmux.
 func runSidebar(projectDir string) error {
 	slog.Info("running sidebar", "projectDir", projectDir)
@@ -275,31 +323,23 @@ func runSidebar(projectDir string) error {
 	}
 
 	lockPath := filepath.Join(projectDir, ".agency", "lock")
-	lock, err := state.AcquireLock(lockPath)
+	statePath := filepath.Join(projectDir, ".agency", "state.json")
+	lock, err := acquireSidebarLock(lockPath, statePath)
 	if err != nil {
-		// Check whether the process that holds the lock is still alive.
-		statePath := filepath.Join(projectDir, ".agency", "state.json")
-		s, readErr := state.Read(statePath)
-		if readErr != nil || s.PID <= 0 {
-			return fmt.Errorf("acquiring lock: %w", err)
-		}
-		if state.IsProcessAlive(s.PID) {
-			return fmt.Errorf("agency is already running (pid %d); use tmux to attach", s.PID)
-		}
-		// PID is dead — stale lock. Force-remove and retry.
-		slog.Warn("removing stale lock", "stalePID", s.PID)
-		_ = os.Remove(lockPath)
-		lock, err = state.AcquireLock(lockPath)
-		if err != nil {
-			return fmt.Errorf("acquiring lock after stale cleanup: %w", err)
-		}
+		return err
 	}
-	slog.Debug("lock acquired", "path", lockPath)
 	defer lock.Release() //nolint:errcheck // lock cleanup on shutdown
 
 	mgr, err := workspace.NewManager(projectDir, cfg)
 	if err != nil {
 		return fmt.Errorf("initializing workspace manager: %w", err)
+	}
+
+	// Persist the lock nonce so that the next startup can cross-check it
+	// against the lock file to detect PID reuse in stale-lock detection.
+	mgr.State.LockNonce = lock.Nonce()
+	if err := mgr.SaveState(); err != nil {
+		return fmt.Errorf("persisting lock nonce to state: %w", err)
 	}
 
 	// Ensure the 2-pane layout is set up (sidebar left, workspace shell right).

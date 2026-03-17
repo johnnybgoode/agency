@@ -8,11 +8,10 @@ import (
 	"io/fs"
 )
 
-// files holds every file under this package directory. The .go source files
-// end up at the root of the embedded FS, but callers only access named
-// subdirectories via Sub, so they are never reachable.
+// files holds all template subdirectories embedded into the binary.
+// Only named subdirectories are embedded to avoid including Go source files.
 //
-//go:embed *
+//go:embed docker
 var files embed.FS
 
 // Sub returns an [fs.FS] rooted at the named subdirectory (e.g. "docker").

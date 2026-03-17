@@ -44,18 +44,23 @@ type Workspace struct {
 
 // State holds the persisted state for an agency project.
 type State struct {
-	Version               int                   `json:"version"`
-	Project               string                `json:"project"`
-	BarePath              string                `json:"bare_path"`
-	TmuxSession           string                `json:"tmux_session"`
-	MainWindowID          string                `json:"main_window_id"`              // ID of the Agency main window (sidebar lives here)
-	WorkspacePaneID       string                `json:"workspace_pane_id,omitempty"` // pane ID of the shell pane that lives in :0.1 when idle
-	ActiveWorkspaceID     string                `json:"active_workspace_id"`         // workspace ID whose pane is currently swapped into the right slot
-	LastActiveWorkspaceID string                `json:"last_active_workspace_id"`    // previously active workspace, for fallback on removal
-	PID                   int                   `json:"pid"`
-	UpdatedAt             time.Time             `json:"updated_at"`
-	SessionStartedAt      *time.Time            `json:"session_started_at,omitempty"`
-	Workspaces            map[string]*Workspace `json:"workspaces"`
+	Version               int    `json:"version"`
+	Project               string `json:"project"`
+	BarePath              string `json:"bare_path"`
+	TmuxSession           string `json:"tmux_session"`
+	MainWindowID          string `json:"main_window_id"`              // ID of the Agency main window (sidebar lives here)
+	WorkspacePaneID       string `json:"workspace_pane_id,omitempty"` // pane ID of the shell pane that lives in :0.1 when idle
+	ActiveWorkspaceID     string `json:"active_workspace_id"`         // workspace ID whose pane is currently swapped into the right slot
+	LastActiveWorkspaceID string `json:"last_active_workspace_id"`    // previously active workspace, for fallback on removal
+	PID                   int    `json:"pid"`
+	// LockNonce is the random nonce written to the lock file when the lock was
+	// acquired. On startup, if a stale lock is suspected, the nonce stored here
+	// is compared against the nonce in the lock file to detect PID reuse: if
+	// they differ the lock belongs to a different process instance (recycled PID).
+	LockNonce        string                `json:"lock_nonce,omitempty"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+	SessionStartedAt *time.Time            `json:"session_started_at,omitempty"`
+	Workspaces       map[string]*Workspace `json:"workspaces"`
 }
 
 // Default returns a new State with sensible defaults for the given project.

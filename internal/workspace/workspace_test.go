@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/johnnybgoode/agency/internal/config"
+	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tmux"
 )
@@ -1532,5 +1533,129 @@ func TestSidebarColumns(t *testing.T) {
 				t.Errorf("SidebarColumns(%d) = %d, want %d", tt.termWidth, got, tt.wantCols)
 			}
 		})
+	}
+}
+
+// ----- provisionContainer: SharedHomeMount -----
+
+// newFakeDockerManager creates a Manager with a fake docker binary and returns
+// the Manager and the path to the docker args-log file. The fake docker script
+// handles image inspect (exit 0), create (echoes "sha256:fakeid"), and start
+// (exit 0).
+func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsFile = filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`subcmd="$1"` + "\n" +
+		`shift` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  image)` + "\n" +
+		`    case "$1" in` + "\n" +
+		`      inspect) exit 0;;` + "\n" +
+		`    esac;;` + "\n" +
+		`  create) echo "sha256:fakeid"; exit 0;;` + "\n" +
+		`  start)  exit 0;;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	mgr := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := mgr.SaveState(); err != nil {
+		t.Fatalf("newFakeDockerManager: SaveState: %v", err)
+	}
+	return mgr, argsFile
+}
+
+// readDockerArgsLog reads the full raw content of the docker args log file.
+func readDockerArgsLog(t *testing.T, argsFile string) string {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// TestProvisionContainer_PassesSharedHomeMountWhenDirExists verifies that
+// provisionContainer passes the -v .../.agency/home:/home/agent/.shared-base:ro
+// argument to docker create when the .agency/home directory exists.
+func TestProvisionContainer_PassesSharedHomeMountWhenDirExists(t *testing.T) {
+	m, argsFile := newFakeDockerManager(t)
+
+	// Create the .agency/home directory inside the project dir.
+	homeDir := filepath.Join(m.ProjectDir, ".agency", "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll .agency/home: %v", err)
+	}
+
+	ws := &state.Workspace{
+		ID:           "ws-shmount01",
+		Name:         "SharedHome",
+		Branch:       "feat/shared-home",
+		WorktreePath: m.ProjectDir,
+		State:        state.StateProvisioning,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Image = "agency:latest"
+
+	if err := m.provisionContainer(context.Background(), ws, cfg); err != nil {
+		t.Fatalf("provisionContainer returned unexpected error: %v", err)
+	}
+
+	log := readDockerArgsLog(t, argsFile)
+	want := "-v " + homeDir + ":/home/agent/.shared-base:ro"
+	if !strings.Contains(log, want) {
+		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	}
+}
+
+// TestProvisionContainer_OmitsSharedHomeMountWhenDirAbsent verifies that
+// provisionContainer does NOT pass .shared-base to docker create when the
+// .agency/home directory does not exist.
+func TestProvisionContainer_OmitsSharedHomeMountWhenDirAbsent(t *testing.T) {
+	m, argsFile := newFakeDockerManager(t)
+	// Do NOT create .agency/home — it should be absent.
+
+	ws := &state.Workspace{
+		ID:           "ws-shmount02",
+		Name:         "NoSharedHome",
+		Branch:       "feat/no-shared-home",
+		WorktreePath: m.ProjectDir,
+		State:        state.StateProvisioning,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Sandbox.Image = "agency:latest"
+
+	if err := m.provisionContainer(context.Background(), ws, cfg); err != nil {
+		t.Fatalf("provisionContainer returned unexpected error: %v", err)
+	}
+
+	log := readDockerArgsLog(t, argsFile)
+	if strings.Contains(log, "shared-base") {
+		t.Errorf("expected docker args NOT to contain 'shared-base', but got:\n%s", log)
 	}
 }

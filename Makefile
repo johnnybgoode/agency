@@ -3,15 +3,17 @@
 BINARY := agency
 BUILD_DIR := ./bin
 CMD := ./cmd/agency
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X main.version=$(VERSION)
 
 build:
-	go build -o $(BUILD_DIR)/$(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY) $(CMD)
 
 build-install:
-	go build -o $(HOME)/bin/$(BINARY) $(CMD)
+	go build -ldflags "$(LDFLAGS)" -o $(HOME)/bin/$(BINARY) $(CMD)
 
 install:
-	go install $(CMD)
+	go install -ldflags "$(LDFLAGS)" $(CMD)
 
 test:
 	go test ./...

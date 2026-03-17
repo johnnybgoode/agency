@@ -237,3 +237,39 @@ func TestCreate_NoEnvFileWhenEmpty(t *testing.T) {
 		t.Errorf("expected no --env-file when EnvFile is empty, got:\n%s", log)
 	}
 }
+
+// --- Issue 11: Configurable network restriction ---
+
+func TestCreate_AppliesNetworkRestriction(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+	_, err := m.Create(context.Background(), &CreateOpts{
+		Image:         "agency:latest",
+		Name:          "test-net",
+		WorktreeMount: "/app",
+		Network:       "none",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	log := readArgsLog(t, argsFile)
+	if !strings.Contains(log, "--network none") {
+		t.Errorf("expected --network none in docker create args, got:\n%s", log)
+	}
+}
+
+func TestCreate_OmitsNetworkWhenEmpty(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+	_, err := m.Create(context.Background(), &CreateOpts{
+		Image:         "agency:latest",
+		Name:          "test-nonet",
+		WorktreeMount: "/app",
+		Network:       "",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	log := readArgsLog(t, argsFile)
+	if strings.Contains(log, "--network") {
+		t.Errorf("expected no --network arg when Network is empty, got:\n%s", log)
+	}
+}

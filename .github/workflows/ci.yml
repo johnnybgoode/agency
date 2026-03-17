@@ -19,11 +19,15 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Run vulnerability check
+        uses: golang/govulncheck-action@v1
+        with:
+          go-package: ./...
+
       - name: Run linter
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.11.3
-          verify: false
+          version: latest
 
       - name: Run tests
         run: go test ./...

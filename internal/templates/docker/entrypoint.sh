@@ -6,7 +6,7 @@ set -e
 if [ -n "$GIT_USER" ] && [ -n "$GIT_EMAIL" ]; then
   git config --global user.name "$GIT_USER"
   git config --global user.email "$GIT_EMAIL"
-  git config --global credential.helper store
+  git config --global credential.helper 'cache --timeout=86400'
   dolt config --global --add user.name "$GIT_USER"
   dolt config --global --add user.email "$GIT_EMAIL"
 fi

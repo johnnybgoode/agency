@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/johnnybgoode/agency/internal/config"
@@ -545,6 +546,57 @@ func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
 
 	if lm.cursor != 0 {
 		t.Errorf("cursor = %d after second tick, want 0 (user's manual position)", lm.cursor)
+	}
+}
+
+// ----- Installer Security -----
+
+// TestInstallAgentsCmd_RejectsInvalidContainerID verifies that installAgentsCmd
+// refuses to build a shell command when the workspace SandboxID is not a valid
+// Docker container hash. Security regression test for audit finding #1.
+func TestInstallAgentsCmd_RejectsInvalidContainerID(t *testing.T) {
+	maliciousIDs := []string{
+		"$(rm -rf /)",
+		"; cat /etc/passwd",
+		"abc123 && echo pwned",
+		"abc|cat /etc/shadow",
+		"not-a-hex-id",
+		"",
+		"ABCDEF123456", // uppercase not valid
+	}
+
+	for _, badID := range maliciousIDs {
+		t.Run(badID, func(t *testing.T) {
+			m := newListModelForTest(t)
+			m.sleepFn = func(time.Duration) {}
+
+			called := false
+			m.installerCmd = func(containerID string) string {
+				called = true
+				return "docker exec -it " + containerID + " bash"
+			}
+
+			ws := &state.Workspace{
+				ID:           "ws-aabbccdd",
+				SandboxID:    badID,
+				State:        state.StateRunning,
+				PaneID:       "%42",
+				WorktreePath: t.TempDir(),
+			}
+
+			cmd := m.installAgentsCmd(ws)
+			if cmd == nil {
+				t.Fatal("installAgentsCmd returned nil cmd, expected error-returning cmd")
+			}
+
+			msg := cmd()
+			if _, ok := msg.(reconcileDoneMsg); !ok {
+				t.Fatalf("expected reconcileDoneMsg, got %T", msg)
+			}
+			if called {
+				t.Error("installerCmd was called with an invalid container ID — shell injection possible")
+			}
+		})
 	}
 }
 

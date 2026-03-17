@@ -2,8 +2,8 @@ version: "2"
 
 formatters:
   enable:
-    - gci           # Canonical import grouping and formatting
-    - gofumpt       # Stricter gofmt with additional style rules
+    - gci # Canonical import grouping and formatting
+    - gofumpt # Stricter gofmt with additional style rules
 
 linters:
   # Start with no defaults and explicitly enable linters
@@ -11,39 +11,39 @@ linters:
 
   enable:
     # Core linters - essential for code quality
-    - errcheck      # Check for unchecked errors
-    - govet         # Reports suspicious constructs
-    - staticcheck   # Go static analysis
-    - unused        # Check for unused code
-    - ineffassign   # Detect ineffectual assignments
+    - errcheck # Check for unchecked errors
+    - govet # Reports suspicious constructs
+    - staticcheck # Go static analysis
+    - unused # Check for unused code
+    - ineffassign # Detect ineffectual assignments
 
     # Style and consistency
-    - misspell      # Find commonly misspelled words
+    - misspell # Find commonly misspelled words
 
     # Modern Go features
-    - copyloopvar   # Detect loop variable issues (Go 1.22+)
+    - copyloopvar # Detect loop variable issues (Go 1.22+)
 
     # Code quality
-    - gocritic      # Comprehensive meta-linter
-    - revive        # Fast, configurable, extensible linter
-    - unconvert     # Remove unnecessary type conversions
+    - gocritic # Comprehensive meta-linter
+    - revive # Fast, configurable, extensible linter
+    - unconvert # Remove unnecessary type conversions
 
     # Error handling - critical for CLI/TUI tools
-    - errorlint     # Ensure proper error wrapping/unwrapping
-    - nilnil        # Detect returning both nil error and nil value
+    - errorlint # Ensure proper error wrapping/unwrapping
+    - nilnil # Detect returning both nil error and nil value
 
     # Context usage
-    - contextcheck  # Ensure proper context usage in goroutines/HTTP
+    - contextcheck # Ensure proper context usage in goroutines/HTTP
 
     # Security
-    - gosec         # Security-focused linter
+    - gosec # Security-focused linter
 
     # Complexity
-    - gocyclo       # Compute cyclomatic complexity
+    - gocyclo # Compute cyclomatic complexity
 
     # Best practices
-    - nolintlint    # Reports ill-formed or insufficient nolint directives
-    - bodyclose     # Check for unclosed HTTP response bodies
+    - nolintlint # Reports ill-formed or insufficient nolint directives
+    - bodyclose # Check for unclosed HTTP response bodies
 
   settings:
     errcheck:
@@ -60,14 +60,13 @@ linters:
       min-complexity: 20
 
     errorlint:
-      # Ensure proper error wrapping with fmt.Errorf(%w)
-      check-error-type-assertions: true
-      check-errors-new-uppercase: true
+      asserts: true
+      comparison: true
 
     gosec:
       # Exclude rules that are false positives for CLI tools
       excludes:
-        - G104  # Audit errors not checked (handled by errcheck)
+        - G104 # Audit errors not checked (handled by errcheck)
 
     misspell:
       locale: US
@@ -78,7 +77,7 @@ linters:
       disable:
         - shadow
         - fieldalignment
-        - unusedwrite      # Common in test structs with intentional field writes
+        - unusedwrite # Common in test structs with intentional field writes
 
     gocritic:
       # Enable multiple check groups
@@ -87,11 +86,11 @@ linters:
         - style
         - performance
       disabled-checks:
-        - evalOrder              # Too pedantic about expression evaluation order
-        - singleCaseSwitch       # Single case switch is acceptable for consistency
-        - ifElseChain            # Long if-else chains can be clearer than switch
-        - stringXbytes           # Allow string conversion for comparison
-        - emptyStringTest        # Allow len(s) == 0 style
+        - evalOrder # Too pedantic about expression evaluation order
+        - singleCaseSwitch # Single case switch is acceptable for consistency
+        - ifElseChain # Long if-else chains can be clearer than switch
+        - stringXbytes # Allow string conversion for comparison
+        - emptyStringTest # Allow len(s) == 0 style
 
     revive:
       rules:
@@ -112,9 +111,9 @@ linters:
         - name: errorf
         - name: superfluous-else
         - name: unreachable-code
-        - name: package-comments  # Document all packages
-        - name: exported           # Document exported symbols
-        - name: early-return       # Reduce nesting depth
+        - name: package-comments # Document all packages
+        - name: exported # Document exported symbols
+        - name: early-return # Reduce nesting depth
 
   exclusions:
     # Use common presets for sensible defaults

@@ -100,7 +100,7 @@ func TestCreate_AllowsDuplicateBranchWhenDone(t *testing.T) {
 	ctx := context.Background()
 
 	done := &state.Workspace{
-		ID:        "ws-done0001",
+		ID:        "ws-d00e0001",
 		Name:      "Old",
 		Branch:    "project/my-feature",
 		State:     state.StateDone,
@@ -213,7 +213,7 @@ func TestReconcile_ClearsActiveWorkspaceIDWhenMissing(t *testing.T) {
 	ctx := context.Background()
 
 	// Set an ActiveWorkspaceID that does not exist in Workspaces.
-	m.State.ActiveWorkspaceID = "ws-nonexistent"
+	m.State.ActiveWorkspaceID = "ws-00000000"
 
 	if err := m.Reconcile(ctx); err != nil {
 		t.Fatalf("Reconcile returned unexpected error: %v", err)
@@ -229,7 +229,7 @@ func TestReconcile_ClearsActiveWorkspaceIDWhenNotRunning(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:        "ws-done0002",
+		ID:        "ws-d00e0002",
 		Name:      "Done Workspace",
 		Branch:    "done/branch",
 		State:     state.StateDone,
@@ -257,7 +257,7 @@ func TestReconcile_KeepsActiveWorkspaceIDWhenRunning(t *testing.T) {
 	// are non-empty against the live sets, which are empty due to failed
 	// external queries).
 	ws := &state.Workspace{
-		ID:        "ws-run00001",
+		ID:        "ws-a0000001",
 		Name:      "Running",
 		Branch:    "feature/run",
 		State:     state.StateRunning,
@@ -290,7 +290,7 @@ func TestRemove_DeletesWorkspaceFromState(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:        "ws-rm000001",
+		ID:        "ws-b0000001",
 		Name:      "Finished",
 		Branch:    "done/cleanup",
 		State:     state.StateDone,
@@ -313,7 +313,7 @@ func TestRemove_ReturnsErrorForUnknownWorkspace(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	err := m.Remove(ctx, "ws-doesnotexist")
+	err := m.Remove(ctx, "ws-00000099")
 	if err == nil {
 		t.Error("expected error when removing unknown workspace, got nil")
 	}
@@ -324,7 +324,7 @@ func TestRemove_PersistsStateAfterDeletion(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:        "ws-persist001",
+		ID:        "ws-ce000001",
 		Name:      "Persist Test",
 		Branch:    "done/persist",
 		State:     state.StateDone,
@@ -353,7 +353,7 @@ func TestSaveState_RoundTrip(t *testing.T) {
 	m := newTestManager(t)
 
 	ws := &state.Workspace{
-		ID:        "ws-rt000001",
+		ID:        "ws-ff000001",
 		Name:      "Round Trip",
 		Branch:    "feat/round-trip",
 		State:     state.StateCreating,
@@ -678,7 +678,7 @@ func TestSwapActivePane_CallsSwapPane(t *testing.T) {
 	m.State.WorkspacePaneID = "%shell"
 
 	ws := &state.Workspace{
-		ID:        "ws-first001",
+		ID:        "ws-f1000001",
 		PaneID:    "%5",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -713,7 +713,7 @@ func TestSwapActivePane_NoopWhenWorkspacePaneIDEmpty(t *testing.T) {
 	// WorkspacePaneID not set, MainWindowID not set.
 
 	ws := &state.Workspace{
-		ID:        "ws-noop0001",
+		ID:        "ws-00100001",
 		PaneID:    "%5",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -774,7 +774,7 @@ func TestSwapActivePane_ReusesExistingRightPaneWhenAlreadySplit(t *testing.T) {
 	m.State.MainWindowID = "@1"
 
 	ws := &state.Workspace{
-		ID:        "ws-nosplit01",
+		ID:        "ws-00200001",
 		PaneID:    "%5",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -807,7 +807,7 @@ func TestSwapActivePane_NoopWhenPaneIDEmpty(t *testing.T) {
 	m.State.WorkspacePaneID = "%shell"
 
 	ws := &state.Workspace{
-		ID:        "ws-nopane01",
+		ID:        "ws-00300001",
 		PaneID:    "",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -831,7 +831,7 @@ func TestSwapActivePane_SwapsBackFirstWhenActive(t *testing.T) {
 	m.State.WorkspacePaneID = "%shell"
 
 	prevWS := &state.Workspace{
-		ID:        "ws-prev0001",
+		ID:        "ws-00400001",
 		PaneID:    "%10",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -841,7 +841,7 @@ func TestSwapActivePane_SwapsBackFirstWhenActive(t *testing.T) {
 	m.State.ActiveWorkspaceID = prevWS.ID
 
 	newWS := &state.Workspace{
-		ID:        "ws-new00001",
+		ID:        "ws-00500001",
 		PaneID:    "%20",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -881,7 +881,7 @@ func TestSwapBackToShell_CallsSwapPane(t *testing.T) {
 	m.State.WorkspacePaneID = "%shell"
 
 	ws := &state.Workspace{
-		ID:        "ws-active01",
+		ID:        "ws-ac000001",
 		PaneID:    "%5",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -1052,7 +1052,7 @@ func TestFindOrphanWorktrees_ExcludesTrackedWorktrees(t *testing.T) {
 		t.Fatalf("git worktree add: %v\n%s", err, out)
 	}
 	ws := &state.Workspace{
-		ID:           "ws-track001",
+		ID:           "ws-dd000001",
 		Branch:       "feat1",
 		WorktreePath: wtPath,
 		State:        state.StateRunning,
@@ -1118,7 +1118,7 @@ func TestStopWorkspace_TransitionsToPaused(t *testing.T) {
 	m := newTestManager(t)
 
 	ws := &state.Workspace{
-		ID:        "ws-stop0001",
+		ID:        "ws-ee000001",
 		Name:      "To Stop",
 		Branch:    "feat/stop",
 		State:     state.StateRunning,
@@ -1141,7 +1141,7 @@ func TestStopWorkspace_PersistsState(t *testing.T) {
 	m := newTestManager(t)
 
 	ws := &state.Workspace{
-		ID:        "ws-stop0002",
+		ID:        "ws-ee000002",
 		Name:      "Persist Stop",
 		Branch:    "feat/persist-stop",
 		State:     state.StateRunning,
@@ -1173,7 +1173,7 @@ func TestCleanupDoneWorkspace_RemovesFromState(t *testing.T) {
 	m := newTestManager(t)
 
 	ws := &state.Workspace{
-		ID:        "ws-clean001",
+		ID:        "ws-cc000001",
 		Name:      "Cleanup",
 		Branch:    "feat/cleanup",
 		State:     state.StateDone,
@@ -1196,7 +1196,7 @@ func TestCleanupDoneWorkspace_PersistsDeletion(t *testing.T) {
 	m := newTestManager(t)
 
 	ws := &state.Workspace{
-		ID:        "ws-clean002",
+		ID:        "ws-cc000002",
 		Name:      "Cleanup Persist",
 		Branch:    "feat/cleanup-persist",
 		State:     state.StateDone,
@@ -1225,7 +1225,7 @@ func TestAssessQuitStatuses_ClassifiesActive(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:        "ws-assess01",
+		ID:        "ws-a5000001",
 		Name:      "Running",
 		Branch:    "feat/active",
 		State:     state.StateRunning,
@@ -1256,7 +1256,7 @@ func TestAssessQuitStatuses_ClassifiesInactive(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:        "ws-assess02",
+		ID:        "ws-a5000002",
 		Name:      "Done",
 		Branch:    "feat/done",
 		State:     state.StateDone,
@@ -1309,7 +1309,7 @@ func TestAssessQuitStatuses_AllStatesClassified(t *testing.T) {
 	now := time.Now().UTC()
 	for i, s := range activeStates {
 		ws := &state.Workspace{
-			ID:        fmt.Sprintf("ws-active%02d", i),
+			ID:        fmt.Sprintf("ws-ac0000%02d", i),
 			Branch:    fmt.Sprintf("feat/active%d", i),
 			State:     s,
 			CreatedAt: now,
@@ -1319,7 +1319,7 @@ func TestAssessQuitStatuses_AllStatesClassified(t *testing.T) {
 	}
 	for i, s := range inactiveStates {
 		ws := &state.Workspace{
-			ID:        fmt.Sprintf("ws-inact%02d", i),
+			ID:        fmt.Sprintf("ws-bc0000%02d", i),
 			Branch:    fmt.Sprintf("feat/inactive%d", i),
 			State:     s,
 			CreatedAt: now,
@@ -1358,7 +1358,7 @@ func TestSwapActivePane_DeadWorkspacePane(t *testing.T) {
 	m.State.WorkspacePaneID = "%dead"
 
 	ws := &state.Workspace{
-		ID:        "ws-deadshell",
+		ID:        "ws-de000001",
 		PaneID:    "%5",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -1414,7 +1414,7 @@ func TestSwapActivePane_DeadTargetPane(t *testing.T) {
 
 	m.State.WorkspacePaneID = "%shell"
 	ws := &state.Workspace{
-		ID:        "ws-deadtarget",
+		ID:        "ws-de000002",
 		PaneID:    "%deadpane",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -1438,7 +1438,7 @@ func TestSwapBackToShell_DeadActivePaneClearsState(t *testing.T) {
 	m.State.WorkspacePaneID = "%shell"
 
 	ws := &state.Workspace{
-		ID:        "ws-deadback",
+		ID:        "ws-de000003",
 		PaneID:    "%dead",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -1466,7 +1466,7 @@ func TestCleanupActiveWorkspaceID_DeadPaneClearsActive(t *testing.T) {
 	m.State.WorkspacePaneID = "%deadshell"
 
 	ws := &state.Workspace{
-		ID:        "ws-cleanup01",
+		ID:        "ws-c1000001",
 		PaneID:    "%deadpane",
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
@@ -1635,7 +1635,7 @@ func TestReconcilePaused_WorktreeGone(t *testing.T) {
 	ctx := context.Background()
 
 	ws := &state.Workspace{
-		ID:           "ws-paused001",
+		ID:           "ws-aa000001",
 		Name:         "Paused",
 		Branch:       "feat/paused",
 		SandboxID:    "container001",
@@ -1678,7 +1678,7 @@ func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
 
 	wtPath := t.TempDir() // real path so worktreeSet check passes
 	ws := &state.Workspace{
-		ID:           "ws-paused002",
+		ID:           "ws-aa000002",
 		Name:         "Paused No Docker",
 		Branch:       "feat/no-docker",
 		SandboxID:    "container002",
@@ -1717,7 +1717,7 @@ func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
 
 	wtPath := t.TempDir()
 	ws := &state.Workspace{
-		ID:           "ws-paused003",
+		ID:           "ws-aa000003",
 		Name:         "Paused Conts Err",
 		Branch:       "feat/conts-err",
 		SandboxID:    "container003",
@@ -1760,7 +1760,7 @@ func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
 
 	wtPath := t.TempDir()
 	ws := &state.Workspace{
-		ID:           "ws-paused004",
+		ID:           "ws-aa000004",
 		Name:         "Paused Restart",
 		Branch:       "feat/restart",
 		SandboxID:    "containerexists99",
@@ -1801,7 +1801,7 @@ func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
 
 	wtPath := t.TempDir()
 	ws := &state.Workspace{
-		ID:           "ws-paused005",
+		ID:           "ws-aa000005",
 		Name:         "Paused Reprovision",
 		Branch:       "feat/reprovision",
 		SandboxID:    "containerold123",
@@ -1942,7 +1942,7 @@ func TestProvisionContainer_PassesSharedHomeMountWhenDirExists(t *testing.T) {
 	}
 
 	ws := &state.Workspace{
-		ID:           "ws-shmount01",
+		ID:           "ws-ab000001",
 		Name:         "SharedHome",
 		Branch:       "feat/shared-home",
 		WorktreePath: m.ProjectDir,
@@ -1973,7 +1973,7 @@ func TestProvisionContainer_OmitsSharedHomeMountWhenDirAbsent(t *testing.T) {
 	// Do NOT create .agency/home — it should be absent.
 
 	ws := &state.Workspace{
-		ID:           "ws-shmount02",
+		ID:           "ws-ab000002",
 		Name:         "NoSharedHome",
 		Branch:       "feat/no-shared-home",
 		WorktreePath: m.ProjectDir,

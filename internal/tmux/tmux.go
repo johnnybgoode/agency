@@ -330,8 +330,10 @@ func (c *Client) RespawnPane(paneID string) error {
 }
 
 // SetHook installs a session-scoped tmux hook.
+// The name is appended to the trigger as a named hook (e.g. "pane-died[respawn-workspace]"),
+// which allows multiple hooks to be registered for the same event without overwriting each other.
 func (c *Client) SetHook(name, trigger, command string) error {
-	_, err := c.run("set-hook", "-t", c.SessionName, trigger, command)
+	_, err := c.run("set-hook", "-t", c.SessionName, trigger+"["+name+"]", command)
 	return err
 }
 

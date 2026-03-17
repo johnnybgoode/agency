@@ -95,7 +95,7 @@ func (m *Manager) docker(ctx context.Context, args ...string) (string, error) {
 	result := strings.TrimSpace(string(out))
 	if err != nil {
 		slog.Error("docker command failed", "args", redactArgs(args), "error", err, "output", truncateLog(result, 200))
-		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, result)
+		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(redactArgs(args), " "), err, truncateLog(result, 200))
 	}
 	slog.Debug("docker exec done", "args", redactArgs(args), "output_len", len(result))
 	return result, nil

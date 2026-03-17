@@ -195,7 +195,7 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//    the loop exits cleanly when Remove() deletes the container, preventing
 	//    "No such container" errors from flooding the workspace pane
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=""; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
 		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {

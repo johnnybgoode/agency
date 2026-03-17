@@ -144,6 +144,13 @@ func (c *Client) SendKeysToPane(paneID, keys string) error {
 	return err
 }
 
+// SendRawKeyToPane sends a single tmux key name (e.g. "C-d") to a pane
+// without appending Enter. Use this for control characters.
+func (c *Client) SendRawKeyToPane(paneID, key string) error {
+	_, err := c.run("send-keys", "-t", paneID, key)
+	return err
+}
+
 // SelectPane makes the given pane the active pane in its window.
 func (c *Client) SelectPane(paneID string) error {
 	_, err := c.run("select-pane", "-t", paneID)

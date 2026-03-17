@@ -343,6 +343,30 @@ func TestQuit_DirtyConfirmYes_MoreInQueue_StaysInDirtyConfirm(t *testing.T) {
 	}
 }
 
+// TestInstallerCmdFor verifies that the installer command wraps the script path
+// in a bash -c '...' invocation with single quotes so that ~ is NOT expanded by
+// the host shell before reaching the container.
+// Without this, tmux runs the command via /bin/sh which expands ~ to the host
+// home directory — a path that doesn't exist inside the container — causing the
+// popup to exit immediately.
+func TestInstallerCmdFor(t *testing.T) {
+	got := installerCmdFor("abc123")
+	const wantPrefix = "docker exec -it abc123 "
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("installerCmdFor = %q, want prefix %q", got, wantPrefix)
+	}
+	// Must use bash -c with single quotes so ~ is NOT expanded by host shell.
+	const wantSubstr = `bash -c 'bash ~/subagents/install-agents.sh`
+	if !strings.Contains(got, wantSubstr) {
+		t.Errorf("installerCmdFor = %q\nwant to contain %q\n(tilde must be inside single quotes to avoid host shell expansion)", got, wantSubstr)
+	}
+	// Must NOT have a bare tilde directly after 'docker exec ... bash '.
+	after := strings.TrimPrefix(got, wantPrefix)
+	if strings.HasPrefix(after, "bash ~/") {
+		t.Errorf("installerCmdFor has bare tilde that would be host-expanded: %q", got)
+	}
+}
+
 func TestQuit_OtherKeysIgnoredDuringQuit(t *testing.T) {
 	m := newListModelForTest(t)
 	m.quitStep = quitConfirmingQuit

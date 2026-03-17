@@ -99,6 +99,86 @@ func TestFriendlyError(t *testing.T) {
 	}
 }
 
+// ----- Test helpers -----
+
+// newListModelForTest creates a listModel backed by a minimal test manager.
+// The manager has no real docker/tmux/git infrastructure.
+func newListModelForTest(t *testing.T) listModel {
+	t.Helper()
+	dir := t.TempDir()
+
+	s := &state.State{
+		Project:    "testproject",
+		BarePath:   dir + "/.bare",
+		Workspaces: make(map[string]*state.Workspace),
+	}
+	mgr := &workspace.Manager{
+		StatePath:   dir + "/state.json",
+		ProjectDir:  dir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Cfg:         config.DefaultConfig(),
+	}
+	_ = mgr.SaveState()
+	return newListModel(mgr)
+}
+
+// ----- sidebarWidth -----
+
+func TestSidebarWidth_ZeroState(t *testing.T) {
+	tests := []struct {
+		name      string
+		termWidth int
+		cfgPct    int
+		want      int
+	}{
+		{"15 pct of 200 clamped to 30", 200, 15, 30},
+		{"15 pct of 400 clamped to max 50", 400, 15, 50},
+		{"narrow terminal clamps to min 25", 80, 10, 25},
+		{"25 pct of 200 = 50 (max)", 200, 25, 50},
+		{"30 pct of 200 = 60 clamped to 50", 200, 30, 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newListModelForTest(t)
+			m.manager.Cfg.TUI.SidebarWidth = tt.cfgPct
+			m.width = tt.termWidth
+			// No workspaces → zero state.
+
+			got := m.sidebarWidth()
+			if got != tt.want {
+				t.Errorf("sidebarWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSidebarWidth_SidebarMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		paneWidth int
+		want      int
+	}{
+		{"fills pane at 40 cols", 40, 40},
+		{"fills pane at 60 cols", 60, 60},
+		{"narrow pane clamps to min 25", 15, 25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newListModelForTest(t)
+			m.width = tt.paneWidth
+			// Add a workspace so we're in sidebar mode.
+			m.workspaces = []*state.Workspace{{ID: "ws-1", State: state.StateRunning}}
+
+			got := m.sidebarWidth()
+			if got != tt.want {
+				t.Errorf("sidebarWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // ----- Quit popup state machine -----
 
 func TestQuitPopup_NoActiveWorkspaces_AutoConfirms(t *testing.T) {
@@ -272,6 +352,7 @@ func TestQuitPopupDoneMsg_Confirmed(t *testing.T) {
 		ProjectName: "testproject",
 		State:       s,
 		Tmux:        tmux.New("agency-testproject"),
+		Cfg:         config.DefaultConfig(),
 	}
 	_ = mgr.SaveState()
 	m := newListModel(mgr)
@@ -312,5 +393,31 @@ func TestQuitPopupDoneMsg_Canceled(t *testing.T) {
 
 	if lm.shouldKillSession {
 		t.Error("shouldKillSession should be false when popup is canceled")
+	}
+}
+
+// ----- Installer -----
+
+// TestInstallerCmdFor verifies that the installer command wraps the script path
+// in a bash -c '...' invocation with single quotes so that ~ is NOT expanded by
+// the host shell before reaching the container.
+// Without this, tmux runs the command via /bin/sh which expands ~ to the host
+// home directory — a path that doesn't exist inside the container — causing the
+// popup to exit immediately.
+func TestInstallerCmdFor(t *testing.T) {
+	got := installerCmdFor("abc123")
+	const wantPrefix = "docker exec -it abc123 "
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("installerCmdFor = %q, want prefix %q", got, wantPrefix)
+	}
+	// Must use bash -c with single quotes so ~ is NOT expanded by host shell.
+	const wantSubstr = `bash -c 'bash ~/subagents/install-agents.sh`
+	if !strings.Contains(got, wantSubstr) {
+		t.Errorf("installerCmdFor = %q\nwant to contain %q\n(tilde must be inside single quotes to avoid host shell expansion)", got, wantSubstr)
+	}
+	// Must NOT have a bare tilde directly after 'docker exec ... bash '.
+	after := strings.TrimPrefix(got, wantPrefix)
+	if strings.HasPrefix(after, "bash ~/") {
+		t.Errorf("installerCmdFor has bare tilde that would be host-expanded: %q", got)
 	}
 }

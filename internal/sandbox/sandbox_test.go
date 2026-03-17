@@ -96,7 +96,7 @@ func TestEnsureImage_BuildsWhenImageMissing(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ctxDir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
 		t.Fatalf("write Dockerfile: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(ctxDir, "docker-entrypoint.sh"), []byte("#!/bin/sh\nexec \"$@\"\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(ctxDir, "entrypoint.sh"), []byte("#!/bin/sh\nexec \"$@\"\n"), 0o755); err != nil {
 		t.Fatalf("write entrypoint: %v", err)
 	}
 	buildFS := os.DirFS(ctxDir)

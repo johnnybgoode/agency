@@ -307,7 +307,9 @@ func runSidebar(projectDir string) error {
 	// In zero state (no workspaces), skip resizing so the TUI occupies full terminal width
 	// and can render the welcome panel.
 	if leftPaneID != "" && len(mgr.List()) > 0 {
-		_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarWidth())
+		if tw, twErr := mgr.Tmux.WindowWidth(mgr.State.MainWindowID); twErr == nil {
+			_ = mgr.Tmux.ResizePane(leftPaneID, mgr.SidebarColumns(tw))
+		}
 	}
 
 	// Clear the terminal immediately to mask the shell echo of the launch command.
@@ -539,7 +541,9 @@ func ensureSplitOnFirstWorkspace(mgr *workspace.Manager) {
 	ensureRightPane(mgr, mgr.State.MainWindowID, panes)
 	if mgr.State.WorkspacePaneID != "" {
 		// Resize the left pane to sidebar width.
-		_ = mgr.Tmux.ResizePane(panes[0], mgr.SidebarWidth())
+		if tw, twErr := mgr.Tmux.WindowWidth(mgr.State.MainWindowID); twErr == nil {
+			_ = mgr.Tmux.ResizePane(panes[0], mgr.SidebarColumns(tw))
+		}
 		protectWorkspacePane(mgr, mgr.State.WorkspacePaneID)
 		persistLayoutEnv(mgr, panes[0], mgr.State.WorkspacePaneID, mgr.State.MainWindowID)
 		_ = mgr.SaveState()

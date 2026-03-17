@@ -144,6 +144,13 @@ func (c *Client) SendKeysToPane(paneID, keys string) error {
 	return err
 }
 
+// SendRawKeyToPane sends a single tmux key name (e.g. "C-d") to a pane
+// without appending Enter. Use this for control characters.
+func (c *Client) SendRawKeyToPane(paneID, key string) error {
+	_, err := c.run("send-keys", "-t", paneID, key)
+	return err
+}
+
 // SelectPane makes the given pane the active pane in its window.
 func (c *Client) SelectPane(paneID string) error {
 	_, err := c.run("select-pane", "-t", paneID)
@@ -195,6 +202,19 @@ func (c *Client) KillPane(paneID string) error {
 func (c *Client) ResizePane(paneID string, width int) error {
 	_, err := c.run("resize-pane", "-t", paneID, "-x", fmt.Sprintf("%d", width))
 	return err
+}
+
+// WindowWidth returns the width in columns of the given window.
+func (c *Client) WindowWidth(windowID string) (int, error) {
+	out, err := c.run("display-message", "-p", "-t", c.SessionName+":"+windowID, "#{window_width}")
+	if err != nil {
+		return 0, err
+	}
+	var w int
+	if _, err := fmt.Sscanf(out, "%d", &w); err != nil {
+		return 0, fmt.Errorf("parsing window width %q: %w", out, err)
+	}
+	return w, nil
 }
 
 // DisplayPopup runs cmd in a tmux display-popup overlay.

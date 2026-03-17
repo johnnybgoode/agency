@@ -62,6 +62,14 @@ type quitPopupDoneMsg struct {
 	infos     []workspace.QuitInfo
 }
 
+// popupRunner abstracts the tmux operations needed by installAgentsCmd.
+// The default implementation delegates to *tmux.Client; tests inject a fake.
+type popupRunner interface {
+	DisplayPopup(cmd string, width, height, x int) error
+	SendKeysToPane(paneID, keys string) error
+	SendRawKeyToPane(paneID, key string) error
+}
+
 // --- Model ---
 
 // listModel is the top-level Bubble Tea model for the sidebar workspace list view.
@@ -78,6 +86,9 @@ type listModel struct {
 	agencyBin         string               // absolute path to the agency binary for popup invocation
 	quitInfos         []workspace.QuitInfo // populated by popup result for quit cleanup
 	shouldKillSession bool
+	popup             popupRunner                     // defaults to manager.Tmux; override in tests
+	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
+	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -87,10 +98,13 @@ func newListModel(mgr *workspace.Manager) listModel {
 		bin = exe
 	}
 	return listModel{
-		manager:    mgr,
-		workspaces: mgr.List(),
-		removing:   make(map[string]bool),
-		agencyBin:  bin,
+		manager:      mgr,
+		workspaces:   mgr.List(),
+		removing:     make(map[string]bool),
+		agencyBin:    bin,
+		popup:        mgr.Tmux,
+		installerCmd: installerCmdFor,
+		sleepFn:      time.Sleep,
 	}
 }
 
@@ -166,6 +180,79 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 	}
 }
 
+// installerCmdFor returns the shell command string used to run the agent
+// installer inside the container identified by containerID.
+// Single quotes around the bash -c argument prevent the host shell from
+// expanding ~ before the command reaches the container.
+func installerCmdFor(containerID string) string {
+	return fmt.Sprintf("docker exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", containerID)
+}
+
+// agentFiles returns the set of .md filenames currently present in dir.
+// Returns an empty map if the directory does not exist or cannot be read.
+func agentFiles(dir string) map[string]struct{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return map[string]struct{}{}
+	}
+	files := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			files[e.Name()] = struct{}{}
+		}
+	}
+	return files
+}
+
+// hasNewAgents reports whether dir contains any .md files not present in before.
+func hasNewAgents(dir string, before map[string]struct{}) bool {
+	for name := range agentFiles(dir) {
+		if _, seen := before[name]; !seen {
+			return true
+		}
+	}
+	return false
+}
+
+// installAgentsCmd opens an interactive agent installer popup for the workspace.
+// After the popup closes it checks whether any new agent .md files were added to
+// the workspace's .claude/agents directory. Only if new agents were installed does
+// it send C-d to the workspace pane so the trapCmd loop restarts Claude with
+// --continue (making the new agents available).
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
+	const popupWidth = 80
+	const popupHeight = 30
+	popup := m.popup
+	sleepFn := m.sleepFn
+	installerCmd := m.installerCmd(ws.SandboxID)
+	paneID := ws.PaneID
+	agentsDir := filepath.Join(ws.WorktreePath, ".claude", "agents")
+	return func() tea.Msg {
+		before := agentFiles(agentsDir)
+		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
+		if paneID != "" && hasNewAgents(agentsDir, before) {
+			// Send Escape a few times to clear any open command dialog (e.g.
+			// /agents) before issuing /reload-plugins. Without this, the slash
+			// command would be appended to whatever is already in the input
+			// buffer and fail silently.
+			for range 3 {
+				_ = popup.SendRawKeyToPane(paneID, "Escape")
+				sleepFn(50 * time.Millisecond)
+			}
+			// Wait for the terminal to finish processing the escape sequences.
+			// Without this pause, the leading "/r" of "/reload-plugins" is
+			// consumed as the tail of the last escape sequence, leaving only
+			// "eload-plugins" in the Claude input buffer.
+			sleepFn(100 * time.Millisecond)
+			_ = popup.SendKeysToPane(paneID, "/reload-plugins")
+			_ = popup.SendRawKeyToPane(paneID, "C-d")
+		}
+		return tickMsg{}
+	}
+}
+
 // quitPopupCmd returns a tea.Cmd that launches the quit confirmation popup.
 // It runs the quit popup in a tmux display-popup, then reads the result file.
 //
@@ -222,7 +309,7 @@ func (m listModel) startExecuting() (listModel, tea.Cmd) {
 
 // handleNormalKey handles key presses in normal (non-confirming) mode.
 //
-//nolint:gocritic // bubbletea model must use value receivers
+//nolint:gocritic,gocyclo // bubbletea model must use value receivers; key dispatch is inherently branchy
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c":
@@ -251,6 +338,14 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 			} else if ws.TmuxWindow != "" {
 				// Fallback: just select the window.
 				_ = m.manager.Tmux.SelectWindow(ws.TmuxWindow)
+			}
+		}
+
+	case "s":
+		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
+			ws := m.workspaces[m.cursor]
+			if ws.State == state.StateRunning && ws.SandboxID != "" {
+				return m, m.installAgentsCmd(ws)
 			}
 		}
 
@@ -378,12 +473,32 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// sidebarWidth returns the configured sidebar total width (including the right │).
-// Delegates to workspace.Manager.SidebarWidth() as the single source of truth.
+// sidebarWidth returns the sidebar total width in columns for rendering.
+// In zero state (no workspaces), the sidebar is drawn within the full terminal
+// at a percentage-based width clamped between 25 and 50 columns.
+// In sidebar mode (workspaces exist), the sidebar fills its tmux pane (m.width),
+// enforcing only the minimum of 25 columns.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
-	return m.manager.SidebarWidth()
+	const maxZeroState = 50
+	min := workspace.MinSidebarColumns
+
+	if len(m.workspaces) == 0 {
+		// Zero state: percentage of full terminal, clamped [25, 50].
+		cols := m.manager.SidebarColumns(m.width)
+		if cols > maxZeroState {
+			cols = maxZeroState
+		}
+		return cols
+	}
+
+	// Sidebar mode: fill the pane width.
+	w := m.width
+	if w < min {
+		w = min
+	}
+	return w
 }
 
 // truncate shortens s to maxLen runes, appending ".." if truncated.
@@ -538,9 +653,9 @@ func (m listModel) renderSidebar() string {
 	default:
 		ws := m.workspaces[m.cursor]
 		if ws.ID == activeID {
-			hint = " [⏎] focus  [n] [d]"
+			hint = " [⏎] focus  [n] [d] [s]"
 		} else {
-			hint = " [⏎] switch  [n] [d]"
+			hint = " [⏎] switch  [n] [d] [s]"
 		}
 	}
 	rows = append(rows, row(hint), bottom)

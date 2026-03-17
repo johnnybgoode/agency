@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnnybgoode/agency/internal/agencyimage"
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/templates"
 	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
@@ -154,7 +154,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
 		Image:         cfg.Sandbox.Image,
-		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
+		Name:          "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
 		WorktreeMount: ws.WorktreePath,
 		ConfigMount:   configMount,
 		Env:           env,
@@ -195,7 +195,7 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//    the loop exits cleanly when Remove() deletes the container, preventing
 	//    "No such container" errors from flooding the workspace pane
 	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c claude || true; sleep 1; done'`,
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=""; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
 		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID, ws.SandboxID,
 	)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
@@ -622,16 +622,47 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 // substring --filter does not accidentally match containers belonging to a
 // project whose name starts with the same characters.
 func (m *Manager) ContainerPrefix() string {
-	return "claude-sb-" + m.ProjectName + "-"
+	return "agency-sb-" + m.ProjectName + "-"
 }
 
-// SidebarWidth returns the configured sidebar width, defaulting to 24.
-func (m *Manager) SidebarWidth() int {
-	w := m.Cfg.TUI.SidebarWidth
-	if w <= 0 {
-		w = config.DefaultSidebarWidth
+// SidebarWidthPercent returns the configured sidebar width percentage.
+func (m *Manager) SidebarWidthPercent() int {
+	pct := m.Cfg.TUI.SidebarWidth
+	if pct <= 0 {
+		pct = config.DefaultSidebarWidth
 	}
-	return w
+	return pct
+}
+
+// MinSidebarColumns is the minimum sidebar width in columns.
+const MinSidebarColumns = 25
+
+// SidebarColumns computes the sidebar width in columns for the given terminal
+// width, applying the configured percentage and enforcing a minimum of 25 columns.
+func (m *Manager) SidebarColumns(termWidth int) int {
+	pct := m.SidebarWidthPercent()
+	cols := termWidth * pct / 100
+	if cols < MinSidebarColumns {
+		cols = MinSidebarColumns
+	}
+	return cols
+}
+
+// resizeSidebarPane resizes the left (sidebar) pane of the main window to the
+// percentage-based sidebar width.
+func (m *Manager) resizeSidebarPane() {
+	if m.State.MainWindowID == "" {
+		return
+	}
+	panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID)
+	if err != nil || len(panes) == 0 {
+		return
+	}
+	tw, err := m.Tmux.WindowWidth(m.State.MainWindowID)
+	if err != nil {
+		return
+	}
+	_ = m.Tmux.ResizePane(panes[0], m.SidebarColumns(tw))
 }
 
 // SwapActivePane swaps the given workspace's pane into the visible right slot
@@ -664,9 +695,7 @@ func (m *Manager) SwapActivePane(wsID string) error {
 			m.State.WorkspacePaneID = rightPaneID
 		}
 		// Resize the left pane to the sidebar width now that we have 2 panes.
-		if panes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID); pErr == nil && len(panes) > 0 {
-			_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
-		}
+		m.resizeSidebarPane()
 		_ = m.SaveState()
 	}
 
@@ -805,7 +834,7 @@ func (m *Manager) List() []*state.Workspace {
 
 // dockerBuildContext returns the fs.FS to use as the Docker build context when
 // building the sandbox image. The embedded build context (Dockerfile +
-// docker-entrypoint.sh compiled into the binary) is the default, so the image
+// entrypoint.sh compiled into the binary) is the default, so the image
 // can be built on any machine with Docker — no local copy of the agency source
 // is required. An on-disk override is honored when dockerfile_dir is set in
 // config, allowing custom images.
@@ -817,7 +846,11 @@ func dockerBuildContext(configuredDir string) fs.FS {
 		}
 		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
 	}
-	return agencyimage.BuildContextFS
+	sub, err := templates.Sub("docker")
+	if err != nil {
+		panic("embedded docker template missing: " + err.Error())
+	}
+	return sub
 }
 
 // SaveState persists current state to disk, updating the PID field first.

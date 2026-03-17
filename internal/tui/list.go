@@ -51,7 +51,6 @@ type quitStep int
 
 const (
 	quitIdle            quitStep = iota
-	_                            // formerly quitAssessing (now handled by popup)
 	quitConfirmingQuit           // "Quit? N active workspaces [y/N]"
 	quitConfirmingDirty          // per-workspace "Kill <name> with unsaved changes? [y/N]"
 )

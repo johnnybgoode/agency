@@ -7,6 +7,67 @@ import (
 	"testing"
 )
 
+// --- Issue 7: Validate workspace and sandbox IDs on state deserialization ---
+
+func TestRead_RejectsInvalidWorkspaceID(t *testing.T) {
+	// Write a state file with an invalid workspace ID
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	data := `{"version":1,"workspaces":{"INVALID":{"id":"INVALID","sandbox_id":""}}}`
+	os.WriteFile(path, []byte(data), 0o600)
+	_, err := Read(path)
+	if err == nil {
+		t.Error("Read should reject state with invalid workspace ID")
+	}
+}
+
+func TestRead_RejectsInvalidSandboxID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	data := `{"version":1,"workspaces":{"ws-aabbccdd":{"id":"ws-aabbccdd","sandbox_id":"INVALID; rm -rf /"}}}`
+	os.WriteFile(path, []byte(data), 0o600)
+	_, err := Read(path)
+	if err == nil {
+		t.Error("Read should reject state with invalid sandbox ID")
+	}
+}
+
+func TestRead_AcceptsValidState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	data := `{"version":1,"workspaces":{"ws-aabbccdd":{"id":"ws-aabbccdd","sandbox_id":"abc123def456abc1"}}}`
+	os.WriteFile(path, []byte(data), 0o600)
+	s, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read rejected valid state: %v", err)
+	}
+	if len(s.Workspaces) != 1 {
+		t.Errorf("expected 1 workspace, got %d", len(s.Workspaces))
+	}
+}
+
+func TestRead_AcceptsEmptySandboxID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	data := `{"version":1,"workspaces":{"ws-aabbccdd":{"id":"ws-aabbccdd","sandbox_id":""}}}`
+	os.WriteFile(path, []byte(data), 0o600)
+	_, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read should accept empty sandbox ID: %v", err)
+	}
+}
+
+func TestRead_RejectsIDMismatch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	data := `{"version":1,"workspaces":{"ws-aabbccdd":{"id":"ws-11223344","sandbox_id":""}}}`
+	os.WriteFile(path, []byte(data), 0o600)
+	_, err := Read(path)
+	if err == nil {
+		t.Error("Read should reject state where map key doesn't match workspace ID field")
+	}
+}
+
 // --- Issue 14: LockNonce prevents PID-reuse attacks ---
 
 func TestAcquireLock_WritesNonEmptyNonce(t *testing.T) {

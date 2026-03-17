@@ -395,7 +395,7 @@ func TestInstall_NoEscWhenAtPrompt(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-nesc",
 		State:        state.StateRunning,
-		SandboxID:    "container-nesc",
+		SandboxID:    "aabb00cc11dd22ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -453,7 +453,7 @@ func TestInstall_SleepBeforeFirstEsc(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-sleepfirst",
 		State:        state.StateRunning,
-		SandboxID:    "container-sleepfirst",
+		SandboxID:    "aabb00cc11dd33ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -509,7 +509,7 @@ func TestInstall_SleepsBetweenEscKeys(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-escdelay",
 		State:        state.StateRunning,
-		SandboxID:    "container-escdelay",
+		SandboxID:    "aabb00cc11dd44ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -585,7 +585,7 @@ func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-noagents",
 		State:        state.StateRunning,
-		SandboxID:    "container-x",
+		SandboxID:    "aabb00cc11dd55ee",
 		PaneID:       "%10",
 		WorktreePath: dir,
 	}
@@ -625,7 +625,7 @@ func TestInstall_SleepsAfterEscBeforeReload(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-sleep",
 		State:        state.StateRunning,
-		SandboxID:    "container-sleep",
+		SandboxID:    "aabb00cc11dd66ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -707,7 +707,7 @@ func TestInstall_SendsEscBeforeReloadPlugins(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-esc",
 		State:        state.StateRunning,
-		SandboxID:    "container-esc",
+		SandboxID:    "aabb00cc11dd77ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -759,7 +759,7 @@ func TestInstall_SendsReloadPlugins_BeforeCd(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-reload",
 		State:        state.StateRunning,
-		SandboxID:    "container-reload",
+		SandboxID:    "aabb00cc11dd88ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -804,7 +804,7 @@ func TestInstall_SKeyNoOp_NonRunningWorkspace(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateDone,
-		SandboxID: "container123",
+		SandboxID: "aabb00cc11dd99ee",
 	}
 	m := newInstallerListModel(t, runner, func(id string) string { return "echo " + id }, ws)
 	_, cmd := runSKey(m)
@@ -846,7 +846,7 @@ func TestInstall_SKeyDispatchesCmd(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: "container123",
+		SandboxID: "aabb00cc11dd99ee",
 	}
 	m := newInstallerListModel(t, runner, func(id string) string { return "echo " + id }, ws)
 	_, cmd := runSKey(m)
@@ -856,7 +856,7 @@ func TestInstall_SKeyDispatchesCmd(t *testing.T) {
 }
 
 func TestInstall_PopupCmdContainerID(t *testing.T) {
-	const containerID = "container-abc123"
+	const containerID = "aabb00cc11ddbbee"
 	runner := &fakePopupRunner{
 		// Use a no-op command so DisplayPopup succeeds without executing anything real.
 		runErr: nil,
@@ -892,7 +892,7 @@ func TestInstall_SendsCd_WithPane(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-aabbccdd",
 		State:        state.StateRunning,
-		SandboxID:    "container123",
+		SandboxID:    "aabb00cc11dd99ee",
 		PaneID:       paneID,
 		WorktreePath: dir,
 	}
@@ -928,7 +928,7 @@ func TestInstall_NoCd_EmptyPane(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: "container123",
+		SandboxID: "aabb00cc11dd99ee",
 		PaneID:    "", // no pane
 	}
 	cmdFn := func(id string) string { return "echo ok" }
@@ -959,7 +959,7 @@ func TestInstall_NoCd_WhenPopupErrors(t *testing.T) {
 	ws := &state.Workspace{
 		ID:           "ws-aabbccdd",
 		State:        state.StateRunning,
-		SandboxID:    "container123",
+		SandboxID:    "aabb00cc11dd99ee",
 		PaneID:       paneID,
 		WorktreePath: t.TempDir(),
 	}
@@ -990,7 +990,7 @@ func TestInstall_MockInstaller_SingleAgent(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: "unused-container",
+		SandboxID: "aabb00cc11ddaaee",
 	}
 	cmdFn := func(_ string) string {
 		return scriptPath + " --install-dir " + installDir + " myagent"
@@ -1023,7 +1023,7 @@ func TestInstall_MockInstaller_MultipleAgents(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: "unused-container",
+		SandboxID: "aabb00cc11ddaaee",
 	}
 	agents := []string{"alpha", "beta", "gamma"}
 	cmdFn := func(_ string) string {
@@ -1053,7 +1053,7 @@ func TestInstall_MockInstaller_NoAgents_NoFiles(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: "unused-container",
+		SandboxID: "aabb00cc11ddaaee",
 	}
 	// No agent args — only --install-dir
 	cmdFn := func(_ string) string {

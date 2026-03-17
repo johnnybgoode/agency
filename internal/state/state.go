@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"syscall"
 	"time"
 )
@@ -63,6 +64,33 @@ type State struct {
 	Workspaces       map[string]*Workspace `json:"workspaces"`
 }
 
+// workspaceIDRe matches ws-<8 hex chars>.
+var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
+
+// containerIDRe matches 12-64 hex chars (Docker container IDs).
+var containerIDRe = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+
+// Validate checks that all workspace IDs and sandbox IDs in the state
+// conform to expected formats. This prevents command injection via
+// tampered state files.
+func (s *State) Validate() error {
+	for id, ws := range s.Workspaces {
+		// Validate the map key matches expected workspace ID format.
+		if !workspaceIDRe.MatchString(id) {
+			return fmt.Errorf("invalid workspace ID %q in state file", id)
+		}
+		// Validate the workspace's own ID field matches the map key.
+		if ws.ID != id {
+			return fmt.Errorf("workspace ID mismatch: key=%q, field=%q", id, ws.ID)
+		}
+		// Validate sandbox ID when present.
+		if ws.SandboxID != "" && !containerIDRe.MatchString(ws.SandboxID) {
+			return fmt.Errorf("invalid sandbox ID %q for workspace %s", ws.SandboxID, id)
+		}
+	}
+	return nil
+}
+
 // Default returns a new State with sensible defaults for the given project.
 func Default(project, barePath string) *State {
 	return &State{
@@ -86,6 +114,9 @@ func Read(path string) (*State, error) {
 	}
 	if s.Workspaces == nil {
 		s.Workspaces = make(map[string]*Workspace)
+	}
+	if err := s.Validate(); err != nil {
+		return nil, fmt.Errorf("validating state file %s: %w", path, err)
 	}
 	slog.Debug("state read", "path", path, "workspaces", len(s.Workspaces))
 	return &s, nil

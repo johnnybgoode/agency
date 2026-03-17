@@ -23,6 +23,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// version is set at build time via ldflags:
+//
+//	go build -ldflags "-X main.version=v1.2.3"
+var version = "dev"
+
 // logCleanup is set by PersistentPreRunE and called by PersistentPostRunE to
 // close the log file.
 var logCleanup func()
@@ -81,7 +86,7 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("agency v1.0.0")
+		fmt.Printf("agency %s\n", version)
 	},
 }
 

@@ -13,6 +13,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/workspace"
 )
@@ -280,6 +281,12 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupHeight = 30
 	popup := m.popup
 	sleepFn := m.sleepFn
+	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
+		slog.Error("refusing to run installer: invalid container ID", "sandbox_id", ws.SandboxID, "error", err)
+		return func() tea.Msg {
+			return reconcileDoneMsg{err: fmt.Errorf("invalid container ID: %w", err)}
+		}
+	}
 	installerCmd := m.installerCmd(ws.SandboxID)
 	paneID := ws.PaneID
 	agentsDir := filepath.Join(ws.WorktreePath, ".claude", "agents")

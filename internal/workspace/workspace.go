@@ -207,6 +207,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		EnvFile:         envFilePath,
 		Memory:          cfg.Sandbox.Memory,
 		CPUs:            cfg.Sandbox.CPUs,
+		Network:         cfg.Sandbox.Network,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sandbox: %w", err)
@@ -218,6 +219,20 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		return fmt.Errorf("starting sandbox: %w", err)
 	}
 	return nil
+}
+
+// shellEscapeDouble returns s with characters that are special inside
+// double-quoted shell strings escaped with backslashes. This is safe for
+// interpolating arbitrary values into "..." shell strings: backslash,
+// double-quote, dollar sign, and backtick are all neutralized.
+func shellEscapeDouble(s string) string {
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		`$`, `\$`,
+		"`", "\\`",
+	)
+	return r.Replace(s)
 }
 
 // buildTrapCmd constructs the bash wrapper command for the tmux window.
@@ -236,9 +251,9 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 	if resume {
 		resumeVal = "--continue"
 	}
-	return fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=%q; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
-		m.ProjectDir, agencyBin, ws.ID, resumeVal, ws.SandboxID, ws.SandboxID,
+	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
+		`bash -c 'trap "cd \"%s\" && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME="%s"; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
+		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID, shellEscapeDouble(resumeVal), ws.SandboxID, ws.SandboxID,
 	), nil
 }
 

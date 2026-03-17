@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -185,10 +186,37 @@ func installerCmdFor(containerID string) string {
 	return fmt.Sprintf("docker exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", containerID)
 }
 
-// installAgentsCmd opens an interactive agent installer popup for the workspace,
-// then sends C-d (EOF) to the workspace pane to exit Claude. The trapCmd loop
-// restarts Claude with --continue so new agents are immediately available.
-// Only valid for RUNNING workspaces.
+// agentFiles returns the set of .md filenames currently present in dir.
+// Returns an empty map if the directory does not exist or cannot be read.
+func agentFiles(dir string) map[string]struct{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return map[string]struct{}{}
+	}
+	files := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			files[e.Name()] = struct{}{}
+		}
+	}
+	return files
+}
+
+// hasNewAgents reports whether dir contains any .md files not present in before.
+func hasNewAgents(dir string, before map[string]struct{}) bool {
+	for name := range agentFiles(dir) {
+		if _, seen := before[name]; !seen {
+			return true
+		}
+	}
+	return false
+}
+
+// installAgentsCmd opens an interactive agent installer popup for the workspace.
+// After the popup closes it checks whether any new agent .md files were added to
+// the workspace's .claude/agents directory. Only if new agents were installed does
+// it send C-d to the workspace pane so the trapCmd loop restarts Claude with
+// --continue (making the new agents available).
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
@@ -197,9 +225,11 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	popup := m.popup
 	installerCmd := m.installerCmd(ws.SandboxID)
 	paneID := ws.PaneID
+	agentsDir := filepath.Join(ws.WorktreePath, ".claude", "agents")
 	return func() tea.Msg {
+		before := agentFiles(agentsDir)
 		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
-		if paneID != "" {
+		if paneID != "" && hasNewAgents(agentsDir, before) {
 			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}
 		return tickMsg{}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -123,6 +124,43 @@ func runSKey(m listModel) (listModel, tea.Cmd) {
 
 // --- Tests ---
 
+// TestInstall_NoCd_WhenNoNewAgents verifies that C-d is NOT sent when the
+// popup closes without adding any new agent files to the agents directory.
+func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-noagents",
+		State:        state.StateRunning,
+		SandboxID:    "container-x",
+		PaneID:       "%10",
+		WorktreePath: dir,
+	}
+	// Popup does nothing — no new agent files written.
+	cmdFn := func(_ string) string { return "true" }
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	for _, k := range keys {
+		if k.key == "C-d" {
+			t.Errorf("C-d should not be sent when no new agents were installed; sentKeys = %v", keys)
+		}
+	}
+}
+
 func TestInstall_SKeyNoOp_NonRunningWorkspace(t *testing.T) {
 	runner := &fakePopupRunner{}
 	ws := &state.Workspace{
@@ -209,14 +247,21 @@ func TestInstall_PopupCmdContainerID(t *testing.T) {
 
 func TestInstall_SendsCd_WithPane(t *testing.T) {
 	const paneID = "%42"
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+
 	runner := &fakePopupRunner{}
 	ws := &state.Workspace{
-		ID:        "ws-aabbccdd",
-		State:     state.StateRunning,
-		SandboxID: "container123",
-		PaneID:    paneID,
+		ID:           "ws-aabbccdd",
+		State:        state.StateRunning,
+		SandboxID:    "container123",
+		PaneID:       paneID,
+		WorktreePath: dir,
 	}
-	cmdFn := func(id string) string { return "echo ok" }
+	// cmdFn creates a new agent file so C-d is triggered.
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
 	m := newInstallerListModel(t, runner, cmdFn, ws)
 	_, cmd := runSKey(m)
 	if cmd == nil {
@@ -228,9 +273,6 @@ func TestInstall_SendsCd_WithPane(t *testing.T) {
 	keys := runner.sentKeys
 	runner.mu.Unlock()
 
-	if len(keys) == 0 {
-		t.Fatal("expected SendRawKeyToPane to be called, but sentKeys is empty")
-	}
 	found := false
 	for _, k := range keys {
 		if k.paneID == paneID && k.key == "C-d" {
@@ -268,38 +310,37 @@ func TestInstall_NoCd_EmptyPane(t *testing.T) {
 	}
 }
 
-func TestInstall_PopupError_StillSendsCd(t *testing.T) {
+// TestInstall_NoCd_WhenPopupErrors verifies that C-d is NOT sent when the popup
+// errors and no new agents were installed (there is no reason to restart Claude
+// if the installation did not succeed).
+func TestInstall_NoCd_WhenPopupErrors(t *testing.T) {
 	const paneID = "%99"
 	runner := &fakePopupRunner{
-		runErr: os.ErrPermission, // DisplayPopup returns an error
+		runErr: os.ErrPermission, // DisplayPopup returns an error; no files written
 	}
 	ws := &state.Workspace{
-		ID:        "ws-aabbccdd",
-		State:     state.StateRunning,
-		SandboxID: "container123",
-		PaneID:    paneID,
+		ID:           "ws-aabbccdd",
+		State:        state.StateRunning,
+		SandboxID:    "container123",
+		PaneID:       paneID,
+		WorktreePath: t.TempDir(),
 	}
-	cmdFn := func(id string) string { return "echo ok" }
+	cmdFn := func(_ string) string { return "echo ok" }
 	m := newInstallerListModel(t, runner, cmdFn, ws)
 	_, cmd := runSKey(m)
 	if cmd == nil {
 		t.Fatal("expected non-nil cmd")
 	}
-	cmd() // error from DisplayPopup is discarded; C-d should still be sent
+	cmd()
 
 	runner.mu.Lock()
 	keys := runner.sentKeys
 	runner.mu.Unlock()
 
-	found := false
 	for _, k := range keys {
-		if k.paneID == paneID && k.key == "C-d" {
-			found = true
-			break
+		if k.key == "C-d" {
+			t.Errorf("C-d should not be sent after popup error with no new agents; sentKeys = %v", keys)
 		}
-	}
-	if !found {
-		t.Errorf("C-d not sent after DisplayPopup error; sentKeys = %v", keys)
 	}
 }
 

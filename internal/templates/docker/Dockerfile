@@ -19,8 +19,17 @@ RUN apt-get update && apt-get install -y \
 RUN corepack enable
 
 # Install beads (bd) and dolt
-RUN curl -fsSL https://github.com/dolthub/dolt/releases/latest/download/install.sh | bash
-RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+# Dolt v1.45.2 - pinned for supply chain security
+ARG DOLT_VERSION=v1.45.2
+RUN curl -fsSL "https://github.com/dolthub/dolt/releases/download/${DOLT_VERSION}/install.sh" -o /tmp/install-dolt.sh \
+    && bash /tmp/install-dolt.sh \
+    && rm /tmp/install-dolt.sh
+
+# Beads install script - pinned to commit for supply chain security
+ARG BEADS_COMMIT=main
+RUN curl -fsSL "https://raw.githubusercontent.com/steveyegge/beads/${BEADS_COMMIT}/scripts/install.sh" -o /tmp/install-beads.sh \
+    && bash /tmp/install-beads.sh \
+    && rm /tmp/install-beads.sh
 
 RUN mkdir -p /app && chown agent:agent /app
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -30,7 +39,9 @@ SHELL ["/bin/bash", "-c"]
 USER agent
 WORKDIR /home/agent
 
-RUN git clone --depth 1 https://github.com/johnnybgoode/awesome-claude-code-subagents.git ./subagents
+# Subagents - pinned ref for supply chain security
+ARG SUBAGENTS_REF=main
+RUN git clone --depth 1 --branch ${SUBAGENTS_REF} https://github.com/johnnybgoode/awesome-claude-code-subagents.git ./subagents
 
 WORKDIR /app
 

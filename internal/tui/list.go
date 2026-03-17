@@ -440,7 +440,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Skip all state access during async removal to avoid data races
 		// with the Remove goroutine modifying state concurrently.
 		if len(m.removing) == 0 {
-			// Reload workspaces from state file on each tick.
+			// Re-read state from disk. The sidebar holds the project flock (acquired in
+			// runSidebar), so concurrent writes from popup processes serialize correctly.
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()

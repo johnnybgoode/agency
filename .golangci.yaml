@@ -68,8 +68,6 @@ linters:
       # Exclude rules that are false positives for CLI tools
       excludes:
         - G104  # Audit errors not checked (handled by errcheck)
-        - G304  # File path provided as taint input (expected in CLI tools)
-        - G306  # WriteFile permissions (0644 is fine for config files)
 
     misspell:
       locale: US

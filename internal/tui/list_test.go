@@ -367,6 +367,22 @@ func TestInstallerCmdFor(t *testing.T) {
 	}
 }
 
+func TestQuit_SKeyIgnoredDuringQuit(t *testing.T) {
+	m := newListModelForTest(t)
+	m.quitStep = quitConfirmingQuit
+	m.quitInfos = []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true},
+	}
+
+	// Pressing 's' (setup agents) should be suppressed during quit flow.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	lm := next.(listModel)
+
+	if lm.quitStep != quitConfirmingQuit {
+		t.Errorf("quitStep changed unexpectedly to %v; expected quitConfirmingQuit", lm.quitStep)
+	}
+}
+
 func TestQuit_OtherKeysIgnoredDuringQuit(t *testing.T) {
 	m := newListModelForTest(t)
 	m.quitStep = quitConfirmingQuit

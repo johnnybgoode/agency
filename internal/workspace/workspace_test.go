@@ -497,6 +497,73 @@ func TestProvisionTmux_TrapCmdChecksContainerExistence(t *testing.T) {
 	}
 }
 
+// TestProvisionTmux_TrapCmdUsesContinueOnRestart verifies that the trapCmd
+// loop uses --continue for all restarts after the first Claude invocation.
+// This ensures that when Claude exits (e.g. after agent installation) it
+// restarts with conversation context preserved.
+func TestProvisionTmux_TrapCmdUsesContinueOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`case "$1" in` + "\n" +
+		`  new-window) echo "@88";;` + "\n" +
+		`  list-panes) echo "%5";;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "tmux")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.NewWithBinaryPath("agency-testproject", scriptPath),
+		Sandbox:     nil,
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	ws := &state.Workspace{
+		ID:        "ws-continue01",
+		Name:      "Test",
+		Branch:    "feat/test",
+		SandboxID: "abc123containerid",
+		State:     state.StateProvisioning,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+
+	if err := m.provisionTmux(ws); err != nil {
+		t.Fatalf("provisionTmux returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("reading args file: %v", err)
+	}
+	captured := string(data)
+
+	// The trapCmd must use RESUME="" initially and RESUME="--continue" after first run.
+	if !strings.Contains(captured, `RESUME=""`) {
+		t.Errorf("trapCmd does not initialize RESUME as empty; got: %s", captured)
+	}
+	if !strings.Contains(captured, `RESUME="--continue"`) {
+		t.Errorf("trapCmd does not set RESUME to --continue after first run; got: %s", captured)
+	}
+	if !strings.Contains(captured, `claude $RESUME`) {
+		t.Errorf("trapCmd does not use $RESUME variable when invoking claude; got: %s", captured)
+	}
+}
+
 // ----- fake tmux helpers -----
 
 // newFakeTmuxManager creates a Manager wired to a fake tmux script that

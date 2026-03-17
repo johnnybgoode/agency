@@ -115,6 +115,25 @@ func newListModel(mgr *workspace.Manager) listModel {
 	}
 }
 
+// syncCursorToActive moves the cursor to the index of the active workspace.
+// If no workspace is active or the active ID is not in the list, the cursor
+// is left unchanged (but still clamped to bounds).
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) syncCursorToActive() listModel {
+	activeID := m.manager.State.ActiveWorkspaceID
+	if activeID == "" {
+		return m
+	}
+	for i, ws := range m.workspaces {
+		if ws.ID == activeID {
+			m.cursor = i
+			return m
+		}
+	}
+	return m
+}
+
 // Init returns the initial commands: an immediate background reconcile and the
 // first polling tick.
 //
@@ -466,6 +485,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
+				m = m.syncCursorToActive()
 				if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 					m.cursor = len(m.workspaces) - 1
 				}
@@ -494,6 +514,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
+		m = m.syncCursorToActive()
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}
@@ -511,6 +532,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
+		m = m.syncCursorToActive()
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}

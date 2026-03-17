@@ -396,6 +396,112 @@ func TestQuitPopupDoneMsg_Canceled(t *testing.T) {
 	}
 }
 
+// ----- Cursor follows active workspace -----
+
+func TestCursorFollowsActive_OnTick(t *testing.T) {
+	// Simulate: 3 workspaces, cursor at 0, active is the 3rd workspace.
+	// After a tick reloads state, cursor should move to the active workspace.
+	m := newListModelForTest(t)
+
+	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws2 := &state.Workspace{ID: "ws-2", Name: "second", State: state.StateRunning, Branch: "b2"}
+	ws3 := &state.Workspace{ID: "ws-3", Name: "third", State: state.StateRunning, Branch: "b3"}
+	m.manager.State.Workspaces = map[string]*state.Workspace{
+		"ws-1": ws1, "ws-2": ws2, "ws-3": ws3,
+	}
+	m.manager.State.ActiveWorkspaceID = "ws-3"
+	_ = m.manager.SaveState()
+
+	m.workspaces = m.manager.List()
+	m.cursor = 0 // cursor stuck at first item
+
+	// Simulate tick: reload state from disk.
+	next, _ := m.Update(tickMsg{})
+	lm := next.(listModel)
+
+	// Find the index of ws-3 in the refreshed list.
+	activeIdx := -1
+	for i, ws := range lm.workspaces {
+		if ws.ID == "ws-3" {
+			activeIdx = i
+			break
+		}
+	}
+	if activeIdx < 0 {
+		t.Fatal("active workspace ws-3 not found in list")
+	}
+	if lm.cursor != activeIdx {
+		t.Errorf("cursor = %d, want %d (index of active workspace ws-3)", lm.cursor, activeIdx)
+	}
+}
+
+func TestCursorFollowsActive_OnWorkspaceRemoved(t *testing.T) {
+	// Simulate: 3 workspaces, active switches to ws-1 after ws-2 is removed.
+	// Cursor should follow the new active workspace.
+	m := newListModelForTest(t)
+
+	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws3 := &state.Workspace{ID: "ws-3", Name: "third", State: state.StateRunning, Branch: "b3"}
+	// ws-2 already removed from state; active switched to ws-1.
+	m.manager.State.Workspaces = map[string]*state.Workspace{
+		"ws-1": ws1, "ws-3": ws3,
+	}
+	m.manager.State.ActiveWorkspaceID = "ws-1"
+	_ = m.manager.SaveState()
+
+	m.workspaces = m.manager.List()
+	m.cursor = 1 // cursor was on ws-3
+
+	next, _ := m.Update(workspaceRemovedMsg{id: "ws-2", err: nil})
+	lm := next.(listModel)
+
+	activeIdx := -1
+	for i, ws := range lm.workspaces {
+		if ws.ID == "ws-1" {
+			activeIdx = i
+			break
+		}
+	}
+	if activeIdx < 0 {
+		t.Fatal("active workspace ws-1 not found in list")
+	}
+	if lm.cursor != activeIdx {
+		t.Errorf("cursor = %d, want %d (index of active workspace ws-1)", lm.cursor, activeIdx)
+	}
+}
+
+func TestCursorFollowsActive_OnWorkspaceCreated(t *testing.T) {
+	// Simulate: workspace created, active is the new workspace.
+	// Cursor should move to the new active workspace.
+	m := newListModelForTest(t)
+
+	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws2 := &state.Workspace{ID: "ws-2", Name: "second", State: state.StateRunning, Branch: "b2"}
+	m.manager.State.Workspaces = map[string]*state.Workspace{
+		"ws-1": ws1, "ws-2": ws2,
+	}
+	m.manager.State.ActiveWorkspaceID = "ws-2"
+	m.workspaces = m.manager.List()
+	m.cursor = 0 // cursor at first item
+
+	next, _ := m.Update(workspaceCreatedMsg{err: nil})
+	lm := next.(listModel)
+
+	activeIdx := -1
+	for i, ws := range lm.workspaces {
+		if ws.ID == "ws-2" {
+			activeIdx = i
+			break
+		}
+	}
+	if activeIdx < 0 {
+		t.Fatal("active workspace ws-2 not found in list")
+	}
+	if lm.cursor != activeIdx {
+		t.Errorf("cursor = %d, want %d (index of active workspace ws-2)", lm.cursor, activeIdx)
+	}
+}
+
 // ----- Installer -----
 
 // TestListModel_SKeybinding_ReturnsCommandForRunningWorkspace verifies that

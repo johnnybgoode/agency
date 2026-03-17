@@ -610,6 +610,8 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
 			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID, 10)
 		}
+		// info.WS points into mgr.State.Workspaces (via List()), so
+		// mutating it here updates the authoritative state before SaveState.
 		if info.IsActive {
 			info.WS.State = state.StatePaused
 			info.WS.UpdatedAt = time.Now().UTC()

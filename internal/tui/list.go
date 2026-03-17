@@ -438,12 +438,32 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// sidebarWidth returns the configured sidebar total width (including the right │).
-// Delegates to workspace.Manager.SidebarWidth() as the single source of truth.
+// sidebarWidth returns the sidebar total width in columns for rendering.
+// In zero state (no workspaces), the sidebar is drawn within the full terminal
+// at a percentage-based width clamped between 25 and 50 columns.
+// In sidebar mode (workspaces exist), the sidebar fills its tmux pane (m.width),
+// enforcing only the minimum of 25 columns.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) sidebarWidth() int {
-	return m.manager.SidebarWidth()
+	const maxZeroState = 50
+	min := workspace.MinSidebarColumns
+
+	if len(m.workspaces) == 0 {
+		// Zero state: percentage of full terminal, clamped [25, 50].
+		cols := m.manager.SidebarColumns(m.width)
+		if cols > maxZeroState {
+			cols = maxZeroState
+		}
+		return cols
+	}
+
+	// Sidebar mode: fill the pane width.
+	w := m.width
+	if w < min {
+		w = min
+	}
+	return w
 }
 
 // truncate shortens s to maxLen runes, appending ".." if truncated.

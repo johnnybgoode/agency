@@ -625,13 +625,44 @@ func (m *Manager) ContainerPrefix() string {
 	return "claude-sb-" + m.ProjectName + "-"
 }
 
-// SidebarWidth returns the configured sidebar width, defaulting to 24.
-func (m *Manager) SidebarWidth() int {
-	w := m.Cfg.TUI.SidebarWidth
-	if w <= 0 {
-		w = config.DefaultSidebarWidth
+// SidebarWidthPercent returns the configured sidebar width percentage.
+func (m *Manager) SidebarWidthPercent() int {
+	pct := m.Cfg.TUI.SidebarWidth
+	if pct <= 0 {
+		pct = config.DefaultSidebarWidth
 	}
-	return w
+	return pct
+}
+
+// MinSidebarColumns is the minimum sidebar width in columns.
+const MinSidebarColumns = 25
+
+// SidebarColumns computes the sidebar width in columns for the given terminal
+// width, applying the configured percentage and enforcing a minimum of 25 columns.
+func (m *Manager) SidebarColumns(termWidth int) int {
+	pct := m.SidebarWidthPercent()
+	cols := termWidth * pct / 100
+	if cols < MinSidebarColumns {
+		cols = MinSidebarColumns
+	}
+	return cols
+}
+
+// resizeSidebarPane resizes the left (sidebar) pane of the main window to the
+// percentage-based sidebar width.
+func (m *Manager) resizeSidebarPane() {
+	if m.State.MainWindowID == "" {
+		return
+	}
+	panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID)
+	if err != nil || len(panes) == 0 {
+		return
+	}
+	tw, err := m.Tmux.WindowWidth(m.State.MainWindowID)
+	if err != nil {
+		return
+	}
+	_ = m.Tmux.ResizePane(panes[0], m.SidebarColumns(tw))
 }
 
 // SwapActivePane swaps the given workspace's pane into the visible right slot
@@ -664,9 +695,7 @@ func (m *Manager) SwapActivePane(wsID string) error {
 			m.State.WorkspacePaneID = rightPaneID
 		}
 		// Resize the left pane to the sidebar width now that we have 2 panes.
-		if panes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID); pErr == nil && len(panes) > 0 {
-			_ = m.Tmux.ResizePane(panes[0], m.SidebarWidth())
-		}
+		m.resizeSidebarPane()
 		_ = m.SaveState()
 	}
 

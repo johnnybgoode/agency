@@ -1709,7 +1709,7 @@ func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
 // makes no change when the container listing returned an error.
 func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
 	m := newTestManager(t)
-	m.Sandbox = &sandbox.Manager{} // non-nil, but contsErr signals unavailability
+	m.Sandbox = &sandbox.Manager{} // non-nil but contsErr causes early return before any Docker call
 	ctx := context.Background()
 
 	wtPath := t.TempDir()
@@ -1748,11 +1748,11 @@ func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
 }
 
 // TestReconcilePaused_ContainerExists_StartFails verifies that reconcilePaused
-// calls markFailed (mentioning the container restart) when the container exists
-// but Sandbox.Start returns an error (as it will without a real Docker daemon).
+// calls markFailed mentioning the container restart when Sandbox.Start fails.
+// Uses a fake docker binary where "start" exits non-zero so the test is
+// independent of the host Docker daemon.
 func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
-	m := newTestManager(t)
-	m.Sandbox = &sandbox.Manager{} // real struct, no Docker — Start will fail
+	m := newFakeDockerManagerStartFails(t)
 	ctx := context.Background()
 
 	wtPath := t.TempDir()
@@ -1789,13 +1789,11 @@ func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
 }
 
 // TestReconcilePaused_ContainerDestroyed_WorktreeExists verifies that
-// reconcilePaused calls markFailed when the container is gone but the worktree
-// still exists. Depending on whether Docker is available in the test environment,
-// failure may occur at provisionContainer or at resumeTmux — both indicate the
-// re-provisioning code path was taken.
+// reconcilePaused attempts re-provisioning when the container is gone but the
+// worktree still exists. Uses newFakeDockerManager so provisionContainer
+// succeeds; resumeTmux then fails deterministically (no tmux in tests).
 func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
-	m := newTestManager(t)
-	m.Sandbox = &sandbox.Manager{}
+	m, _ := newFakeDockerManager(t)
 	ctx := context.Background()
 
 	wtPath := t.TempDir()
@@ -1826,11 +1824,9 @@ func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
 	if !called() {
 		t.Error("reconcilePaused: markFailed should be called")
 	}
-	// Either provisionContainer or resumeTmux may fail depending on the
-	// environment; both indicate the re-provisioning path was entered.
-	r := reason()
-	if !strings.Contains(r, "re-provisioning container") && !strings.Contains(r, "resuming tmux after re-provision") {
-		t.Errorf("reconcilePaused: markFailed reason should mention re-provisioning; got %q", r)
+	// provisionContainer succeeds (fake docker); resumeTmux fails (no tmux).
+	if !strings.Contains(reason(), "resuming tmux after re-provision") {
+		t.Errorf("reconcilePaused: markFailed reason should mention 'resuming tmux after re-provision'; got %q", reason())
 	}
 }
 
@@ -1880,6 +1876,44 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 		t.Fatalf("newFakeDockerManager: SaveState: %v", err)
 	}
 	return mgr, argsFile
+}
+
+// newFakeDockerManagerStartFails is like newFakeDockerManager but the fake
+// docker binary exits non-zero for the "start" subcommand, so Sandbox.Start
+// always returns an error.
+func newFakeDockerManagerStartFails(t *testing.T) *Manager {
+	t.Helper()
+	dir := t.TempDir()
+
+	script := "#!/bin/sh\n" +
+		`subcmd="$1"` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  start) echo "fake: start failed" >&2; exit 1;;` + "\n" +
+		`esac` + "\n" +
+		`exit 0` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	mgr := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := mgr.SaveState(); err != nil {
+		t.Fatalf("newFakeDockerManagerStartFails: SaveState: %v", err)
+	}
+	return mgr
 }
 
 // readDockerArgsLog reads the full raw content of the docker args log file.

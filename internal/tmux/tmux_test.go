@@ -512,3 +512,46 @@ func TestListWindows(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// WindowWidth
+// ---------------------------------------------------------------------------
+
+func TestWindowWidth(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		windowID string
+		want     int
+		wantErr  bool
+	}{
+		{"normal width", "200", "@1", 200, false},
+		{"small width", "80", "@2", 80, false},
+		{"non-numeric output", "abc", "@1", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, tt.output)
+			got, err := c.WindowWidth(tt.windowID)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("WindowWidth() expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("WindowWidth(%q) error: %v", tt.windowID, err)
+			}
+			if got != tt.want {
+				t.Errorf("WindowWidth(%q) = %d, want %d", tt.windowID, got, tt.want)
+			}
+
+			args := readArgs(t, argsFile)
+			target := "test-session:" + tt.windowID
+			if !argsContainSequence(args, "display-message", "-p", "-t", target) {
+				t.Errorf("WindowWidth args = %v, want [display-message -p -t %s ...]", args, target)
+			}
+		})
+	}
+}

@@ -216,6 +216,23 @@ func runAndAttach(projectDir string) error {
 	return mgr.Tmux.Attach()
 }
 
+// firstNonWorkspaceWindow returns the ID of the first window that does not
+// belong to a workspace. Returns ("", false) if no such window exists.
+func firstNonWorkspaceWindow(windows []tmux.Window, workspaces map[string]*state.Workspace) (string, bool) {
+	wsWins := make(map[string]bool, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.TmuxWindow != "" {
+			wsWins[ws.TmuxWindow] = true
+		}
+	}
+	for _, w := range windows {
+		if !wsWins[w.ID] {
+			return w.ID, true
+		}
+	}
+	return "", false
+}
+
 // findSidebarPane finds or creates a single-pane window suitable for the
 // sidebar. It reuses the first non-workspace window, or creates a new one.
 // Does NOT split — the split is deferred to runSidebar's ensureLayout call.
@@ -225,21 +242,7 @@ func findSidebarPane(mgr *workspace.Manager) (string, error) {
 		return "", err
 	}
 
-	// Skip windows belonging to workspaces.
-	workspaceWins := map[string]bool{}
-	for _, ws := range mgr.State.Workspaces {
-		if ws.TmuxWindow != "" {
-			workspaceWins[ws.TmuxWindow] = true
-		}
-	}
-
-	var winID string
-	for _, w := range windows {
-		if !workspaceWins[w.ID] {
-			winID = w.ID
-			break
-		}
-	}
+	winID, _ := firstNonWorkspaceWindow(windows, mgr.State.Workspaces)
 
 	if winID == "" {
 		winID, err = mgr.Tmux.NewWindow("agency")
@@ -439,16 +442,8 @@ func resolveMainWindow(mgr *workspace.Manager) (string, error) {
 
 	// Reuse the first non-workspace window if available.
 	if listErr == nil {
-		workspaceWins := map[string]bool{}
-		for _, ws := range mgr.State.Workspaces {
-			if ws.TmuxWindow != "" {
-				workspaceWins[ws.TmuxWindow] = true
-			}
-		}
-		for _, w := range windows {
-			if !workspaceWins[w.ID] {
-				return w.ID, nil
-			}
+		if winID, ok := firstNonWorkspaceWindow(windows, mgr.State.Workspaces); ok {
+			return winID, nil
 		}
 	}
 

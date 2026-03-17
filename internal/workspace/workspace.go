@@ -171,6 +171,21 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 	return nil
 }
 
+// buildTrapCmd constructs the bash wrapper command for the tmux window.
+// When resume is true, RESUME is initialized to "--continue" so claude
+// picks up where it left off instead of starting fresh.
+func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) string {
+	agencyBin, _ := os.Executable()
+	resumeVal := ""
+	if resume {
+		resumeVal = "--continue"
+	}
+	return fmt.Sprintf(
+		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=%q; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
+		m.ProjectDir, agencyBin, ws.ID, resumeVal, ws.SandboxID, ws.SandboxID,
+	)
+}
+
 // provisionTmux opens a new tmux window for ws, captures the pane ID, and
 // launches the agent inside the container.
 func (m *Manager) provisionTmux(ws *state.Workspace) error {
@@ -186,7 +201,6 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 		ws.PaneID = panes[0]
 	}
 
-	agencyBin, _ := os.Executable()
 	// The wrapper bash:
 	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
 	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
@@ -194,12 +208,31 @@ func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	//  - while loop condition: checks container existence before each exec so
 	//    the loop exits cleanly when Remove() deletes the container, preventing
 	//    "No such container" errors from flooding the workspace pane
-	trapCmd := fmt.Sprintf(
-		`bash -c 'trap "cd %q && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME=""; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
-		m.ProjectDir, agencyBin, ws.ID, ws.SandboxID, ws.SandboxID,
-	)
+	trapCmd := m.buildTrapCmd(ws, false)
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
 		return fmt.Errorf("sending keys to tmux window: %w", err)
+	}
+	return nil
+}
+
+// resumeTmux opens a new tmux window for ws and launches the agent with
+// --continue so it resumes where it left off.
+func (m *Manager) resumeTmux(ws *state.Workspace) error {
+	slog.Debug("resuming tmux window", "workspace", ws.ID, "name", ws.Name)
+	windowID, err := m.Tmux.NewWindow(ws.Name)
+	if err != nil {
+		return fmt.Errorf("creating tmux window for resume: %w", err)
+	}
+	ws.TmuxWindow = windowID
+
+	// Capture pane ID for the new window.
+	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
+		ws.PaneID = panes[0]
+	}
+
+	trapCmd := m.buildTrapCmd(ws, true)
+	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
+		return fmt.Errorf("sending keys to tmux window for resume: %w", err)
 	}
 	return nil
 }
@@ -462,7 +495,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 	slog.Debug("reconcile resources gathered", "windows", len(res.windows), "containers", len(res.containers), "worktrees", len(res.worktrees))
 
 	windowSet, containerIDSet, worktreeSet := buildLookupSets(&res)
-	toDelete, changed := m.reconcileWorkspaces(&res, windowSet, containerIDSet, worktreeSet)
+	toDelete, changed := m.reconcileWorkspaces(ctx, &res, windowSet, containerIDSet, worktreeSet)
 
 	for _, id := range toDelete {
 		delete(m.State.Workspaces, id)
@@ -484,6 +517,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 // reconcileOneWorkspace handles the reconcile logic for a single workspace.
 // Returns (shouldDelete bool, changed bool).
 func (m *Manager) reconcileOneWorkspace(
+	ctx context.Context,
 	ws *state.Workspace,
 	res *reconcileResult,
 	windowSet, containerIDSet, worktreeSet map[string]bool,
@@ -510,10 +544,7 @@ func (m *Manager) reconcileOneWorkspace(
 		}
 
 	case state.StatePaused:
-		if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
-			markFailed(ws, "worktree disappeared while paused")
-			return false, true
-		}
+		return false, m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
 
 	case state.StateDone:
 		if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
@@ -589,10 +620,63 @@ func (m *Manager) reconcileProvisioning(
 	return false
 }
 
+// reconcilePaused handles reconcile logic for a workspace in StatePaused.
+// It attempts to restart the workspace by restarting an existing stopped
+// container, or by re-provisioning a fresh one when the container has been
+// destroyed. Returns true if the workspace state changed.
+func (m *Manager) reconcilePaused(
+	ctx context.Context,
+	ws *state.Workspace,
+	res *reconcileResult,
+	containerIDSet, worktreeSet map[string]bool,
+	markFailed func(*state.Workspace, string),
+) (changed bool) {
+	// If the worktree is gone, the workspace cannot be resumed.
+	if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
+		markFailed(ws, "worktree disappeared while paused")
+		return true
+	}
+
+	// If Docker is unavailable, do nothing — we cannot make progress.
+	if res.contsErr != nil || m.Sandbox == nil {
+		return false
+	}
+
+	if containerIDSet[ws.SandboxID] {
+		// Container exists but is stopped — restart it and attach a new window.
+		if err := m.Sandbox.Start(ctx, ws.SandboxID); err != nil {
+			markFailed(ws, fmt.Sprintf("restarting container: %v", err))
+			return true
+		}
+		if err := m.resumeTmux(ws); err != nil {
+			markFailed(ws, fmt.Sprintf("resuming tmux: %v", err))
+			return true
+		}
+	} else {
+		// Container is gone — re-provision from the worktree.
+		cfg := m.Cfg
+		if localCfg, err := config.Load(config.WorkspaceConfigPath(ws.WorktreePath)); err == nil {
+			cfg = config.Merge(m.Cfg, localCfg)
+		}
+		if err := m.provisionContainer(ctx, ws, cfg); err != nil {
+			markFailed(ws, fmt.Sprintf("re-provisioning container: %v", err))
+			return true
+		}
+		if err := m.resumeTmux(ws); err != nil {
+			markFailed(ws, fmt.Sprintf("resuming tmux after re-provision: %v", err))
+			return true
+		}
+	}
+
+	ws.State = state.StateRunning
+	ws.UpdatedAt = time.Now().UTC()
+	return true
+}
+
 // reconcileWorkspaces processes all workspaces and handles state transitions based
 // on the current tmux, docker, and worktree state. Returns workspaces to delete
 // and whether any changes were made.
-func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
+func (m *Manager) reconcileWorkspaces(ctx context.Context, res *reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
 	markFailed := func(ws *state.Workspace, reason string) {
 		fromState := string(ws.State)
 		ws.FailedFrom = &fromState
@@ -605,7 +689,7 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 	var toDelete []string
 
 	for id, ws := range m.State.Workspaces {
-		del, chg := m.reconcileOneWorkspace(ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
+		del, chg := m.reconcileOneWorkspace(ctx, ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
 		if chg {
 			changed = true
 		}

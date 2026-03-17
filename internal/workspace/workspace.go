@@ -148,16 +148,25 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		configMount = cfgPath
 	}
 
+	sharedHome := ""
+	if candidate := filepath.Join(m.ProjectDir, ".agency", "home"); func() bool {
+		info, err := os.Stat(candidate)
+		return err == nil && info.IsDir()
+	}() {
+		sharedHome = candidate
+	}
+
 	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, dockerBuildContext(cfg.Sandbox.DockerfileDir)); err != nil {
 		return fmt.Errorf("ensuring sandbox image: %w", err)
 	}
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
-		Image:         cfg.Sandbox.Image,
-		Name:          "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
-		WorktreeMount: ws.WorktreePath,
-		ConfigMount:   configMount,
-		Env:           env,
+		Image:           cfg.Sandbox.Image,
+		Name:            "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
+		WorktreeMount:   ws.WorktreePath,
+		ConfigMount:     configMount,
+		SharedHomeMount: sharedHome,
+		Env:             env,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sandbox: %w", err)

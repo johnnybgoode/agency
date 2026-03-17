@@ -118,20 +118,17 @@ func EnforceGlobalConfigPerms(path string) error {
 
 // Load reads configuration from the given paths in order, merging each into
 // the defaults. Paths that do not exist are silently skipped. Credential
-// fields in any path after the first trigger a warning to stderr.
+// fields in any path after the first trigger a warning to stderr. Config files
+// with insecure permissions (group- or other-readable) will have their
+// credential fields zeroed out and an error logged — fail-closed behavior.
 func Load(paths ...string) (*Config, error) {
 	slog.Debug("loading config", "paths", paths)
 	base := DefaultConfig()
 
 	for i, path := range paths {
-		// For the global config (first path), check file permissions.
+		// Attempt to auto-fix permissions on the global config before reading.
 		if i == 0 {
-			if info, err := os.Stat(path); err == nil {
-				perm := info.Mode().Perm()
-				if perm&0o177 != 0 {
-					slog.Warn("insecure config permissions", "path", path, "permissions", fmt.Sprintf("0o%o", perm))
-				}
-			}
+			_ = EnforceGlobalConfigPerms(path)
 		}
 
 		data, err := os.ReadFile(path)
@@ -149,7 +146,23 @@ func Load(paths ...string) (*Config, error) {
 			return nil, fmt.Errorf("parsing config %s: %w", path, err)
 		}
 
+		// Check file permissions. Refuse to load credentials from files that
+		// are readable by group or other (fail-closed).
+		hasCredentials := override.Credentials.AnthropicAPIKey != "" || override.Credentials.GithubToken != ""
+		if hasCredentials {
+			if info, err := os.Stat(path); err == nil {
+				perm := info.Mode().Perm()
+				if perm&0o077 != 0 {
+					slog.Error("refusing to load credentials from file with insecure permissions",
+						"path", path, "permissions", fmt.Sprintf("0o%o", perm))
+					// Zero out credentials — fail closed.
+					override.Credentials = CredentialsConfig{}
+				}
+			}
+		}
+
 		if i != 0 {
+			// Re-check hasCredentials after the potential zeroing above.
 			if override.Credentials.AnthropicAPIKey != "" || override.Credentials.GithubToken != "" {
 				slog.Warn("credentials in non-global config", "path", path)
 			}

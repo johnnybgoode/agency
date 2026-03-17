@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -40,6 +41,53 @@ func RunPopup() error {
 	p := tea.NewProgram(popupWrapper{form: form, mgr: mgr})
 	_, err = p.Run()
 	return err
+}
+
+// QuitResultFile is the filename written by the quit popup to communicate results
+// back to the sidebar process.
+const QuitResultFile = "quit-result.json"
+
+// QuitResultData is the JSON structure written by the quit popup.
+type QuitResultData struct {
+	Confirmed bool `json:"confirmed"`
+}
+
+// RunQuitPopup runs the quit confirmation flow as a standalone bubbletea program
+// (for use inside a tmux popup). It assesses workspace statuses, presents the
+// confirmation dialog, and writes the result to .agency/quit-result.json.
+func RunQuitPopup() error {
+	projectDir, err := project.FindProjectDir()
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
+	if err != nil {
+		return fmt.Errorf("loading config: %w", err)
+	}
+
+	mgr, err := workspace.NewManager(projectDir, cfg)
+	if err != nil {
+		return fmt.Errorf("initializing workspace manager: %w", err)
+	}
+
+	// Assess workspace statuses synchronously (fast local git checks).
+	infos, err := mgr.AssessQuitStatuses(context.Background())
+	if err != nil {
+		return fmt.Errorf("assessing quit statuses: %w", err)
+	}
+
+	model := newQuitPopupModel(infos, cfg.TUI.Theme)
+	p := tea.NewProgram(model)
+	finalModel, err := p.Run()
+	if err != nil {
+		return fmt.Errorf("quit popup TUI error: %w", err)
+	}
+
+	qm := finalModel.(quitPopupModel)
+	resultPath := filepath.Join(projectDir, ".agency", QuitResultFile)
+	data, _ := json.Marshal(QuitResultData{Confirmed: qm.result.Confirmed})
+	return os.WriteFile(resultPath, data, 0o644)
 }
 
 // popupWrapper is a thin bubbletea model that wraps the create form for popup mode.

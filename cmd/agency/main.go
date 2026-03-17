@@ -159,6 +159,21 @@ var topLevelNewCmd = &cobra.Command{
 	},
 }
 
+// topLevelQuitCmd is the top-level "agency quit" command.
+// With --popup it runs the interactive quit confirmation (suitable for tmux popups).
+var topLevelQuitCmd = &cobra.Command{
+	Use:    "quit",
+	Short:  "Quit confirmation dialog (interactive with --popup)",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		popup, _ := cmd.Flags().GetBool("popup")
+		if popup {
+			return tui.RunQuitPopup()
+		}
+		return errors.New("usage: agency quit --popup")
+	},
+}
+
 // workspaceNewCmd is the "workspace new" subcommand.
 var workspaceNewCmd = &cobra.Command{
 	Use:   "new <name> <branch>",
@@ -385,8 +400,9 @@ func init() {
 	gcCmd.Flags().Bool("force", false, "Force garbage collection without confirmation")
 	gcCmd.Flags().String("workspace-id", "", "Run single-workspace cleanup (used by EXIT trap)")
 	topLevelNewCmd.Flags().Bool("popup", false, "Run interactive create form (for use in tmux popup)")
+	topLevelQuitCmd.Flags().Bool("popup", false, "Run interactive quit confirmation (for use in tmux popup)")
 
-	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd)
+	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd, topLevelQuitCmd)
 	workspaceCmd.AddCommand(workspaceNewCmd, listCmd, rmCmd)
 }
 

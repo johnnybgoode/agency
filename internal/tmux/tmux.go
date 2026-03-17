@@ -310,6 +310,13 @@ func (c *Client) PaneExists(paneID string) bool {
 	return err == nil
 }
 
+// CapturePane returns the visible content of the pane identified by paneID.
+// This is useful for detecting what state a program inside the pane is in
+// (e.g., whether Claude is at its input prompt or inside a sub-command dialog).
+func (c *Client) CapturePane(paneID string) (string, error) {
+	return c.run("capture-pane", "-p", "-t", paneID)
+}
+
 // SetPaneOption sets a pane-level option (e.g., remain-on-exit).
 func (c *Client) SetPaneOption(paneID, option, value string) error {
 	_, err := c.run("set-option", "-p", "-t", paneID, option, value)

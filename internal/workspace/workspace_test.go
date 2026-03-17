@@ -1789,12 +1789,13 @@ func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
 }
 
 // TestReconcilePaused_ContainerDestroyed_WorktreeExists verifies that
-// reconcilePaused calls markFailed (mentioning re-provisioning) when the
-// container is gone but the worktree still exists. provisionContainer will
-// fail without a real Docker daemon.
+// reconcilePaused calls markFailed when the container is gone but the worktree
+// still exists. Depending on whether Docker is available in the test environment,
+// failure may occur at provisionContainer or at resumeTmux — both indicate the
+// re-provisioning code path was taken.
 func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
 	m := newTestManager(t)
-	m.Sandbox = &sandbox.Manager{} // real struct, no Docker — provisionContainer fails
+	m.Sandbox = &sandbox.Manager{}
 	ctx := context.Background()
 
 	wtPath := t.TempDir()
@@ -1820,13 +1821,16 @@ func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
 	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
 
 	if !changed {
-		t.Error("reconcilePaused: expected changed=true after provisionContainer failure")
+		t.Error("reconcilePaused: expected changed=true")
 	}
 	if !called() {
-		t.Error("reconcilePaused: markFailed should be called when provisionContainer fails")
+		t.Error("reconcilePaused: markFailed should be called")
 	}
-	if !strings.Contains(reason(), "re-provisioning container") {
-		t.Errorf("reconcilePaused: markFailed reason should mention 're-provisioning container'; got %q", reason())
+	// Either provisionContainer or resumeTmux may fail depending on the
+	// environment; both indicate the re-provisioning path was entered.
+	r := reason()
+	if !strings.Contains(r, "re-provisioning container") && !strings.Contains(r, "resuming tmux after re-provision") {
+		t.Errorf("reconcilePaused: markFailed reason should mention re-provisioning; got %q", r)
 	}
 }
 

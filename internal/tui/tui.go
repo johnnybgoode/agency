@@ -48,8 +48,10 @@ func RunPopup() error {
 const QuitResultFile = "quit-result.json"
 
 // QuitResultData is the JSON structure written by the quit popup.
+// Infos is populated in-process after re-assessment and is never serialized.
 type QuitResultData struct {
-	Confirmed bool `json:"confirmed"`
+	Confirmed bool                 `json:"confirmed"`
+	Infos     []workspace.QuitInfo `json:"-"` // not serialized; used in-process
 }
 
 // RunQuitPopup runs the quit confirmation flow as a standalone bubbletea program
@@ -214,6 +216,23 @@ func runAndAttach(projectDir string) error {
 	return mgr.Tmux.Attach()
 }
 
+// firstNonWorkspaceWindow returns the ID of the first window that does not
+// belong to a workspace. Returns ("", false) if no such window exists.
+func firstNonWorkspaceWindow(windows []tmux.Window, workspaces map[string]*state.Workspace) (string, bool) {
+	wsWins := make(map[string]bool, len(workspaces))
+	for _, ws := range workspaces {
+		if ws.TmuxWindow != "" {
+			wsWins[ws.TmuxWindow] = true
+		}
+	}
+	for _, w := range windows {
+		if !wsWins[w.ID] {
+			return w.ID, true
+		}
+	}
+	return "", false
+}
+
 // findSidebarPane finds or creates a single-pane window suitable for the
 // sidebar. It reuses the first non-workspace window, or creates a new one.
 // Does NOT split — the split is deferred to runSidebar's ensureLayout call.
@@ -223,21 +242,7 @@ func findSidebarPane(mgr *workspace.Manager) (string, error) {
 		return "", err
 	}
 
-	// Skip windows belonging to workspaces.
-	workspaceWins := map[string]bool{}
-	for _, ws := range mgr.State.Workspaces {
-		if ws.TmuxWindow != "" {
-			workspaceWins[ws.TmuxWindow] = true
-		}
-	}
-
-	var winID string
-	for _, w := range windows {
-		if !workspaceWins[w.ID] {
-			winID = w.ID
-			break
-		}
-	}
+	winID, _ := firstNonWorkspaceWindow(windows, mgr.State.Workspaces)
 
 	if winID == "" {
 		winID, err = mgr.Tmux.NewWindow("agency")
@@ -437,16 +442,8 @@ func resolveMainWindow(mgr *workspace.Manager) (string, error) {
 
 	// Reuse the first non-workspace window if available.
 	if listErr == nil {
-		workspaceWins := map[string]bool{}
-		for _, ws := range mgr.State.Workspaces {
-			if ws.TmuxWindow != "" {
-				workspaceWins[ws.TmuxWindow] = true
-			}
-		}
-		for _, w := range windows {
-			if !workspaceWins[w.ID] {
-				return w.ID, nil
-			}
+		if winID, ok := firstNonWorkspaceWindow(windows, mgr.State.Workspaces); ok {
+			return winID, nil
 		}
 	}
 
@@ -461,7 +458,7 @@ func resolveMainWindow(mgr *workspace.Manager) (string, error) {
 // existing right pane if WorkspacePaneID is unset.
 func ensureRightPane(mgr *workspace.Manager, winID string, panes []string) {
 	if len(panes) == 1 {
-		rightPaneID, splitErr := mgr.Tmux.SplitWindowHorizontalPercent(winID, 68)
+		rightPaneID, splitErr := mgr.Tmux.SplitWindowHorizontalPercent(winID, workspace.DefaultWorkspaceSplitPercent)
 		if splitErr == nil && rightPaneID != "" {
 			mgr.State.WorkspacePaneID = rightPaneID
 		}
@@ -606,8 +603,10 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
 		// Always stop the container, regardless of workspace state.
 		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
-			_ = mgr.Sandbox.StopBackground(info.WS.SandboxID, 10)
+			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID, 10)
 		}
+		// info.WS points into mgr.State.Workspaces (via List()), so
+		// mutating it here updates the authoritative state before SaveState.
 		if info.IsActive {
 			info.WS.State = state.StatePaused
 			info.WS.UpdatedAt = time.Now().UTC()

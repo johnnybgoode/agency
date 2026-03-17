@@ -11,19 +11,13 @@ import (
 	"github.com/johnnybgoode/agency/internal/workspace"
 )
 
-// quitResult holds the outcome of the quit popup, written to a temp file.
-type quitResult struct {
-	Confirmed bool                 `json:"confirmed"`
-	Infos     []workspace.QuitInfo `json:"-"` // not serialized; used in-process
-}
-
 // quitPopupModel is a standalone bubbletea model for the quit confirmation popup.
 type quitPopupModel struct {
 	infos      []workspace.QuitInfo
 	theme      config.ThemeConfig
 	step       quitStep
 	dirtyQueue []*state.Workspace
-	result     quitResult
+	result     QuitResultData
 	width      int
 	height     int
 }
@@ -43,7 +37,7 @@ func newQuitPopupModel(infos []workspace.QuitInfo, theme config.ThemeConfig) qui
 
 	if activeCount == 0 {
 		// No active workspaces — auto-confirm.
-		m.result = quitResult{Confirmed: true, Infos: infos}
+		m.result = QuitResultData{Confirmed: true, Infos: infos}
 		m.step = quitIdle // will quit immediately
 	} else {
 		m.step = quitConfirmingQuit
@@ -84,10 +78,10 @@ func (m quitPopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.step = quitConfirmingDirty
 					return m, nil
 				}
-				m.result = quitResult{Confirmed: true, Infos: m.infos}
+				m.result = QuitResultData{Confirmed: true, Infos: m.infos}
 				return m, tea.Quit
 			case "n", "esc", "q", "ctrl+c":
-				m.result = quitResult{Confirmed: false}
+				m.result = QuitResultData{Confirmed: false}
 				return m, tea.Quit
 			}
 
@@ -98,10 +92,10 @@ func (m quitPopupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(m.dirtyQueue) > 0 {
 					return m, nil
 				}
-				m.result = quitResult{Confirmed: true, Infos: m.infos}
+				m.result = QuitResultData{Confirmed: true, Infos: m.infos}
 				return m, tea.Quit
 			case "n", "esc", "q", "ctrl+c":
-				m.result = quitResult{Confirmed: false}
+				m.result = QuitResultData{Confirmed: false}
 				return m, tea.Quit
 			}
 		}

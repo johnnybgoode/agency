@@ -147,6 +147,40 @@ func TestMerge(t *testing.T) {
 		}
 	})
 
+	t.Run("DockerfileDir override replaces base", func(t *testing.T) {
+		base := &Config{
+			Sandbox: SandboxConfig{
+				DockerfileDir: "/base/docker",
+			},
+		}
+		override := &Config{
+			Sandbox: SandboxConfig{
+				DockerfileDir: "/override/docker",
+			},
+		}
+
+		result := Merge(base, override)
+
+		if result.Sandbox.DockerfileDir != "/override/docker" {
+			t.Errorf("Sandbox.DockerfileDir = %q, want %q", result.Sandbox.DockerfileDir, "/override/docker")
+		}
+	})
+
+	t.Run("DockerfileDir empty override preserves base", func(t *testing.T) {
+		base := &Config{
+			Sandbox: SandboxConfig{
+				DockerfileDir: "/base/docker",
+			},
+		}
+		override := &Config{}
+
+		result := Merge(base, override)
+
+		if result.Sandbox.DockerfileDir != "/base/docker" {
+			t.Errorf("Sandbox.DockerfileDir = %q, want %q", result.Sandbox.DockerfileDir, "/base/docker")
+		}
+	})
+
 	t.Run("scalar zero values preserve base", func(t *testing.T) {
 		base := &Config{
 			Agent: AgentConfig{

@@ -611,3 +611,53 @@ func TestWindowWidth(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SetHook
+// ---------------------------------------------------------------------------
+
+func TestSetHook(t *testing.T) {
+	tests := []struct {
+		name    string
+		hook    string
+		trigger string
+		command string
+		wantSeq []string
+	}{
+		{
+			name:    "named hook is appended to trigger",
+			hook:    "respawn-workspace",
+			trigger: "pane-died",
+			command: "if-shell -F '#{==:#{pane_id},%5}' 'respawn-pane -t %5'",
+			wantSeq: []string{"set-hook", "-t", "test-session", "pane-died[respawn-workspace]"},
+		},
+		{
+			name:    "different hook and trigger",
+			hook:    "my-hook",
+			trigger: "window-linked",
+			command: "run-shell 'echo linked'",
+			wantSeq: []string{"set-hook", "-t", "test-session", "window-linked[my-hook]"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, "")
+			if err := c.SetHook(tt.hook, tt.trigger, tt.command); err != nil {
+				t.Fatalf("SetHook(%q, %q, ...) error: %v", tt.hook, tt.trigger, err)
+			}
+
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, tt.wantSeq...) {
+				t.Errorf("SetHook args = %v, want sequence %v", args, tt.wantSeq)
+			}
+			// Verify the command token(s) appear somewhere after the hook name arg.
+			// The fake tmux script records args space-joined, so multi-word commands
+			// will be split; just check that the first word of the command is present.
+			cmdFirstWord := strings.SplitN(tt.command, " ", 2)[0]
+			if !containsAll(args, cmdFirstWord) {
+				t.Errorf("SetHook args = %v, want command token %q to be present", args, cmdFirstWord)
+			}
+		})
+	}
+}

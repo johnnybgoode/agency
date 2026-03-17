@@ -313,6 +313,9 @@ func (c *Client) PaneExists(paneID string) bool {
 // CapturePane returns the visible content of the pane identified by paneID.
 // This is useful for detecting what state a program inside the pane is in
 // (e.g., whether Claude is at its input prompt or inside a sub-command dialog).
+// Note: leading and trailing whitespace is trimmed by the underlying run()
+// helper. Callers that depend on whitespace at the boundaries of pane content
+// should account for this.
 func (c *Client) CapturePane(paneID string) (string, error) {
 	return c.run("capture-pane", "-p", "-t", paneID)
 }
@@ -330,8 +333,10 @@ func (c *Client) RespawnPane(paneID string) error {
 }
 
 // SetHook installs a session-scoped tmux hook.
+// The name is appended to the trigger as a named hook (e.g. "pane-died[respawn-workspace]"),
+// which allows multiple hooks to be registered for the same event without overwriting each other.
 func (c *Client) SetHook(name, trigger, command string) error {
-	_, err := c.run("set-hook", "-t", c.SessionName, trigger, command)
+	_, err := c.run("set-hook", "-t", c.SessionName, trigger+"["+name+"]", command)
 	return err
 }
 

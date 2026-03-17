@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1536,6 +1537,299 @@ func TestSidebarColumns(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// buildTrapCmd
+// ---------------------------------------------------------------------------
+
+// TestBuildTrapCmd_ResumeFlag verifies that buildTrapCmd sets RESUME="" when
+// resume=false and RESUME="--continue" when resume=true, and that both outputs
+// include the workspace ID and sandbox ID.
+func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
+	tests := []struct {
+		name            string
+		resume          bool
+		wantResumeVal   string
+		wantNoResumeVal string
+	}{
+		{
+			name:            "resume=false sets empty RESUME",
+			resume:          false,
+			wantResumeVal:   `RESUME=""`,
+			wantNoResumeVal: `RESUME="--continue"`,
+		},
+		{
+			name:            "resume=true sets --continue RESUME",
+			resume:          true,
+			wantResumeVal:   `RESUME="--continue"`,
+			wantNoResumeVal: `RESUME=""`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager(t)
+			ws := &state.Workspace{
+				ID:        "ws-trap0001",
+				Name:      "Trap Test",
+				Branch:    "feat/trap",
+				SandboxID: "containerabc123",
+				State:     state.StatePaused,
+				CreatedAt: time.Now().UTC(),
+				UpdatedAt: time.Now().UTC(),
+			}
+			addWorkspace(m, ws)
+
+			cmd := m.buildTrapCmd(ws, tt.resume)
+
+			if !strings.Contains(cmd, tt.wantResumeVal) {
+				t.Errorf("buildTrapCmd(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantResumeVal, cmd)
+			}
+			// The opposite value must not appear as the initial assignment.
+			// Note: "--continue" does appear later in the loop body (RESUME="--continue"),
+			// so we only check for the specific initial RESUME assignment token.
+			if tt.resume {
+				// When resume=true, RESUME="" must not appear at all.
+				if strings.Contains(cmd, `RESUME=""`) {
+					t.Errorf("buildTrapCmd(resume=true): output contains RESUME=\"\" but should not\ngot: %s", cmd)
+				}
+			}
+			// Both workspace ID and sandbox ID must appear.
+			if !strings.Contains(cmd, ws.ID) {
+				t.Errorf("buildTrapCmd: output does not contain workspace ID %q\ngot: %s", ws.ID, cmd)
+			}
+			if !strings.Contains(cmd, ws.SandboxID) {
+				t.Errorf("buildTrapCmd: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reconcilePaused
+// ---------------------------------------------------------------------------
+
+// newMarkFailedCapture returns a markFailed function that records calls and the
+// reason strings so tests can assert on them.
+func newMarkFailedCapture() (markFailed func(*state.Workspace, string), called func() bool, reason func() string) {
+	var wasCalled bool
+	var lastReason string
+	fn := func(ws *state.Workspace, r string) {
+		wasCalled = true
+		lastReason = r
+		fromState := string(ws.State)
+		ws.FailedFrom = &fromState
+		ws.State = state.StateFailed
+		ws.Error = &r
+		ws.UpdatedAt = time.Now().UTC()
+	}
+	return fn, func() bool { return wasCalled }, func() string { return lastReason }
+}
+
+// TestReconcilePaused_WorktreeGone verifies that reconcilePaused marks a
+// workspace failed when its worktree no longer exists.
+func TestReconcilePaused_WorktreeGone(t *testing.T) {
+	m := newTestManager(t)
+	ctx := context.Background()
+
+	ws := &state.Workspace{
+		ID:           "ws-paused001",
+		Name:         "Paused",
+		Branch:       "feat/paused",
+		SandboxID:    "container001",
+		WorktreePath: "/nonexistent/path/testproject-feat-paused",
+		State:        state.StatePaused,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	markFailed, called, reason := newMarkFailedCapture()
+
+	// worktreeSet does NOT contain the workspace's path; wtErr is nil so the
+	// absence is authoritative.
+	worktreeSet := map[string]bool{}
+	containerIDSet := map[string]bool{"container001": true}
+	res := &reconcileResult{wtErr: nil, contsErr: nil}
+
+	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+
+	if !changed {
+		t.Error("reconcilePaused: expected changed=true when worktree is gone")
+	}
+	if !called() {
+		t.Error("reconcilePaused: expected markFailed to be called when worktree is gone")
+	}
+	if !strings.Contains(reason(), "worktree") {
+		t.Errorf("reconcilePaused: markFailed reason should mention worktree; got %q", reason())
+	}
+	if ws.State != state.StateFailed {
+		t.Errorf("reconcilePaused: workspace state = %q, want StateFailed", ws.State)
+	}
+}
+
+// TestReconcilePaused_DockerUnavailable_NilSandbox verifies that reconcilePaused
+// makes no change when the sandbox manager is nil (Docker unavailable).
+func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
+	m := newTestManager(t) // Sandbox is nil by default
+	ctx := context.Background()
+
+	wtPath := t.TempDir() // real path so worktreeSet check passes
+	ws := &state.Workspace{
+		ID:           "ws-paused002",
+		Name:         "Paused No Docker",
+		Branch:       "feat/no-docker",
+		SandboxID:    "container002",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	markFailed, called, _ := newMarkFailedCapture()
+
+	worktreeSet := map[string]bool{wtPath: true}
+	containerIDSet := map[string]bool{"container002": true}
+	res := &reconcileResult{wtErr: nil, contsErr: nil}
+
+	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+
+	if changed {
+		t.Error("reconcilePaused: expected changed=false when Sandbox is nil")
+	}
+	if called() {
+		t.Error("reconcilePaused: markFailed should not be called when Sandbox is nil")
+	}
+	if ws.State != state.StatePaused {
+		t.Errorf("reconcilePaused: workspace state should remain StatePaused; got %q", ws.State)
+	}
+}
+
+// TestReconcilePaused_DockerUnavailable_ContsErr verifies that reconcilePaused
+// makes no change when the container listing returned an error.
+func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
+	m := newTestManager(t)
+	m.Sandbox = &sandbox.Manager{} // non-nil but contsErr causes early return before any Docker call
+	ctx := context.Background()
+
+	wtPath := t.TempDir()
+	ws := &state.Workspace{
+		ID:           "ws-paused003",
+		Name:         "Paused Conts Err",
+		Branch:       "feat/conts-err",
+		SandboxID:    "container003",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	markFailed, called, _ := newMarkFailedCapture()
+
+	worktreeSet := map[string]bool{wtPath: true}
+	containerIDSet := map[string]bool{} // would be empty anyway — contsErr set
+	res := &reconcileResult{
+		wtErr:    nil,
+		contsErr: errors.New("docker daemon unreachable"),
+	}
+
+	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+
+	if changed {
+		t.Error("reconcilePaused: expected changed=false when contsErr is set")
+	}
+	if called() {
+		t.Error("reconcilePaused: markFailed should not be called when contsErr is set")
+	}
+	if ws.State != state.StatePaused {
+		t.Errorf("reconcilePaused: workspace state should remain StatePaused; got %q", ws.State)
+	}
+}
+
+// TestReconcilePaused_ContainerExists_StartFails verifies that reconcilePaused
+// calls markFailed mentioning the container restart when Sandbox.Start fails.
+// Uses a fake docker binary where "start" exits non-zero so the test is
+// independent of the host Docker daemon.
+func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
+	m := newFakeDockerManagerStartFails(t)
+	ctx := context.Background()
+
+	wtPath := t.TempDir()
+	ws := &state.Workspace{
+		ID:           "ws-paused004",
+		Name:         "Paused Restart",
+		Branch:       "feat/restart",
+		SandboxID:    "containerexists99",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	markFailed, called, reason := newMarkFailedCapture()
+
+	// containerIDSet contains the sandbox ID so the "container exists" branch runs.
+	worktreeSet := map[string]bool{wtPath: true}
+	containerIDSet := map[string]bool{"containerexists99": true}
+	res := &reconcileResult{wtErr: nil, contsErr: nil}
+
+	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+
+	if !changed {
+		t.Error("reconcilePaused: expected changed=true after Start failure")
+	}
+	if !called() {
+		t.Error("reconcilePaused: markFailed should be called when Start fails")
+	}
+	if !strings.Contains(reason(), "restarting container") {
+		t.Errorf("reconcilePaused: markFailed reason should mention 'restarting container'; got %q", reason())
+	}
+}
+
+// TestReconcilePaused_ContainerDestroyed_WorktreeExists verifies that
+// reconcilePaused attempts re-provisioning when the container is gone but the
+// worktree still exists. Uses newFakeDockerManager so provisionContainer
+// succeeds; resumeTmux then fails deterministically (no tmux in tests).
+func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
+	m, _ := newFakeDockerManager(t)
+	ctx := context.Background()
+
+	wtPath := t.TempDir()
+	ws := &state.Workspace{
+		ID:           "ws-paused005",
+		Name:         "Paused Reprovision",
+		Branch:       "feat/reprovision",
+		SandboxID:    "containerold123",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
+		CreatedAt:    time.Now().UTC(),
+		UpdatedAt:    time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	markFailed, called, reason := newMarkFailedCapture()
+
+	// containerIDSet does NOT contain the sandbox ID — container was destroyed.
+	worktreeSet := map[string]bool{wtPath: true}
+	containerIDSet := map[string]bool{} // sandbox ID absent
+	res := &reconcileResult{wtErr: nil, contsErr: nil}
+
+	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+
+	if !changed {
+		t.Error("reconcilePaused: expected changed=true")
+	}
+	if !called() {
+		t.Error("reconcilePaused: markFailed should be called")
+	}
+	// provisionContainer succeeds (fake docker); resumeTmux fails (no tmux).
+	if !strings.Contains(reason(), "resuming tmux after re-provision") {
+		t.Errorf("reconcilePaused: markFailed reason should mention 'resuming tmux after re-provision'; got %q", reason())
+	}
+}
+
 // ----- provisionContainer: SharedHomeMount -----
 
 // newFakeDockerManager creates a Manager with a fake docker binary and returns
@@ -1582,6 +1876,44 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 		t.Fatalf("newFakeDockerManager: SaveState: %v", err)
 	}
 	return mgr, argsFile
+}
+
+// newFakeDockerManagerStartFails is like newFakeDockerManager but the fake
+// docker binary exits non-zero for the "start" subcommand, so Sandbox.Start
+// always returns an error.
+func newFakeDockerManagerStartFails(t *testing.T) *Manager {
+	t.Helper()
+	dir := t.TempDir()
+
+	script := "#!/bin/sh\n" +
+		`subcmd="$1"` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  start) echo "fake: start failed" >&2; exit 1;;` + "\n" +
+		`esac` + "\n" +
+		`exit 0` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	mgr := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := mgr.SaveState(); err != nil {
+		t.Fatalf("newFakeDockerManagerStartFails: SaveState: %v", err)
+	}
+	return mgr
 }
 
 // readDockerArgsLog reads the full raw content of the docker args log file.

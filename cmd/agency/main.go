@@ -100,6 +100,11 @@ var initCmd = &cobra.Command{
 			return err
 		}
 
+		homeDir := filepath.Join(cwd, ".agency", "home")
+		if err := os.MkdirAll(homeDir, 0o750); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not create .agency/home: %v\n", err)
+		}
+
 		projectName := filepath.Base(cwd)
 		statePath := filepath.Join(cwd, ".agency", "state.json")
 		s := state.Default(projectName, filepath.Join(cwd, ".bare"))

@@ -20,7 +20,7 @@ type CreateOpts struct {
 	Name            string
 	WorktreeMount   string   // host path mounted to /app inside the container
 	ConfigMount     string   // host path mounted to /etc/agency/config.toml (read-only)
-	AgentHomeVolume string   // named volume mounted to /home/agent
+	SharedHomeMount string   // host path mounted read-only at /home/agent/.shared-base
 	Env             []string // environment variables in KEY=VALUE form
 	CapDrop         []string
 	CapAdd          []string
@@ -115,8 +115,8 @@ func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) 
 	if opts.ConfigMount != "" {
 		args = append(args, "-v", opts.ConfigMount+":/etc/agency/config.toml:ro")
 	}
-	if opts.AgentHomeVolume != "" {
-		args = append(args, "-v", opts.AgentHomeVolume+":/home/agent")
+	if opts.SharedHomeMount != "" {
+		args = append(args, "-v", opts.SharedHomeMount+":/home/agent/.shared-base:ro")
 	}
 
 	for _, env := range opts.Env {

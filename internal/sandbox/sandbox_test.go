@@ -140,3 +140,52 @@ func TestEnsureImage_ReturnsErrorWhenMissingAndNoFS(t *testing.T) {
 		t.Error("expected error when image is missing and no build context provided")
 	}
 }
+
+// readArgsLog reads the full raw content of the docker args log file.
+func readArgsLog(t *testing.T, argsFile string) string {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func TestCreate_SharedHomeMount_AddsReadOnlyVolumeArg(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+
+	_, err := m.Create(context.Background(), &CreateOpts{
+		Image:           "agency:latest",
+		Name:            "test",
+		WorktreeMount:   "/app",
+		SharedHomeMount: "/host/shared",
+	})
+	if err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	log := readArgsLog(t, argsFile)
+	want := "-v /host/shared:/home/agent/.shared-base:ro"
+	if !strings.Contains(log, want) {
+		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	}
+}
+
+func TestCreate_SharedHomeMount_OmittedWhenEmpty(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+
+	_, err := m.Create(context.Background(), &CreateOpts{
+		Image:           "agency:latest",
+		Name:            "test",
+		WorktreeMount:   "/app",
+		SharedHomeMount: "",
+	})
+	if err != nil {
+		t.Fatalf("Create returned unexpected error: %v", err)
+	}
+
+	log := readArgsLog(t, argsFile)
+	if strings.Contains(log, "shared-base") {
+		t.Errorf("expected docker args NOT to contain 'shared-base', but got:\n%s", log)
+	}
+}

@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/johnnybgoode/agency/internal/state"
@@ -56,6 +57,107 @@ func TestBuildTrapCmd_AcceptsValidIDs(t *testing.T) {
 	}
 	if cmd == "" {
 		t.Error("buildTrapCmd returned empty command string")
+	}
+}
+
+// --- Issue 6: shellEscapeDouble and buildTrapCmd use POSIX-safe quoting ---
+
+func TestShellEscapeDouble(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain string unchanged",
+			input: "/home/user/project",
+			want:  "/home/user/project",
+		},
+		{
+			name:  "spaces preserved",
+			input: "/my projects/cool repo",
+			want:  "/my projects/cool repo",
+		},
+		{
+			name:  "double quote escaped",
+			input: `/path/with"quote`,
+			want:  `/path/with\"quote`,
+		},
+		{
+			name:  "dollar sign escaped",
+			input: "/path/$HOME/project",
+			want:  `/path/\$HOME/project`,
+		},
+		{
+			name:  "backtick escaped",
+			input: "/path/with`cmd`/project",
+			want:  `/path/with\` + "`" + `cmd\` + "`" + `/project`,
+		},
+		{
+			name:  "backslash escaped",
+			input: `/path/with\backslash`,
+			want:  `/path/with\\backslash`,
+		},
+		{
+			name:  "multiple special chars",
+			input: `"$HOME"`,
+			want:  `\"\$HOME\"`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shellEscapeDouble(tc.input)
+			if got != tc.want {
+				t.Errorf("shellEscapeDouble(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildTrapCmd_ProjectDirSpecialChars(t *testing.T) {
+	cases := []struct {
+		name       string
+		projectDir string
+	}{
+		{
+			name:       "path with spaces",
+			projectDir: "/home/user/my projects/cool repo",
+		},
+		{
+			name:       "path with dollar sign",
+			projectDir: "/home/$USER/project",
+		},
+		{
+			name:       "path with double quote",
+			projectDir: `/home/user/weird"dir`,
+		},
+		{
+			name:       "path with backtick",
+			projectDir: "/home/user/dir`whoami`/project",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := newTestManager(t)
+			mgr.ProjectDir = tc.projectDir
+
+			ws := &state.Workspace{
+				ID:        "ws-aabbccdd",
+				SandboxID: "abc123def456abc1",
+			}
+			cmd, err := mgr.buildTrapCmd(ws, false)
+			if err != nil {
+				t.Fatalf("buildTrapCmd returned unexpected error: %v", err)
+			}
+
+			// The escaped project dir must appear literally in the command
+			// and must not contain any unescaped $ or backtick sequences.
+			escaped := shellEscapeDouble(tc.projectDir)
+			if !strings.Contains(cmd, escaped) {
+				t.Errorf("buildTrapCmd output does not contain escaped dir %q\nfull cmd: %s", escaped, cmd)
+			}
+		})
 	}
 }
 

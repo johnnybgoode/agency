@@ -338,13 +338,13 @@ func (m listModel) quitPopupCmd() tea.Cmd {
 	}
 }
 
-// startExecuting signals a graceful quit: sets shouldKillSession so runSidebar
+// confirmQuit signals a graceful quit: sets shouldKillSession so runSidebar
 // can do cleanup after p.Run() returns, then exits the TUI immediately.
 // Container stops are fired as non-blocking background calls in runSidebar so
 // the user gets their shell prompt back without waiting for docker.
 //
 //nolint:gocritic // bubbletea model must use value receivers
-func (m listModel) startExecuting() (listModel, tea.Cmd) {
+func (m listModel) confirmQuit() (listModel, tea.Cmd) {
 	m.shouldKillSession = true
 	return m, tea.Quit
 }
@@ -499,7 +499,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case quitPopupDoneMsg:
 		if msg.confirmed {
 			m.quitInfos = msg.infos
-			return m.startExecuting()
+			return m.confirmQuit()
 		}
 		// Popup was canceled — resume normal operation.
 

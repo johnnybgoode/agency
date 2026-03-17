@@ -398,6 +398,86 @@ func TestQuitPopupDoneMsg_Canceled(t *testing.T) {
 
 // ----- Installer -----
 
+// TestListModel_SKeybinding_ReturnsCommandForRunningWorkspace verifies that
+// pressing "S" on a running workspace with a SandboxID returns a non-nil tea.Cmd.
+func TestListModel_SKeybinding_ReturnsCommandForRunningWorkspace(t *testing.T) {
+	mgr := &workspace.Manager{
+		State: &state.State{
+			Workspaces: map[string]*state.Workspace{
+				"ws-1": {
+					ID:        "ws-1",
+					Name:      "test",
+					State:     state.StateRunning,
+					SandboxID: "sha256:abc",
+				},
+			},
+		},
+		// Sandbox is nil — SyncHome will return an error, but the cmd should still be non-nil.
+	}
+	ws := mgr.State.Workspaces["ws-1"]
+	m := listModel{
+		manager:    mgr,
+		workspaces: []*state.Workspace{ws},
+		cursor:     0,
+	}
+
+	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")}
+	_, cmd := m.handleNormalKey(key)
+	if cmd == nil {
+		t.Error("expected non-nil command for S keybinding on running workspace with SandboxID")
+	}
+}
+
+// TestListModel_SKeybinding_ReturnsNilCommandWhenNoSandboxID verifies that
+// pressing "S" on a workspace with no SandboxID returns a nil tea.Cmd.
+func TestListModel_SKeybinding_ReturnsNilCommandWhenNoSandboxID(t *testing.T) {
+	mgr := &workspace.Manager{
+		State: &state.State{
+			Workspaces: map[string]*state.Workspace{
+				"ws-1": {
+					ID:        "ws-1",
+					Name:      "test",
+					State:     state.StateRunning,
+					SandboxID: "",
+				},
+			},
+		},
+	}
+	ws := mgr.State.Workspaces["ws-1"]
+	m := listModel{
+		manager:    mgr,
+		workspaces: []*state.Workspace{ws},
+		cursor:     0,
+	}
+
+	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")}
+	_, cmd := m.handleNormalKey(key)
+	if cmd != nil {
+		t.Error("expected nil command for S keybinding on workspace with no SandboxID")
+	}
+}
+
+// TestListModel_SKeybinding_ReturnsNilCommandForEmptyList verifies that
+// pressing "S" with no workspaces returns a nil tea.Cmd.
+func TestListModel_SKeybinding_ReturnsNilCommandForEmptyList(t *testing.T) {
+	mgr := &workspace.Manager{
+		State: &state.State{
+			Workspaces: map[string]*state.Workspace{},
+		},
+	}
+	m := listModel{
+		manager:    mgr,
+		workspaces: []*state.Workspace{},
+		cursor:     0,
+	}
+
+	key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("S")}
+	_, cmd := m.handleNormalKey(key)
+	if cmd != nil {
+		t.Error("expected nil command for S keybinding on empty workspace list")
+	}
+}
+
 // TestInstallerCmdFor verifies that the installer command wraps the script path
 // in a bash -c '...' invocation with single quotes so that ~ is NOT expanded by
 // the host shell before reaching the container.

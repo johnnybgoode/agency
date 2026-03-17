@@ -46,6 +46,13 @@ type reconcileDoneMsg struct {
 	err error
 }
 
+// syncDoneMsg is emitted after an async SyncHome call completes.
+type syncDoneMsg struct {
+	workspaceName string
+	result        *workspace.SyncResult
+	err           error
+}
+
 // quitStep tracks the stage of the graceful-quit flow.
 type quitStep int
 
@@ -391,6 +398,20 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 			}
 		}
 
+	case "S":
+		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
+			ws := m.workspaces[m.cursor]
+			if ws.SandboxID != "" {
+				mgr := m.manager
+				wsName := ws.Name
+				wsID := ws.ID
+				return m, func() tea.Msg {
+					result, err := mgr.SyncHome(context.Background(), wsID, workspace.SyncOpts{})
+					return syncDoneMsg{workspaceName: wsName, result: result, err: err}
+				}
+			}
+		}
+
 	case "d":
 		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
 			slog.Info("deletion requested", "workspace", m.workspaces[m.cursor].ID)
@@ -510,6 +531,19 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.err = nil
+		}
+
+	case syncDoneMsg:
+		if msg.err != nil {
+			m.err = friendlyError(msg.err)
+		} else {
+			synced := len(msg.result.Copied)
+			skipped := len(msg.result.Skipped)
+			if skipped > 0 {
+				m.err = fmt.Errorf("synced %d file(s) from %s, %d skipped (host is newer)", synced, msg.workspaceName, skipped)
+			} else {
+				m.err = fmt.Errorf("synced %d file(s) from %s", synced, msg.workspaceName)
+			}
 		}
 	}
 
@@ -696,9 +730,9 @@ func (m listModel) renderSidebar() string {
 	default:
 		ws := m.workspaces[m.cursor]
 		if ws.ID == activeID {
-			hint = " [⏎] focus  [n] [d] [s]"
+			hint = " [⏎] focus  [n] [d] [s] [S]sync"
 		} else {
-			hint = " [⏎] switch  [n] [d] [s]"
+			hint = " [⏎] switch  [n] [d] [s] [S]sync"
 		}
 	}
 	rows = append(rows, row(hint), bottom)

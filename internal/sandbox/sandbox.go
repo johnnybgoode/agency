@@ -309,6 +309,13 @@ func extractFS(destDir string, src fs.FS) error {
 	})
 }
 
+// CopyFrom copies srcPath from inside the container to destPath on the host.
+// Works on both running and stopped containers.
+func (m *Manager) CopyFrom(ctx context.Context, containerID, srcPath, destPath string) error {
+	_, err := m.docker(ctx, "cp", containerID+":"+srcPath, destPath)
+	return err
+}
+
 // ListByProject returns all containers (running or stopped) whose names begin
 // with prefix. It uses the docker --filter flag for server-side filtering.
 func (m *Manager) ListByProject(ctx context.Context, prefix string) ([]ContainerInfo, error) {

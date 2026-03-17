@@ -151,6 +151,21 @@ func readArgsLog(t *testing.T, argsFile string) string {
 	return string(data)
 }
 
+func TestCopyFrom_CallsDockerCpWithCorrectArgs(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+
+	err := m.CopyFrom(context.Background(), "abc123", "/home/agent/.", "/tmp/dest")
+	if err != nil {
+		t.Fatalf("CopyFrom returned unexpected error: %v", err)
+	}
+
+	log := readArgsLog(t, argsFile)
+	want := "cp abc123:/home/agent/. /tmp/dest"
+	if !strings.Contains(log, want) {
+		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	}
+}
+
 func TestCreate_SharedHomeMount_AddsReadOnlyVolumeArg(t *testing.T) {
 	m, argsFile := newFakeDocker(t, true)
 

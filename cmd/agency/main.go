@@ -377,6 +377,75 @@ var gcCmd = &cobra.Command{
 	},
 }
 
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Sync agent home files back to the shared home directory",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		from, _ := cmd.Flags().GetString("from")
+		if from == "" {
+			return errors.New("--from is required")
+		}
+		force, _ := cmd.Flags().GetBool("force")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		mgr, err := loadManager()
+		if err != nil {
+			return err
+		}
+
+		// Resolve workspace by ID or name.
+		var ws *state.Workspace
+		if candidate, ok := mgr.State.Workspaces[from]; ok {
+			ws = candidate
+		} else {
+			ws = mgr.FindByName(from)
+		}
+		if ws == nil {
+			return fmt.Errorf("workspace %q not found", from)
+		}
+
+		opts := workspace.SyncOpts{Force: force, DryRun: dryRun}
+		result, err := mgr.SyncHome(context.Background(), ws.ID, opts)
+		if err != nil {
+			return fmt.Errorf("syncing: %w", err)
+		}
+
+		if dryRun {
+			fmt.Println("Dry run — no files written.")
+		}
+
+		for _, p := range result.Copied {
+			status := "NEW"
+			// If the file was already on the host (UPDATE vs NEW), we don't have
+			// that distinction in the result — all copied files use "NEW" for
+			// simplicity here. The workspace pkg doesn't distinguish new vs update
+			// in the Copied slice, so treat all as copied.
+			fmt.Printf("  %-8s %s\n", status, p)
+		}
+		for _, p := range result.Skipped {
+			fmt.Printf("  %-8s %s  (host is newer)\n", "SKIP", p)
+		}
+		for _, p := range result.Unchanged {
+			fmt.Printf("  %-8s %s\n", "SAME", p)
+		}
+		for _, se := range result.Errors {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", se.Path, se.Err)
+		}
+
+		total := len(result.Copied)
+		skipped := len(result.Skipped)
+		switch {
+		case skipped > 0 && !force:
+			fmt.Printf("Synced %d file(s), %d skipped (host is newer). Use --force to overwrite.\n", total, skipped)
+		case skipped > 0:
+			fmt.Printf("Synced %d file(s), %d skipped.\n", total, skipped)
+		default:
+			fmt.Printf("Synced %d file(s).\n", total)
+		}
+		return nil
+	},
+}
+
 // loadManager is a shared helper that finds the project directory, loads
 // configuration, and constructs a workspace Manager.
 func loadManager() (*workspace.Manager, error) {
@@ -407,7 +476,11 @@ func init() {
 	topLevelNewCmd.Flags().Bool("popup", false, "Run interactive create form (for use in tmux popup)")
 	topLevelQuitCmd.Flags().Bool("popup", false, "Run interactive quit confirmation (for use in tmux popup)")
 
-	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd, topLevelQuitCmd)
+	syncCmd.Flags().String("from", "", "Workspace name or ID to sync from (required)")
+	syncCmd.Flags().Bool("force", false, "Overwrite host files even when host is newer")
+	syncCmd.Flags().Bool("dry-run", false, "Preview changes without writing files")
+
+	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd, topLevelQuitCmd, syncCmd)
 	workspaceCmd.AddCommand(workspaceNewCmd, listCmd, rmCmd)
 }
 

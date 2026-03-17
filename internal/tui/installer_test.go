@@ -134,6 +134,58 @@ func runSKey(m listModel) (listModel, tea.Cmd) {
 
 // --- Tests ---
 
+// TestInstall_SleepBeforeFirstEsc verifies that the very first sleep fires
+// before any Escape key is sent, i.e. the order is (sleep→Esc)×3 not (Esc→sleep)×3.
+// Sending the sleep first ensures the terminal is idle before the Escape arrives.
+func TestInstall_SleepBeforeFirstEsc(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%93"
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-sleepfirst",
+		State:        state.StateRunning,
+		SandboxID:    "container-sleepfirst",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+
+	firstSleepEscCount := -1 // number of Escapes in sentKeys when the first sleep fires
+	m.sleepFn = func(d time.Duration) {
+		if firstSleepEscCount >= 0 {
+			return // only record the first call
+		}
+		runner.mu.Lock()
+		count := 0
+		for _, k := range runner.sentKeys {
+			if k.paneID == paneID && k.key == "Escape" {
+				count++
+			}
+		}
+		runner.mu.Unlock()
+		firstSleepEscCount = count
+	}
+
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	if firstSleepEscCount < 0 {
+		t.Fatal("sleepFn was never called")
+	}
+	if firstSleepEscCount != 0 {
+		t.Errorf("first sleep fired after %d Escape(s); want 0 — sleep must come before the first Escape",
+			firstSleepEscCount)
+	}
+}
+
 // TestInstall_SleepsBetweenEscKeys verifies that a delay is applied between
 // each Escape keypress so the terminal has time to process each one before
 // the next arrives. Without the inter-Escape delay the keys pile up and the

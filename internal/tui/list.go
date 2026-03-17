@@ -239,8 +239,8 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 			// command would be appended to whatever is already in the input
 			// buffer and fail silently.
 			for range 3 {
-				_ = popup.SendRawKeyToPane(paneID, "Escape")
 				sleepFn(50 * time.Millisecond)
+				_ = popup.SendRawKeyToPane(paneID, "Escape")
 			}
 			// Wait for the terminal to finish processing the escape sequences.
 			// Without this pause, the leading "/r" of "/reload-plugins" is

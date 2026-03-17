@@ -634,6 +634,10 @@ func (m *Manager) SidebarWidthPercent() int {
 	return pct
 }
 
+// DefaultWorkspaceSplitPercent is the percentage of window width given to the
+// workspace pane when splitting the main window horizontally.
+const DefaultWorkspaceSplitPercent = 68
+
 // MinSidebarColumns is the minimum sidebar width in columns.
 const MinSidebarColumns = 25
 
@@ -688,7 +692,7 @@ func (m *Manager) SwapActivePane(wsID string) error {
 			// Split already exists — adopt the right pane.
 			m.State.WorkspacePaneID = existingPanes[1]
 		} else {
-			rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, 68)
+			rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, DefaultWorkspaceSplitPercent)
 			if err != nil {
 				return fmt.Errorf("creating workspace pane split: %w", err)
 			}
@@ -934,7 +938,7 @@ func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error 
 // independently; the agency process need not wait for it.
 func (m *Manager) StopWorkspaceBackground(ctx context.Context, ws *state.Workspace) error {
 	if ws.SandboxID != "" && m.Sandbox != nil {
-		_ = m.Sandbox.StopBackground(ws.SandboxID, 10)
+		_ = m.Sandbox.StopBackground(ctx, ws.SandboxID, 10)
 	}
 	ws.State = state.StatePaused
 	ws.UpdatedAt = time.Now().UTC()

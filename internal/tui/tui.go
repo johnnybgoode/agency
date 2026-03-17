@@ -48,8 +48,10 @@ func RunPopup() error {
 const QuitResultFile = "quit-result.json"
 
 // QuitResultData is the JSON structure written by the quit popup.
+// Infos is populated in-process after re-assessment and is never serialized.
 type QuitResultData struct {
-	Confirmed bool `json:"confirmed"`
+	Confirmed bool                 `json:"confirmed"`
+	Infos     []workspace.QuitInfo `json:"-"` // not serialized; used in-process
 }
 
 // RunQuitPopup runs the quit confirmation flow as a standalone bubbletea program
@@ -461,7 +463,7 @@ func resolveMainWindow(mgr *workspace.Manager) (string, error) {
 // existing right pane if WorkspacePaneID is unset.
 func ensureRightPane(mgr *workspace.Manager, winID string, panes []string) {
 	if len(panes) == 1 {
-		rightPaneID, splitErr := mgr.Tmux.SplitWindowHorizontalPercent(winID, 68)
+		rightPaneID, splitErr := mgr.Tmux.SplitWindowHorizontalPercent(winID, workspace.DefaultWorkspaceSplitPercent)
 		if splitErr == nil && rightPaneID != "" {
 			mgr.State.WorkspacePaneID = rightPaneID
 		}
@@ -606,7 +608,7 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
 		// Always stop the container, regardless of workspace state.
 		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
-			_ = mgr.Sandbox.StopBackground(info.WS.SandboxID, 10)
+			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID, 10)
 		}
 		if info.IsActive {
 			info.WS.State = state.StatePaused

@@ -99,6 +99,31 @@ func TestFriendlyError(t *testing.T) {
 	}
 }
 
+// ----- Test helpers -----
+
+// newListModelForTest creates a listModel backed by a minimal test manager.
+// The manager has no real docker/tmux/git infrastructure.
+func newListModelForTest(t *testing.T) listModel {
+	t.Helper()
+	dir := t.TempDir()
+
+	s := &state.State{
+		Project:    "testproject",
+		BarePath:   dir + "/.bare",
+		Workspaces: make(map[string]*state.Workspace),
+	}
+	mgr := &workspace.Manager{
+		StatePath:   dir + "/state.json",
+		ProjectDir:  dir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Cfg:         config.DefaultConfig(),
+	}
+	_ = mgr.SaveState()
+	return newListModel(mgr)
+}
+
 // ----- sidebarWidth -----
 
 func TestSidebarWidth_ZeroState(t *testing.T) {
@@ -154,14 +179,168 @@ func TestSidebarWidth_SidebarMode(t *testing.T) {
 	}
 }
 
-// ----- Quit state machine -----
+// ----- Quit popup state machine -----
 
-// newListModelForTest creates a listModel backed by a minimal test manager.
-// The manager has no real docker/tmux/git infrastructure.
-func newListModelForTest(t *testing.T) listModel {
-	t.Helper()
+func TestQuitPopup_NoActiveWorkspaces_AutoConfirms(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateDone}, IsActive: false, IsDirty: false},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{DangerBg: "9", DangerFg: "15"})
+
+	if !m.result.Confirmed {
+		t.Error("with no active workspaces, result should be auto-confirmed")
+	}
+}
+
+func TestQuitPopup_ActiveWorkspaces_ShowsConfirm(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{DangerBg: "9", DangerFg: "15"})
+
+	if m.step != quitConfirmingQuit {
+		t.Errorf("step = %v, want quitConfirmingQuit", m.step)
+	}
+}
+
+func TestQuitPopup_ConfirmQuit_NoKey_Cancels(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	qm := next.(quitPopupModel)
+
+	if qm.result.Confirmed {
+		t.Error("pressing n should cancel")
+	}
+}
+
+func TestQuitPopup_ConfirmQuit_EscKey_Cancels(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	qm := next.(quitPopupModel)
+
+	if qm.result.Confirmed {
+		t.Error("pressing esc should cancel")
+	}
+}
+
+func TestQuitPopup_ConfirmQuitYes_CleanActive_Quits(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	qm := next.(quitPopupModel)
+
+	if !qm.result.Confirmed {
+		t.Error("pressing y with clean active workspace should confirm quit")
+	}
+}
+
+func TestQuitPopup_ConfirmQuitYes_DirtyActive_EntersDirtyConfirm(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", Name: "My WS", State: state.StateRunning}, IsActive: true, IsDirty: true},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	qm := next.(quitPopupModel)
+
+	if qm.step != quitConfirmingDirty {
+		t.Errorf("step = %v, want quitConfirmingDirty", qm.step)
+	}
+	if len(qm.dirtyQueue) != 1 {
+		t.Errorf("dirtyQueue length = %d, want 1", len(qm.dirtyQueue))
+	}
+}
+
+func TestQuitPopup_DirtyConfirmNo_Cancels(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", Name: "WS", State: state.StateRunning}, IsActive: true, IsDirty: true},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+	// Advance to dirty confirm.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = next.(quitPopupModel)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	qm := next.(quitPopupModel)
+
+	if qm.result.Confirmed {
+		t.Error("pressing n in dirty confirm should cancel")
+	}
+}
+
+func TestQuitPopup_DirtyConfirmYes_LastInQueue_Quits(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", Name: "WS", State: state.StateRunning}, IsActive: true, IsDirty: true},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+	// Advance to dirty confirm.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = next.(quitPopupModel)
+
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	qm := next.(quitPopupModel)
+
+	if !qm.result.Confirmed {
+		t.Error("confirming last dirty workspace should result in confirmed quit")
+	}
+}
+
+func TestQuitPopup_DirtyConfirmYes_MoreInQueue_StaysInDirtyConfirm(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1", Name: "WS1", State: state.StateRunning}, IsActive: true, IsDirty: true},
+		{WS: &state.Workspace{ID: "ws-2", Name: "WS2", State: state.StateRunning}, IsActive: true, IsDirty: true},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+	// Advance to dirty confirm.
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = next.(quitPopupModel)
+
+	// Confirm first dirty workspace.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	qm := next.(quitPopupModel)
+
+	if qm.step != quitConfirmingDirty {
+		t.Errorf("step = %v, want quitConfirmingDirty", qm.step)
+	}
+	if len(qm.dirtyQueue) != 1 {
+		t.Errorf("dirtyQueue length = %d, want 1 after popping first", len(qm.dirtyQueue))
+	}
+	if qm.dirtyQueue[0].ID != "ws-2" {
+		t.Errorf("remaining dirty queue item ID = %q, want ws-2", qm.dirtyQueue[0].ID)
+	}
+}
+
+func TestQuitPopup_OtherKeysIgnored(t *testing.T) {
+	infos := []workspace.QuitInfo{
+		{WS: &state.Workspace{ID: "ws-1"}, IsActive: true},
+	}
+	m := newQuitPopupModel(infos, config.ThemeConfig{})
+
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	qm := next.(quitPopupModel)
+
+	if qm.step != quitConfirmingQuit {
+		t.Errorf("step changed unexpectedly to %v; expected quitConfirmingQuit", qm.step)
+	}
+	if qm.result.Confirmed {
+		t.Error("result should not be confirmed after pressing irrelevant key")
+	}
+}
+
+// TestQuitPopupDoneMsg_Confirmed tests that the sidebar handles a confirmed popup result.
+func TestQuitPopupDoneMsg_Confirmed(t *testing.T) {
 	dir := t.TempDir()
-
 	s := &state.State{
 		Project:    "testproject",
 		BarePath:   dir + "/.bare",
@@ -176,172 +355,48 @@ func newListModelForTest(t *testing.T) listModel {
 		Cfg:         config.DefaultConfig(),
 	}
 	_ = mgr.SaveState()
-	return newListModel(mgr)
-}
+	m := newListModel(mgr)
 
-func TestQuit_QKeyStartsAssessing(t *testing.T) {
-	m := newListModelForTest(t)
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitAssessing {
-		t.Errorf("after q: quitStep = %v, want quitAssessing", lm.quitStep)
-	}
-}
-
-func TestQuit_NoActiveWorkspacesSkipsConfirm(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitAssessing
-
-	// Inject assessed message with no active workspaces.
-	next, _ := m.Update(quitAssessedMsg{
+	next, _ := m.Update(quitPopupDoneMsg{
+		confirmed: true,
 		infos: []workspace.QuitInfo{
-			{WS: &state.Workspace{ID: "ws-1", State: state.StateDone}, IsActive: false, IsDirty: false},
+			{WS: &state.Workspace{ID: "ws-1"}, IsActive: true},
 		},
 	})
 	lm := next.(listModel)
 
-	// With no active workspaces, should skip confirmation and go straight to quit.
 	if !lm.shouldKillSession {
-		t.Error("shouldKillSession should be true when no active workspaces")
+		t.Error("shouldKillSession should be true when popup confirms quit")
 	}
 }
 
-func TestQuit_ActiveWorkspacesShowsConfirm(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitAssessing
+// TestQuitPopupDoneMsg_Canceled tests that the sidebar resumes normally on cancel.
+func TestQuitPopupDoneMsg_Canceled(t *testing.T) {
+	dir := t.TempDir()
+	s := &state.State{
+		Project:    "testproject",
+		BarePath:   dir + "/.bare",
+		Workspaces: make(map[string]*state.Workspace),
+	}
+	mgr := &workspace.Manager{
+		StatePath:   dir + "/state.json",
+		ProjectDir:  dir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+	}
+	_ = mgr.SaveState()
+	m := newListModel(mgr)
 
-	next, _ := m.Update(quitAssessedMsg{
-		infos: []workspace.QuitInfo{
-			{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
-		},
-	})
+	next, _ := m.Update(quitPopupDoneMsg{confirmed: false})
 	lm := next.(listModel)
 
-	if lm.quitStep != quitConfirmingQuit {
-		t.Errorf("quitStep = %v, want quitConfirmingQuit", lm.quitStep)
+	if lm.shouldKillSession {
+		t.Error("shouldKillSession should be false when popup is canceled")
 	}
 }
 
-func TestQuit_ConfirmQuitNoKey_BackToIdle(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitIdle {
-		t.Errorf("after n: quitStep = %v, want quitIdle", lm.quitStep)
-	}
-}
-
-func TestQuit_ConfirmQuitEscKey_BackToIdle(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitIdle {
-		t.Errorf("after esc: quitStep = %v, want quitIdle", lm.quitStep)
-	}
-}
-
-func TestQuit_ConfirmQuitYes_CleanActiveSkipsDirtyConfirm(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true, IsDirty: false},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	lm := next.(listModel)
-
-	// Clean active workspaces: no dirty confirm needed, should quit immediately.
-	if !lm.shouldKillSession {
-		t.Error("shouldKillSession should be true after confirming quit with clean active workspace")
-	}
-}
-
-func TestQuit_ConfirmQuitYes_DirtyActiveEntersDirtyConfirm(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1", Name: "My WS", State: state.StateRunning}, IsActive: true, IsDirty: true},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitConfirmingDirty {
-		t.Errorf("quitStep = %v, want quitConfirmingDirty", lm.quitStep)
-	}
-	if len(lm.dirtyQueue) != 1 {
-		t.Errorf("dirtyQueue length = %d, want 1", len(lm.dirtyQueue))
-	}
-}
-
-func TestQuit_DirtyConfirmNo_AbortsQuit(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingDirty
-	m.dirtyQueue = []*state.Workspace{
-		{ID: "ws-1", Name: "WS", State: state.StateRunning},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitIdle {
-		t.Errorf("after n in dirty confirm: quitStep = %v, want quitIdle", lm.quitStep)
-	}
-	if len(lm.dirtyQueue) != 0 {
-		t.Errorf("dirtyQueue not cleared after abort; len = %d", len(lm.dirtyQueue))
-	}
-}
-
-func TestQuit_DirtyConfirmYes_LastInQueue_Quits(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingDirty
-	m.dirtyQueue = []*state.Workspace{
-		{ID: "ws-1", Name: "WS", State: state.StateRunning},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	lm := next.(listModel)
-
-	if !lm.shouldKillSession {
-		t.Error("shouldKillSession should be true after confirming last dirty workspace")
-	}
-}
-
-func TestQuit_DirtyConfirmYes_MoreInQueue_StaysInDirtyConfirm(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingDirty
-	m.dirtyQueue = []*state.Workspace{
-		{ID: "ws-1", Name: "WS1", State: state.StateRunning},
-		{ID: "ws-2", Name: "WS2", State: state.StateRunning},
-	}
-
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitConfirmingDirty {
-		t.Errorf("quitStep = %v, want quitConfirmingDirty", lm.quitStep)
-	}
-	if len(lm.dirtyQueue) != 1 {
-		t.Errorf("dirtyQueue length = %d, want 1 after popping first", len(lm.dirtyQueue))
-	}
-	if lm.dirtyQueue[0].ID != "ws-2" {
-		t.Errorf("remaining dirty queue item ID = %q, want ws-2", lm.dirtyQueue[0].ID)
-	}
-}
+// ----- Installer -----
 
 // TestInstallerCmdFor verifies that the installer command wraps the script path
 // in a bash -c '...' invocation with single quotes so that ~ is NOT expanded by
@@ -364,42 +419,5 @@ func TestInstallerCmdFor(t *testing.T) {
 	after := strings.TrimPrefix(got, wantPrefix)
 	if strings.HasPrefix(after, "bash ~/") {
 		t.Errorf("installerCmdFor has bare tilde that would be host-expanded: %q", got)
-	}
-}
-
-func TestQuit_SKeyIgnoredDuringQuit(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1", State: state.StateRunning}, IsActive: true},
-	}
-
-	// Pressing 's' (setup agents) should be suppressed during quit flow.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-	lm := next.(listModel)
-
-	if lm.quitStep != quitConfirmingQuit {
-		t.Errorf("quitStep changed unexpectedly to %v; expected quitConfirmingQuit", lm.quitStep)
-	}
-}
-
-func TestQuit_OtherKeysIgnoredDuringQuit(t *testing.T) {
-	m := newListModelForTest(t)
-	m.quitStep = quitConfirmingQuit
-	m.quitInfos = []workspace.QuitInfo{
-		{WS: &state.Workspace{ID: "ws-1"}, IsActive: true},
-	}
-
-	// Pressing 'd' (delete) should be suppressed during quit flow.
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
-	lm := next.(listModel)
-
-	// quitStep should remain unchanged.
-	if lm.quitStep != quitConfirmingQuit {
-		t.Errorf("quitStep changed unexpectedly to %v; expected quitConfirmingQuit", lm.quitStep)
-	}
-	// confirming should not be set.
-	if lm.confirming {
-		t.Error("confirming should not be set during quit flow")
 	}
 }

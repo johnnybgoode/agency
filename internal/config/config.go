@@ -48,9 +48,16 @@ type WorktreeConfig struct {
 	AutoPush     *bool  `toml:"auto_push,omitempty"`
 }
 
+// ThemeConfig holds color settings for TUI elements.
+type ThemeConfig struct {
+	DangerBg string `toml:"danger_bg"` // ANSI color for danger modal background (default "9")
+	DangerFg string `toml:"danger_fg"` // ANSI color for danger modal foreground (default "15")
+}
+
 // TUIConfig holds TUI-specific configuration.
 type TUIConfig struct {
-	SidebarWidth int `toml:"sidebar_width"`
+	SidebarWidth int         `toml:"sidebar_width"`
+	Theme        ThemeConfig `toml:"theme"`
 }
 
 // DefaultSidebarWidth is the default sidebar width as a percentage of
@@ -74,6 +81,10 @@ func DefaultConfig() *Config {
 		},
 		TUI: TUIConfig{
 			SidebarWidth: DefaultSidebarWidth,
+			Theme: ThemeConfig{
+				DangerBg: "9",
+				DangerFg: "15",
+			},
 		},
 	}
 }

@@ -56,6 +56,12 @@ func Merge(base, override *Config) *Config {
 	if override.TUI.SidebarWidth != 0 {
 		result.TUI.SidebarWidth = override.TUI.SidebarWidth
 	}
+	if override.TUI.Theme.DangerBg != "" {
+		result.TUI.Theme.DangerBg = override.TUI.Theme.DangerBg
+	}
+	if override.TUI.Theme.DangerFg != "" {
+		result.TUI.Theme.DangerFg = override.TUI.Theme.DangerFg
+	}
 
 	return &result
 }

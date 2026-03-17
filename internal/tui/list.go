@@ -89,6 +89,7 @@ type listModel struct {
 	shouldKillSession bool
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
 	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
+	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -104,6 +105,7 @@ func newListModel(mgr *workspace.Manager) listModel {
 		agencyBin:    bin,
 		popup:        mgr.Tmux,
 		installerCmd: installerCmdFor,
+		sleepFn:      time.Sleep,
 	}
 }
 
@@ -224,6 +226,7 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupWidth = 80
 	const popupHeight = 30
 	popup := m.popup
+	sleepFn := m.sleepFn
 	installerCmd := m.installerCmd(ws.SandboxID)
 	paneID := ws.PaneID
 	agentsDir := filepath.Join(ws.WorktreePath, ".claude", "agents")
@@ -238,6 +241,11 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 			for range 3 {
 				_ = popup.SendRawKeyToPane(paneID, "Escape")
 			}
+			// Wait for the terminal to finish processing the escape sequences.
+			// Without this pause, the leading "/r" of "/reload-plugins" is
+			// consumed as the tail of the last escape sequence, leaving only
+			// "eload-plugins" in the Claude input buffer.
+			sleepFn(100 * time.Millisecond)
 			_ = popup.SendKeysToPane(paneID, "/reload-plugins")
 			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}

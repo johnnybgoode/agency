@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/johnnybgoode/agency/internal/state"
@@ -111,11 +112,13 @@ func (f *fakePopupRunner) SendRawKeyToPane(paneID, key string) error {
 }
 
 // newInstallerListModel constructs a listModel wired for installer tests.
+// sleepFn is set to a no-op so tests do not block on the escape-sequence delay.
 func newInstallerListModel(t *testing.T, runner *fakePopupRunner, cmdFn func(string) string, ws *state.Workspace) listModel {
 	t.Helper()
 	m := newListModelForTest(t)
 	m.popup = runner
 	m.installerCmd = cmdFn
+	m.sleepFn = func(time.Duration) {} // no-op in tests
 	m.workspaces = []*state.Workspace{ws}
 	return m
 }
@@ -165,6 +168,86 @@ func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {
 		if k.key == "C-d" {
 			t.Errorf("C-d should not be sent when no new agents were installed; sentKeys = %v", keys)
 		}
+	}
+}
+
+// TestInstall_SleepsAfterEscBeforeReload verifies that a short delay is applied
+// after the Escape keys and before /reload-plugins. Without the delay the last
+// Escape's escape-sequence processing consumes the leading "/r" of the command,
+// leaving only "eload-plugins" in the Claude input buffer.
+func TestInstall_SleepsAfterEscBeforeReload(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%88"
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-sleep",
+		State:        state.StateRunning,
+		SandboxID:    "container-sleep",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+
+	// Replace sleepFn with a recording version that captures how many keys
+	// have been sent at the moment the sleep fires.
+	var sleepDuration time.Duration
+	var keysAtSleep []sentKey
+	m.sleepFn = func(d time.Duration) {
+		sleepDuration = d
+		runner.mu.Lock()
+		keysAtSleep = append([]sentKey(nil), runner.sentKeys...)
+		runner.mu.Unlock()
+	}
+
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	runner.mu.Lock()
+	allKeys := runner.sentKeys
+	runner.mu.Unlock()
+
+	// Sleep must have been called.
+	if sleepDuration == 0 {
+		t.Fatal("sleepFn was not called; expected a delay before /reload-plugins")
+	}
+	// Duration should be at least 100ms.
+	if sleepDuration < 100*time.Millisecond {
+		t.Errorf("sleep duration %v is less than 100ms", sleepDuration)
+	}
+	// At the moment of sleep, all 3 Escape keys must already be sent…
+	escCount := 0
+	for _, k := range keysAtSleep {
+		if k.paneID == paneID && k.key == "Escape" {
+			escCount++
+		}
+	}
+	if escCount < 3 {
+		t.Errorf("sleep fired after only %d Escape(s), want ≥3; keys at sleep = %v", escCount, keysAtSleep)
+	}
+	// …and /reload-plugins must NOT yet be in the sent keys.
+	for _, k := range keysAtSleep {
+		if k.key == "/reload-plugins" {
+			t.Errorf("sleep fired after /reload-plugins was already sent; keys at sleep = %v", keysAtSleep)
+		}
+	}
+	// After cmd() completes, /reload-plugins must appear.
+	found := false
+	for _, k := range allKeys {
+		if k.key == "/reload-plugins" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("/reload-plugins not sent; allKeys = %v", allKeys)
 	}
 }
 

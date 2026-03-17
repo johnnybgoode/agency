@@ -399,7 +399,7 @@ func TestQuitPopupDoneMsg_Canceled(t *testing.T) {
 // ----- Cursor follows active workspace -----
 
 func TestCursorFollowsActive_OnTick(t *testing.T) {
-	// Simulate: 3 workspaces, cursor at 0, active is the 3rd workspace.
+	// Simulate: 3 workspaces, cursor at 0, active changes to ws-3.
 	// After a tick reloads state, cursor should move to the active workspace.
 	m := newListModelForTest(t)
 
@@ -413,7 +413,8 @@ func TestCursorFollowsActive_OnTick(t *testing.T) {
 	_ = m.manager.SaveState()
 
 	m.workspaces = m.manager.List()
-	m.cursor = 0 // cursor stuck at first item
+	m.cursor = 0        // cursor stuck at first item
+	m.lastActiveID = "" // active changed from nothing to ws-3
 
 	// Simulate tick: reload state from disk.
 	next, _ := m.Update(tickMsg{})
@@ -499,6 +500,51 @@ func TestCursorFollowsActive_OnWorkspaceCreated(t *testing.T) {
 	}
 	if lm.cursor != activeIdx {
 		t.Errorf("cursor = %d, want %d (index of active workspace ws-2)", lm.cursor, activeIdx)
+	}
+}
+
+func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
+	// After the cursor syncs to the active workspace, the user moves it
+	// manually. A subsequent tick (with the same active ID) must NOT snap
+	// the cursor back.
+	m := newListModelForTest(t)
+
+	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws2 := &state.Workspace{ID: "ws-2", Name: "second", State: state.StateRunning, Branch: "b2"}
+	ws3 := &state.Workspace{ID: "ws-3", Name: "third", State: state.StateRunning, Branch: "b3"}
+	m.manager.State.Workspaces = map[string]*state.Workspace{
+		"ws-1": ws1, "ws-2": ws2, "ws-3": ws3,
+	}
+	m.manager.State.ActiveWorkspaceID = "ws-3"
+	_ = m.manager.SaveState()
+
+	m.workspaces = m.manager.List()
+	m.cursor = 0
+
+	// First tick: cursor syncs to active workspace.
+	next, _ := m.Update(tickMsg{})
+	lm := next.(listModel)
+
+	activeIdx := -1
+	for i, ws := range lm.workspaces {
+		if ws.ID == "ws-3" {
+			activeIdx = i
+			break
+		}
+	}
+	if lm.cursor != activeIdx {
+		t.Fatalf("initial sync failed: cursor = %d, want %d", lm.cursor, activeIdx)
+	}
+
+	// User moves cursor up manually.
+	lm.cursor = 0
+
+	// Second tick with same active — cursor must stay where the user put it.
+	next, _ = lm.Update(tickMsg{})
+	lm = next.(listModel)
+
+	if lm.cursor != 0 {
+		t.Errorf("cursor = %d after second tick, want 0 (user's manual position)", lm.cursor)
 	}
 }
 

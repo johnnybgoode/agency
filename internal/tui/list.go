@@ -93,6 +93,7 @@ type listModel struct {
 	agencyBin         string               // absolute path to the agency binary for popup invocation
 	quitInfos         []workspace.QuitInfo // populated by popup result for quit cleanup
 	shouldKillSession bool
+	lastActiveID      string                          // tracks active workspace ID to detect changes
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
 	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
@@ -108,6 +109,7 @@ func newListModel(mgr *workspace.Manager) listModel {
 		manager:      mgr,
 		workspaces:   mgr.List(),
 		removing:     make(map[string]bool),
+		lastActiveID: mgr.State.ActiveWorkspaceID,
 		agencyBin:    bin,
 		popup:        mgr.Tmux,
 		installerCmd: installerCmdFor,
@@ -485,7 +487,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
-				m = m.syncCursorToActive()
+				if m.manager.State.ActiveWorkspaceID != m.lastActiveID {
+					m = m.syncCursorToActive()
+					m.lastActiveID = m.manager.State.ActiveWorkspaceID
+				}
 				if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 					m.cursor = len(m.workspaces) - 1
 				}
@@ -515,6 +520,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 		}
 		m = m.syncCursorToActive()
+		m.lastActiveID = m.manager.State.ActiveWorkspaceID
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}
@@ -533,6 +539,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = nil
 		}
 		m = m.syncCursorToActive()
+		m.lastActiveID = m.manager.State.ActiveWorkspaceID
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}

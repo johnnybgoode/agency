@@ -229,7 +229,7 @@ The orchestrator persists workspace state to `<project-root>/.agency/state.json`
       "state": "running",
       "branch": "agent/fix-login-bug",
       "worktree_path": "/home/user/my-project/my-project-fix-login-bug",
-      "sandbox_id": "claude-sb-my-project-fix-login-bug",
+      "sandbox_id": "agency-sb-my-project-fix-login-bug",
       "tmux_window": "@5",
       "created_at": "2026-03-11T19:00:00Z",
       "updated_at": "2026-03-11T19:45:00Z",

@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/johnnybgoode/agency/internal/agencyimage"
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/sandbox"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/templates"
 	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
@@ -154,7 +154,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 
 	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
 		Image:         cfg.Sandbox.Image,
-		Name:          "claude-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
+		Name:          "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
 		WorktreeMount: ws.WorktreePath,
 		ConfigMount:   configMount,
 		Env:           env,
@@ -622,7 +622,7 @@ func (m *Manager) reconcileWorkspaces(res *reconcileResult, windowSet, container
 // substring --filter does not accidentally match containers belonging to a
 // project whose name starts with the same characters.
 func (m *Manager) ContainerPrefix() string {
-	return "claude-sb-" + m.ProjectName + "-"
+	return "agency-sb-" + m.ProjectName + "-"
 }
 
 // SidebarWidthPercent returns the configured sidebar width percentage.
@@ -834,7 +834,7 @@ func (m *Manager) List() []*state.Workspace {
 
 // dockerBuildContext returns the fs.FS to use as the Docker build context when
 // building the sandbox image. The embedded build context (Dockerfile +
-// docker-entrypoint.sh compiled into the binary) is the default, so the image
+// entrypoint.sh compiled into the binary) is the default, so the image
 // can be built on any machine with Docker — no local copy of the agency source
 // is required. An on-disk override is honored when dockerfile_dir is set in
 // config, allowing custom images.
@@ -846,7 +846,11 @@ func dockerBuildContext(configuredDir string) fs.FS {
 		}
 		slog.Warn("configured dockerfile_dir has no Dockerfile, falling back to embedded context", "dir", configuredDir)
 	}
-	return agencyimage.BuildContextFS
+	sub, err := templates.Sub("docker")
+	if err != nil {
+		panic("embedded docker template missing: " + err.Error())
+	}
+	return sub
 }
 
 // SaveState persists current state to disk, updating the PID field first.

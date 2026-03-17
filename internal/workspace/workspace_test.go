@@ -877,13 +877,13 @@ func TestContainerPrefix_DoesNotMatchSimilarProjectName(t *testing.T) {
 	prefix := m.ContainerPrefix()
 
 	// A container from project "testprojectextended" must NOT contain our prefix.
-	other := "claude-sb-testprojectextended-feat-ws-12345678"
+	other := "agency-sb-testprojectextended-feat-ws-12345678"
 	if strings.Contains(other, prefix) {
 		t.Errorf("prefix %q incorrectly matches container from another project: %q", prefix, other)
 	}
 
 	// Our own containers must match.
-	own := "claude-sb-testproject-feat-ws-12345678"
+	own := "agency-sb-testproject-feat-ws-12345678"
 	if !strings.Contains(own, prefix) {
 		t.Errorf("prefix %q should match own container %q", prefix, own)
 	}

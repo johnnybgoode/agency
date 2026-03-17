@@ -134,6 +134,82 @@ func runSKey(m listModel) (listModel, tea.Cmd) {
 
 // --- Tests ---
 
+// TestInstall_SleepsBetweenEscKeys verifies that a delay is applied between
+// each Escape keypress so the terminal has time to process each one before
+// the next arrives. Without the inter-Escape delay the keys pile up and the
+// sequence is still interpreted as a single multi-byte escape sequence.
+func TestInstall_SleepsBetweenEscKeys(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%91"
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-escdelay",
+		State:        state.StateRunning,
+		SandboxID:    "container-escdelay",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+
+	// Record every call to sleepFn along with a snapshot of sentKeys at that
+	// moment so we can verify each Escape is followed by a sleep.
+	type sleepCall struct {
+		d        time.Duration
+		keysSeen []sentKey
+	}
+	var sleepCalls []sleepCall
+	m.sleepFn = func(d time.Duration) {
+		runner.mu.Lock()
+		snap := append([]sentKey(nil), runner.sentKeys...)
+		runner.mu.Unlock()
+		sleepCalls = append(sleepCalls, sleepCall{d: d, keysSeen: snap})
+	}
+
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	// Count how many Escape keys were sent in total.
+	escCount := 0
+	for _, k := range runner.sentKeys {
+		if k.paneID == paneID && k.key == "Escape" {
+			escCount++
+		}
+	}
+	if escCount < 3 {
+		t.Fatalf("expected at least 3 Escape keys, got %d", escCount)
+	}
+
+	// There must be at least (escCount) sleep calls: one after each Escape
+	// plus the existing post-Escape burst delay.
+	// We specifically want at least (escCount - 1) inter-Escape sleeps of ≥50ms.
+	interEscSleeps := 0
+	for _, sc := range sleepCalls {
+		// An inter-Escape sleep is one that fires when fewer than escCount
+		// Escape keys have been sent yet (i.e. between the Escapes).
+		escSeen := 0
+		for _, k := range sc.keysSeen {
+			if k.paneID == paneID && k.key == "Escape" {
+				escSeen++
+			}
+		}
+		if escSeen < escCount && sc.d >= 50*time.Millisecond {
+			interEscSleeps++
+		}
+	}
+	if interEscSleeps < escCount-1 {
+		t.Errorf("expected at least %d inter-Escape sleep(s) of ≥50ms, got %d; sleepCalls = %v",
+			escCount-1, interEscSleeps, sleepCalls)
+	}
+}
+
 // TestInstall_NoCd_WhenNoNewAgents verifies that C-d is NOT sent when the
 // popup closes without adding any new agent files to the agents directory.
 func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {

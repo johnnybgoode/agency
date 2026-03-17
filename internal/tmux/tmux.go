@@ -197,6 +197,19 @@ func (c *Client) ResizePane(paneID string, width int) error {
 	return err
 }
 
+// WindowWidth returns the width in columns of the given window.
+func (c *Client) WindowWidth(windowID string) (int, error) {
+	out, err := c.run("display-message", "-p", "-t", c.SessionName+":"+windowID, "#{window_width}")
+	if err != nil {
+		return 0, err
+	}
+	var w int
+	if _, err := fmt.Sscanf(out, "%d", &w); err != nil {
+		return 0, fmt.Errorf("parsing window width %q: %w", out, err)
+	}
+	return w, nil
+}
+
 // DisplayPopup runs cmd in a tmux display-popup overlay.
 // The popup is sized to width columns × height rows.
 // If x > 0 it is passed as the -x left-edge offset of the popup.

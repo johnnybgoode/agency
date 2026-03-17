@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/state"
 	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/workspace"
@@ -98,6 +99,61 @@ func TestFriendlyError(t *testing.T) {
 	}
 }
 
+// ----- sidebarWidth -----
+
+func TestSidebarWidth_ZeroState(t *testing.T) {
+	tests := []struct {
+		name      string
+		termWidth int
+		cfgPct    int
+		want      int
+	}{
+		{"15 pct of 200 clamped to 30", 200, 15, 30},
+		{"15 pct of 400 clamped to max 50", 400, 15, 50},
+		{"narrow terminal clamps to min 25", 80, 10, 25},
+		{"25 pct of 200 = 50 (max)", 200, 25, 50},
+		{"30 pct of 200 = 60 clamped to 50", 200, 30, 50},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newListModelForTest(t)
+			m.manager.Cfg.TUI.SidebarWidth = tt.cfgPct
+			m.width = tt.termWidth
+			// No workspaces → zero state.
+
+			got := m.sidebarWidth()
+			if got != tt.want {
+				t.Errorf("sidebarWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSidebarWidth_SidebarMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		paneWidth int
+		want      int
+	}{
+		{"fills pane at 40 cols", 40, 40},
+		{"fills pane at 60 cols", 60, 60},
+		{"narrow pane clamps to min 25", 15, 25},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newListModelForTest(t)
+			m.width = tt.paneWidth
+			// Add a workspace so we're in sidebar mode.
+			m.workspaces = []*state.Workspace{{ID: "ws-1", State: state.StateRunning}}
+
+			got := m.sidebarWidth()
+			if got != tt.want {
+				t.Errorf("sidebarWidth() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // ----- Quit state machine -----
 
 // newListModelForTest creates a listModel backed by a minimal test manager.
@@ -117,6 +173,7 @@ func newListModelForTest(t *testing.T) listModel {
 		ProjectName: "testproject",
 		State:       s,
 		Tmux:        tmux.New("agency-testproject"),
+		Cfg:         config.DefaultConfig(),
 	}
 	_ = mgr.SaveState()
 	return newListModel(mgr)

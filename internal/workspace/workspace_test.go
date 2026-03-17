@@ -1417,3 +1417,53 @@ func TestCleanupActiveWorkspaceID_DeadPaneClearsActive(t *testing.T) {
 		t.Errorf("WorkspacePaneID should be cleared; got %q", m.State.WorkspacePaneID)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SidebarWidthPercent / SidebarColumns
+// ---------------------------------------------------------------------------
+
+func TestSidebarWidthPercent(t *testing.T) {
+	tests := []struct {
+		name     string
+		cfgWidth int
+		wantPct  int
+	}{
+		{"default config", 0, config.DefaultSidebarWidth},
+		{"negative falls back to default", -5, config.DefaultSidebarWidth},
+		{"custom percentage", 20, 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager(t)
+			m.Cfg.TUI.SidebarWidth = tt.cfgWidth
+			if got := m.SidebarWidthPercent(); got != tt.wantPct {
+				t.Errorf("SidebarWidthPercent() = %d, want %d", got, tt.wantPct)
+			}
+		})
+	}
+}
+
+func TestSidebarColumns(t *testing.T) {
+	tests := []struct {
+		name      string
+		cfgWidth  int
+		termWidth int
+		wantCols  int
+	}{
+		{"15 pct of 200 cols", 15, 200, 30},
+		{"15 pct of 100 cols", 15, 100, MinSidebarColumns},
+		{"25 pct of 200 cols", 25, 200, 50},
+		{"narrow terminal clamps to min", 15, 80, MinSidebarColumns},
+		{"very narrow terminal", 10, 50, MinSidebarColumns},
+		{"exact min boundary", 25, 100, MinSidebarColumns},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newTestManager(t)
+			m.Cfg.TUI.SidebarWidth = tt.cfgWidth
+			if got := m.SidebarColumns(tt.termWidth); got != tt.wantCols {
+				t.Errorf("SidebarColumns(%d) = %d, want %d", tt.termWidth, got, tt.wantCols)
+			}
+		})
+	}
+}

@@ -53,9 +53,9 @@ type TUIConfig struct {
 	SidebarWidth int `toml:"sidebar_width"`
 }
 
-// DefaultSidebarWidth is the default sidebar width in columns, used as a
-// fallback when the configuration does not specify a value.
-const DefaultSidebarWidth = 24
+// DefaultSidebarWidth is the default sidebar width as a percentage of
+// terminal width. User-provided values also represent percentages.
+const DefaultSidebarWidth = 15
 
 // DefaultConfig returns a Config populated with sensible defaults.
 func DefaultConfig() *Config {

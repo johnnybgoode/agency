@@ -40,6 +40,7 @@ type CreateOpts struct {
 	CapAdd          []string
 	Memory          string // e.g. "4g" — passed as --memory to docker create
 	CPUs            int    // e.g. 2 — passed as --cpus to docker create
+	Network         string // e.g. "none", "bridge" — passed as --network to docker create
 }
 
 // ContainerInfo is a summary of a running or stopped container.
@@ -159,6 +160,9 @@ func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) 
 	}
 	if opts.CPUs > 0 {
 		args = append(args, "--cpus", strconv.Itoa(opts.CPUs))
+	}
+	if opts.Network != "" {
+		args = append(args, "--network", opts.Network)
 	}
 
 	if opts.EnvFile != "" {

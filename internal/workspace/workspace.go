@@ -207,6 +207,7 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 		EnvFile:         envFilePath,
 		Memory:          cfg.Sandbox.Memory,
 		CPUs:            cfg.Sandbox.CPUs,
+		Network:         cfg.Sandbox.Network,
 	})
 	if err != nil {
 		return fmt.Errorf("creating sandbox: %w", err)

@@ -33,6 +33,7 @@ type SandboxConfig struct {
 	Image         string `toml:"image"`
 	Memory        string `toml:"memory"`
 	CPUs          int    `toml:"cpus"`
+	Network       string `toml:"network"`
 	DockerfileDir string `toml:"dockerfile_dir"`
 }
 

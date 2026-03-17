@@ -35,6 +35,9 @@ func Merge(base, override *Config) *Config {
 	if override.Sandbox.CPUs != 0 {
 		result.Sandbox.CPUs = override.Sandbox.CPUs
 	}
+	if override.Sandbox.Network != "" {
+		result.Sandbox.Network = override.Sandbox.Network
+	}
 	if override.Sandbox.DockerfileDir != "" {
 		result.Sandbox.DockerfileDir = override.Sandbox.DockerfileDir
 	}

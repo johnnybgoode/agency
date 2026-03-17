@@ -168,6 +168,58 @@ func TestInstall_NoCd_WhenNoNewAgents(t *testing.T) {
 	}
 }
 
+// TestInstall_SendsEscBeforeReloadPlugins verifies that Escape is sent before
+// /reload-plugins to clear any active command mode (e.g. /agents dialog) that
+// may be open in the Claude session when the installer popup closes.
+func TestInstall_SendsEscBeforeReloadPlugins(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%55"
+
+	runner := &fakePopupRunner{}
+	ws := &state.Workspace{
+		ID:           "ws-esc",
+		State:        state.StateRunning,
+		SandboxID:    "container-esc",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	// Find the index of the first Escape, and the index of /reload-plugins.
+	escIdx := -1
+	reloadIdx := -1
+	for i, k := range keys {
+		if k.paneID == paneID && k.key == "Escape" && escIdx < 0 {
+			escIdx = i
+		}
+		if k.paneID == paneID && k.key == "/reload-plugins" {
+			reloadIdx = i
+		}
+	}
+	if escIdx < 0 {
+		t.Errorf("Escape not sent before /reload-plugins; sentKeys = %v", keys)
+	}
+	if reloadIdx < 0 {
+		t.Errorf("/reload-plugins not sent; sentKeys = %v", keys)
+	}
+	if escIdx >= 0 && reloadIdx >= 0 && escIdx >= reloadIdx {
+		t.Errorf("Escape (idx %d) must come before /reload-plugins (idx %d); sentKeys = %v", escIdx, reloadIdx, keys)
+	}
+}
+
 // TestInstall_SendsReloadPlugins_BeforeCd verifies that /reload-plugins is sent
 // to the workspace pane before C-d so the running Claude session picks up the
 // new agents before exiting.

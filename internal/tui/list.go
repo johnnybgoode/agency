@@ -231,6 +231,13 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 		before := agentFiles(agentsDir)
 		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
 		if paneID != "" && hasNewAgents(agentsDir, before) {
+			// Send Escape a few times to clear any open command dialog (e.g.
+			// /agents) before issuing /reload-plugins. Without this, the slash
+			// command would be appended to whatever is already in the input
+			// buffer and fail silently.
+			for range 3 {
+				_ = popup.SendRawKeyToPane(paneID, "Escape")
+			}
 			_ = popup.SendKeysToPane(paneID, "/reload-plugins")
 			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}

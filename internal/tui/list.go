@@ -60,6 +60,13 @@ type quitAssessedMsg struct {
 	err   error
 }
 
+// popupRunner abstracts the tmux operations needed by installAgentsCmd.
+// The default implementation delegates to *tmux.Client; tests inject a fake.
+type popupRunner interface {
+	DisplayPopup(cmd string, width, height, x int) error
+	SendRawKeyToPane(paneID, key string) error
+}
+
 // --- Model ---
 
 // listModel is the top-level Bubble Tea model for the sidebar workspace list view.
@@ -78,6 +85,8 @@ type listModel struct {
 	quitInfos         []workspace.QuitInfo
 	dirtyQueue        []*state.Workspace // ACTIVE+DIRTY workspaces awaiting per-ws confirm
 	shouldKillSession bool
+	popup             popupRunner                     // defaults to manager.Tmux; override in tests
+	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -87,10 +96,12 @@ func newListModel(mgr *workspace.Manager) listModel {
 		bin = exe
 	}
 	return listModel{
-		manager:    mgr,
-		workspaces: mgr.List(),
-		removing:   make(map[string]bool),
-		agencyBin:  bin,
+		manager:      mgr,
+		workspaces:   mgr.List(),
+		removing:     make(map[string]bool),
+		agencyBin:    bin,
+		popup:        mgr.Tmux,
+		installerCmd: installerCmdFor,
 	}
 }
 
@@ -183,15 +194,13 @@ func installerCmdFor(containerID string) string {
 func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupWidth = 80
 	const popupHeight = 30
-	tmuxClient := m.manager.Tmux
-	installerCmd := installerCmdFor(ws.SandboxID)
+	popup := m.popup
+	installerCmd := m.installerCmd(ws.SandboxID)
 	paneID := ws.PaneID
 	return func() tea.Msg {
-		_ = tmuxClient.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
-		// Send C-d (EOF) to exit the current Claude session in the workspace pane.
-		// The trapCmd loop then restarts Claude with --continue.
+		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
 		if paneID != "" {
-			_ = tmuxClient.SendRawKeyToPane(paneID, "C-d")
+			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}
 		return tickMsg{}
 	}

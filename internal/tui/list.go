@@ -64,6 +64,7 @@ type quitAssessedMsg struct {
 // popupRunner abstracts the tmux operations needed by installAgentsCmd.
 // The default implementation delegates to *tmux.Client; tests inject a fake.
 type popupRunner interface {
+	CapturePane(paneID string) (string, error)
 	DisplayPopup(cmd string, width, height, x int) error
 	SendKeysToPane(paneID, keys string) error
 	SendRawKeyToPane(paneID, key string) error
@@ -189,6 +190,53 @@ func installerCmdFor(containerID string) string {
 	return fmt.Sprintf("docker exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", containerID)
 }
 
+// isAtPrompt reports whether the pane content looks like Claude Code is sitting
+// at its idle input prompt — typically just a ">" on the last non-empty line.
+// This is used to decide whether Escape keys are needed to dismiss a sub-command
+// dialog before injecting text. Sending unnecessary Escapes at the idle prompt
+// would trigger Claude's /rewind shortcut (double-tap Esc).
+//
+// The detection is intentionally conservative: any non-trivial content on the
+// last line means "not at prompt", so we err on the side of sending Escape
+// rather than accidentally skipping it when a dialog is open.
+func isAtPrompt(paneContent string) bool {
+	lines := strings.Split(paneContent, "\n")
+	// Walk backwards to find the last non-empty line.
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimRight(lines[i], " \t")
+		if line == "" {
+			continue
+		}
+		// Claude Code's idle prompt is a single ">" possibly followed by
+		// whitespace (the cursor position). Some terminals append a space
+		// or two after the ">".
+		return line == ">" || line == "> "
+	}
+	// Completely empty pane — treat as idle.
+	return true
+}
+
+// clearPaneInput uses tmux capture-pane to check whether the pane shows Claude's
+// idle prompt. If not idle it sends a single Escape, waits for the terminal to
+// process it, and rechecks — up to maxEsc attempts. This avoids sending
+// unnecessary Escapes that would trigger Claude's /rewind shortcut.
+//
+// This function is intentionally generalized: any future code that needs to
+// restore an agent to its prompt before injecting keystrokes can call it.
+func clearPaneInput(popup popupRunner, sleepFn func(time.Duration), paneID string) {
+	const maxEsc = 3
+	for range maxEsc {
+		content, err := popup.CapturePane(paneID)
+		if err == nil && isAtPrompt(content) {
+			return // already at prompt, no Escape needed
+		}
+		sleepFn(50 * time.Millisecond)
+		_ = popup.SendRawKeyToPane(paneID, "Escape")
+	}
+	// Final wait for the last Escape to be processed.
+	sleepFn(100 * time.Millisecond)
+}
+
 // agentFiles returns the set of .md filenames currently present in dir.
 // Returns an empty map if the directory does not exist or cannot be read.
 func agentFiles(dir string) map[string]struct{} {
@@ -234,19 +282,14 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 		before := agentFiles(agentsDir)
 		_ = popup.DisplayPopup(installerCmd, popupWidth, popupHeight, 0)
 		if paneID != "" && hasNewAgents(agentsDir, before) {
-			// Send Escape a few times to clear any open command dialog (e.g.
-			// /agents) before issuing /reload-plugins. Without this, the slash
-			// command would be appended to whatever is already in the input
-			// buffer and fail silently.
-			for range 3 {
-				sleepFn(50 * time.Millisecond)
-				_ = popup.SendRawKeyToPane(paneID, "Escape")
-			}
-			// Wait for the terminal to finish processing the escape sequences.
-			// Without this pause, the leading "/r" of "/reload-plugins" is
-			// consumed as the tail of the last escape sequence, leaving only
-			// "eload-plugins" in the Claude input buffer.
-			sleepFn(100 * time.Millisecond)
+			// Clear any open command dialog before injecting /reload-plugins.
+			// We use tmux capture-pane to detect whether the Claude session is
+			// already at its idle prompt; if it is, no Escape keys are needed.
+			// Sending unnecessary Escapes would trigger Claude's /rewind
+			// shortcut (double-tap Esc). We try up to 3 Escape rounds,
+			// checking the pane each time, and stop as soon as the prompt
+			// appears idle.
+			clearPaneInput(popup, sleepFn, paneID)
 			_ = popup.SendKeysToPane(paneID, "/reload-plugins")
 			_ = popup.SendRawKeyToPane(paneID, "C-d")
 		}

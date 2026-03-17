@@ -65,12 +65,28 @@ type sentKey struct {
 }
 
 type fakePopupRunner struct {
-	mu       sync.Mutex
-	popupCmd string
-	sentKeys []sentKey
-	runErr   error
-	keyErr   error
-	stdin    io.Reader // piped to the popup process; nil means strings.NewReader("\n")
+	mu           sync.Mutex
+	popupCmd     string
+	sentKeys     []sentKey
+	runErr       error
+	keyErr       error
+	stdin        io.Reader // piped to the popup process; nil means strings.NewReader("\n")
+	paneContents []string  // successive CapturePane return values; cycled in order
+	captureIdx   int       // next index into paneContents
+}
+
+func (f *fakePopupRunner) CapturePane(_ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.paneContents) == 0 {
+		// Default: looks like an idle prompt.
+		return "> ", nil
+	}
+	content := f.paneContents[f.captureIdx]
+	if f.captureIdx < len(f.paneContents)-1 {
+		f.captureIdx++
+	}
+	return content, nil
 }
 
 func (f *fakePopupRunner) DisplayPopup(cmd string, width, height, x int) error {
@@ -134,6 +150,153 @@ func runSKey(m listModel) (listModel, tea.Cmd) {
 
 // --- Tests ---
 
+// ---- isAtPrompt tests ----
+
+func TestIsAtPrompt(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"bare prompt", "> ", true},
+		{"bare prompt no trailing space", ">", true},
+		{"prompt with trailing blanks", ">   \n\n", true},
+		{"empty pane", "", true},
+		{"only blank lines", "\n\n\n", true},
+		{"slash command in progress", "/agents\n", false},
+		{"dialog content", "Select an agent:\n  [x] foo\n  [ ] bar\n", false},
+		{"typed text", "> hello world", false},
+		{"prompt then typed text", "some output\n> fix the bug", false},
+		{"rewind prompt", "Tip: Double-tap esc to rewind", false},
+		{"output then prompt", "Some previous output\n\n> ", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAtPrompt(tt.content)
+			if got != tt.want {
+				t.Errorf("isAtPrompt(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---- clearPaneInput tests ----
+
+func TestClearPaneInput_AlreadyAtPrompt_NoEscSent(t *testing.T) {
+	runner := &fakePopupRunner{
+		paneContents: []string{"> "},
+	}
+	clearPaneInput(runner, func(time.Duration) {}, "%1")
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	for _, k := range keys {
+		if k.key == "Escape" {
+			t.Errorf("Escape sent when pane was already at prompt; sentKeys = %v", keys)
+		}
+	}
+}
+
+func TestClearPaneInput_OneEscNeeded(t *testing.T) {
+	// First capture: in a dialog. Second capture: at prompt.
+	runner := &fakePopupRunner{
+		paneContents: []string{"/agents\n  [x] foo", "> "},
+	}
+	clearPaneInput(runner, func(time.Duration) {}, "%2")
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	escCount := 0
+	for _, k := range keys {
+		if k.key == "Escape" {
+			escCount++
+		}
+	}
+	if escCount != 1 {
+		t.Errorf("expected exactly 1 Escape, got %d; sentKeys = %v", escCount, keys)
+	}
+}
+
+func TestClearPaneInput_ThreeEscMax(t *testing.T) {
+	// Pane never reaches prompt — stays in a deep dialog.
+	runner := &fakePopupRunner{
+		paneContents: []string{"deep dialog"},
+	}
+	clearPaneInput(runner, func(time.Duration) {}, "%3")
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	escCount := 0
+	for _, k := range keys {
+		if k.key == "Escape" {
+			escCount++
+		}
+	}
+	if escCount != 3 {
+		t.Errorf("expected exactly 3 Escapes (max), got %d; sentKeys = %v", escCount, keys)
+	}
+}
+
+func TestInstall_NoEscWhenAtPrompt(t *testing.T) {
+	dir := t.TempDir()
+	agentsDir := filepath.Join(dir, ".claude", "agents")
+	const paneID = "%44"
+
+	runner := &fakePopupRunner{
+		paneContents: []string{"> "},
+	}
+	ws := &state.Workspace{
+		ID:           "ws-nesc",
+		State:        state.StateRunning,
+		SandboxID:    "container-nesc",
+		PaneID:       paneID,
+		WorktreePath: dir,
+	}
+	cmdFn := func(_ string) string {
+		return fmt.Sprintf("mkdir -p %q && touch %q/newagent.md", agentsDir, agentsDir)
+	}
+	m := newInstallerListModel(t, runner, cmdFn, ws)
+	_, cmd := runSKey(m)
+	if cmd == nil {
+		t.Fatal("expected non-nil cmd")
+	}
+	cmd()
+
+	runner.mu.Lock()
+	keys := runner.sentKeys
+	runner.mu.Unlock()
+
+	for _, k := range keys {
+		if k.key == "Escape" {
+			t.Errorf("Escape sent when Claude was at prompt; sentKeys = %v", keys)
+			break
+		}
+	}
+	// /reload-plugins and C-d should still be sent.
+	reloadSent := false
+	cdSent := false
+	for _, k := range keys {
+		if k.key == "/reload-plugins" {
+			reloadSent = true
+		}
+		if k.key == "C-d" {
+			cdSent = true
+		}
+	}
+	if !reloadSent {
+		t.Errorf("/reload-plugins not sent; sentKeys = %v", keys)
+	}
+	if !cdSent {
+		t.Errorf("C-d not sent; sentKeys = %v", keys)
+	}
+}
+
 // TestInstall_SleepBeforeFirstEsc verifies that the very first sleep fires
 // before any Escape key is sent, i.e. the order is (sleep→Esc)×3 not (Esc→sleep)×3.
 // Sending the sleep first ensures the terminal is idle before the Escape arrives.
@@ -142,7 +305,10 @@ func TestInstall_SleepBeforeFirstEsc(t *testing.T) {
 	agentsDir := filepath.Join(dir, ".claude", "agents")
 	const paneID = "%93"
 
-	runner := &fakePopupRunner{}
+	// Pane stuck in a dialog (never clears) so all 3 Escapes are sent.
+	runner := &fakePopupRunner{
+		paneContents: []string{"/agents dialog"},
+	}
 	ws := &state.Workspace{
 		ID:           "ws-sleepfirst",
 		State:        state.StateRunning,
@@ -195,7 +361,10 @@ func TestInstall_SleepsBetweenEscKeys(t *testing.T) {
 	agentsDir := filepath.Join(dir, ".claude", "agents")
 	const paneID = "%91"
 
-	runner := &fakePopupRunner{}
+	// Pane stuck in a dialog so all 3 Escapes are sent.
+	runner := &fakePopupRunner{
+		paneContents: []string{"/agents dialog"},
+	}
 	ws := &state.Workspace{
 		ID:           "ws-escdelay",
 		State:        state.StateRunning,
@@ -308,7 +477,10 @@ func TestInstall_SleepsAfterEscBeforeReload(t *testing.T) {
 	agentsDir := filepath.Join(dir, ".claude", "agents")
 	const paneID = "%88"
 
-	runner := &fakePopupRunner{}
+	// Pane stuck in a dialog so Escapes are sent.
+	runner := &fakePopupRunner{
+		paneContents: []string{"deep dialog"},
+	}
 	ws := &state.Workspace{
 		ID:           "ws-sleep",
 		State:        state.StateRunning,
@@ -387,7 +559,10 @@ func TestInstall_SendsEscBeforeReloadPlugins(t *testing.T) {
 	agentsDir := filepath.Join(dir, ".claude", "agents")
 	const paneID = "%55"
 
-	runner := &fakePopupRunner{}
+	// Pane in a dialog so at least one Escape is needed.
+	runner := &fakePopupRunner{
+		paneContents: []string{"/agents\n  [x] foo", "> "},
+	}
 	ws := &state.Workspace{
 		ID:           "ws-esc",
 		State:        state.StateRunning,

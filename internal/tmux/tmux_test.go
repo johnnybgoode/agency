@@ -418,6 +418,62 @@ func TestSessionExistsNoTmux(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SendRawKeyToPane
+// ---------------------------------------------------------------------------
+
+func TestSendRawKeyToPane(t *testing.T) {
+	tests := []struct {
+		name   string
+		paneID string
+		key    string
+	}{
+		{name: "control-d", paneID: "%5", key: "C-d"},
+		{name: "escape", paneID: "%10", key: "Escape"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, "")
+			if err := c.SendRawKeyToPane(tt.paneID, tt.key); err != nil {
+				t.Fatalf("SendRawKeyToPane(%q, %q) error: %v", tt.paneID, tt.key, err)
+			}
+
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, "send-keys", "-t", tt.paneID, tt.key) {
+				t.Errorf("SendRawKeyToPane args = %v, want [send-keys -t %s %s]", args, tt.paneID, tt.key)
+			}
+			// Must NOT append Enter (unlike SendKeys).
+			if len(args) > 0 && args[len(args)-1] == "Enter" {
+				t.Errorf("SendRawKeyToPane should not append Enter; args = %v", args)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CapturePane
+// ---------------------------------------------------------------------------
+
+func TestCapturePane(t *testing.T) {
+	// Note: run() calls strings.TrimSpace on the output, so trailing
+	// whitespace is stripped. The test content must account for this.
+	content := "Some pane content\n>"
+	c, argsFile := newFakeClient(t, content)
+	got, err := c.CapturePane("%7")
+	if err != nil {
+		t.Fatalf("CapturePane(%%7) error: %v", err)
+	}
+	if got != content {
+		t.Errorf("CapturePane returned %q, want %q", got, content)
+	}
+
+	args := readArgs(t, argsFile)
+	if !argsContainSequence(args, "capture-pane", "-p", "-t", "%7") {
+		t.Errorf("CapturePane args = %v, want [capture-pane -p -t %%7]", args)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RenameWindow
 // ---------------------------------------------------------------------------
 

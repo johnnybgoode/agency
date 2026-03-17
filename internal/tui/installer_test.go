@@ -127,6 +127,33 @@ func (f *fakePopupRunner) SendRawKeyToPane(paneID, key string) error {
 	return f.keyErr
 }
 
+// errorCaptureRunner is a popupRunner whose CapturePane always returns an error.
+// Used to verify that clearPaneInput still sends Escape when capture fails.
+type errorCaptureRunner struct {
+	mu       sync.Mutex
+	sentKeys []sentKey
+}
+
+func (e *errorCaptureRunner) CapturePane(_ string) (string, error) {
+	return "", fmt.Errorf("capture error")
+}
+
+func (e *errorCaptureRunner) DisplayPopup(_ string, _, _, _ int) error { return nil }
+
+func (e *errorCaptureRunner) SendKeysToPane(paneID, keys string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sentKeys = append(e.sentKeys, sentKey{paneID: paneID, key: keys})
+	return nil
+}
+
+func (e *errorCaptureRunner) SendRawKeyToPane(paneID, key string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.sentKeys = append(e.sentKeys, sentKey{paneID: paneID, key: key})
+	return nil
+}
+
 // newInstallerListModel constructs a listModel wired for installer tests.
 // sleepFn is set to a no-op so tests do not block on the escape-sequence delay.
 func newInstallerListModel(t *testing.T, runner *fakePopupRunner, cmdFn func(string) string, ws *state.Workspace) listModel {
@@ -149,6 +176,96 @@ func runSKey(m listModel) (listModel, tea.Cmd) {
 }
 
 // --- Tests ---
+
+// ---- agentFiles / hasNewAgents tests ----
+
+func TestAgentFiles_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	got := agentFiles(dir)
+	if len(got) != 0 {
+		t.Errorf("agentFiles on empty dir = %v, want empty map", got)
+	}
+}
+
+func TestAgentFiles_NonExistentDir(t *testing.T) {
+	got := agentFiles("/nonexistent/path/to/agents")
+	if len(got) != 0 {
+		t.Errorf("agentFiles on nonexistent dir = %v, want empty map", got)
+	}
+}
+
+func TestAgentFiles_FiltersMdOnly(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"foo.md", "bar.md", "readme.txt", "config.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Also create a subdirectory named "subdir.md" — should be excluded.
+	if err := os.Mkdir(filepath.Join(dir, "subdir.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got := agentFiles(dir)
+	if len(got) != 2 {
+		t.Errorf("agentFiles = %v, want exactly {foo.md, bar.md}", got)
+	}
+	for _, want := range []string{"foo.md", "bar.md"} {
+		if _, ok := got[want]; !ok {
+			t.Errorf("agentFiles missing %q", want)
+		}
+	}
+}
+
+func TestHasNewAgents_NoChanges(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "existing.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := agentFiles(dir)
+	// No new files added.
+	if hasNewAgents(dir, before) {
+		t.Error("hasNewAgents should be false when no new files")
+	}
+}
+
+func TestHasNewAgents_NewFileAdded(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "existing.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := agentFiles(dir)
+	// Add a new file.
+	if err := os.WriteFile(filepath.Join(dir, "new-agent.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasNewAgents(dir, before) {
+		t.Error("hasNewAgents should be true when a new .md file was added")
+	}
+}
+
+func TestHasNewAgents_EmptyBefore(t *testing.T) {
+	dir := t.TempDir()
+	before := agentFiles(dir) // empty
+	if err := os.WriteFile(filepath.Join(dir, "agent.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasNewAgents(dir, before) {
+		t.Error("hasNewAgents should be true when starting from empty")
+	}
+}
+
+func TestHasNewAgents_NonMdFileIgnored(t *testing.T) {
+	dir := t.TempDir()
+	before := agentFiles(dir)
+	// Add a non-md file — should not count.
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if hasNewAgents(dir, before) {
+		t.Error("hasNewAgents should be false when only non-.md files added")
+	}
+}
 
 // ---- isAtPrompt tests ----
 
@@ -241,6 +358,30 @@ func TestClearPaneInput_ThreeEscMax(t *testing.T) {
 	if escCount != 3 {
 		t.Errorf("expected exactly 3 Escapes (max), got %d; sentKeys = %v", escCount, keys)
 	}
+}
+
+func TestClearPaneInput_CaptureError_StillSendsEscape(t *testing.T) {
+	// When CapturePane returns an error, clearPaneInput should treat the pane
+	// as not-at-prompt and still send Escape keys.
+	runner := &fakePopupRunner{} // empty paneContents with default "> "
+	// Override CapturePane to always error by using a special runner.
+	errRunner := &errorCaptureRunner{}
+	clearPaneInput(errRunner, func(time.Duration) {}, "%9")
+
+	errRunner.mu.Lock()
+	keys := errRunner.sentKeys
+	errRunner.mu.Unlock()
+
+	escCount := 0
+	for _, k := range keys {
+		if k.key == "Escape" {
+			escCount++
+		}
+	}
+	if escCount != 3 {
+		t.Errorf("expected 3 Escapes when CapturePane errors, got %d; sentKeys = %v", escCount, keys)
+	}
+	_ = runner // silence unused
 }
 
 func TestInstall_NoEscWhenAtPrompt(t *testing.T) {

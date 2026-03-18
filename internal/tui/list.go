@@ -162,6 +162,25 @@ func (m listModel) selectedWorkspace() *state.Workspace {
 	return m.workspaces[m.cursor]
 }
 
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) activateWorkspace(ws *state.Workspace) {
+	activeID := m.manager.State.ActiveWorkspaceID
+	mainWindowID := m.manager.State.MainWindowID
+	if ws.PaneID != "" && mainWindowID != "" {
+		if activeID == ws.ID {
+			// Already active — focus the pane by selecting the main window.
+			_ = m.manager.Tmux.SelectWindow(mainWindowID)
+		} else {
+			_ = m.manager.SwapActivePane(ws.ID)
+			_ = m.manager.Tmux.SelectWindow(mainWindowID)
+			applyStatusBar(m.manager)
+		}
+	} else if ws.TmuxWindow != "" {
+		// Fallback: just select the window.
+		_ = m.manager.Tmux.SelectWindow(ws.TmuxWindow)
+	}
+}
+
 // Init returns the initial commands: an immediate background reconcile and the
 // first polling tick.
 //
@@ -411,7 +430,7 @@ func (m listModel) confirmQuit() (listModel, tea.Cmd) {
 
 // handleNormalKey handles key presses in normal (non-confirming) mode.
 //
-//nolint:gocritic,gocyclo // bubbletea model must use value receivers; key dispatch is inherently branchy
+//nolint:gocritic // bubbletea model must use value receivers; key dispatch is inherently branchy
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	m.statusMsg = ""
 	switch msg.String() {
@@ -426,21 +445,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 	case "enter":
 		if ws := m.selectedWorkspace(); ws != nil {
 			slog.Info("workspace selected", "workspace", ws.ID)
-			activeID := m.manager.State.ActiveWorkspaceID
-			mainWindowID := m.manager.State.MainWindowID
-			if ws.PaneID != "" && mainWindowID != "" {
-				if activeID == ws.ID {
-					// Already active — focus the pane by selecting the main window.
-					_ = m.manager.Tmux.SelectWindow(mainWindowID)
-				} else {
-					_ = m.manager.SwapActivePane(ws.ID)
-					_ = m.manager.Tmux.SelectWindow(mainWindowID)
-					applyStatusBar(m.manager)
-				}
-			} else if ws.TmuxWindow != "" {
-				// Fallback: just select the window.
-				_ = m.manager.Tmux.SelectWindow(ws.TmuxWindow)
-			}
+			m.activateWorkspace(ws)
 		}
 
 	case "s":
@@ -540,6 +545,17 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		return m.handleNormalKey(msg)
+
+	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			const headerRows = 6 // top border, blank, Project:, name, blank, Workspaces:
+			idx := msg.Y - headerRows
+			if idx >= 0 && idx < len(m.workspaces) {
+				m.cursor = idx
+				m.activateWorkspace(m.workspaces[idx])
+			}
+		}
+		return m, nil
 
 	case workspaceCreatedMsg:
 		m.workspaces = m.manager.List()

@@ -360,7 +360,7 @@ func runSidebar(projectDir string) error {
 
 	// Run the sidebar TUI without alt-screen so it renders in its own pane.
 	model := newListModel(mgr)
-	p := tea.NewProgram(model)
+	p := tea.NewProgram(model, tea.WithMouseCellMotion())
 	finalModel, err := p.Run()
 	if err != nil {
 		return fmt.Errorf("TUI error: %w", err)

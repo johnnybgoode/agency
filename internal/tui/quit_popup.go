@@ -13,29 +13,27 @@ import (
 
 // quitPopupModel is a standalone bubbletea model for the quit confirmation popup.
 type quitPopupModel struct {
-	infos      []workspace.QuitInfo
-	theme      config.ThemeConfig
-	step       quitStep
-	dirtyQueue []*state.Workspace
-	result     QuitResultData
-	width      int
-	height     int
+	infos       []workspace.QuitInfo
+	theme       config.ThemeConfig
+	step        quitStep
+	dirtyQueue  []*state.Workspace
+	result      QuitResultData
+	width       int
+	height      int
+	activeCount int // number of active workspaces, computed once in constructor
 }
 
 func newQuitPopupModel(infos []workspace.QuitInfo, theme config.ThemeConfig) quitPopupModel {
-	activeCount := 0
-	for _, info := range infos {
-		if info.IsActive {
-			activeCount++
-		}
-	}
-
 	m := quitPopupModel{
 		infos: infos,
 		theme: theme,
 	}
-
-	if activeCount == 0 {
+	for _, info := range infos {
+		if info.IsActive {
+			m.activeCount++
+		}
+	}
+	if m.activeCount == 0 {
 		// No active workspaces — auto-confirm.
 		m.result = QuitResultData{Confirmed: true, Infos: infos}
 		m.step = quitIdle // will quit immediately
@@ -134,15 +132,9 @@ func (m quitPopupModel) buildModal() DangerModal {
 	fg := m.theme.DangerFg
 
 	if m.step == quitConfirmingQuit {
-		activeCount := 0
-		for _, info := range m.infos {
-			if info.IsActive {
-				activeCount++
-			}
-		}
 		return DangerModal{
 			Title:  "Quit Agency?",
-			Lines:  []string{fmt.Sprintf("%d active workspace(s)", activeCount), "will be paused."},
+			Lines:  []string{fmt.Sprintf("%d active workspace(s)", m.activeCount), "will be paused."},
 			Prompt: "[y] yes   [n] cancel",
 			Bg:     bg,
 			Fg:     fg,

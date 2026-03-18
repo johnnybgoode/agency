@@ -137,6 +137,30 @@ func (m listModel) syncCursorToActive() listModel {
 	return m
 }
 
+// refreshCursorPosition syncs the cursor to the active workspace and clamps it
+// to valid bounds. Call this after m.workspaces is updated.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) refreshCursorPosition() listModel {
+	m = m.syncCursorToActive()
+	m.lastActiveID = m.manager.State.ActiveWorkspaceID
+	if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+		m.cursor = len(m.workspaces) - 1
+	}
+	return m
+}
+
+// selectedWorkspace returns the workspace at the current cursor position,
+// or nil if the list is empty or the cursor is out of bounds.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) selectedWorkspace() *state.Workspace {
+	if len(m.workspaces) == 0 || m.cursor >= len(m.workspaces) {
+		return nil
+	}
+	return m.workspaces[m.cursor]
+}
+
 // Init returns the initial commands: an immediate background reconcile and the
 // first polling tick.
 //
@@ -398,8 +422,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		return m, m.newWorkspaceCmd()
 
 	case "enter":
-		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
-			ws := m.workspaces[m.cursor]
+		if ws := m.selectedWorkspace(); ws != nil {
 			slog.Info("workspace selected", "workspace", ws.ID)
 			activeID := m.manager.State.ActiveWorkspaceID
 			mainWindowID := m.manager.State.MainWindowID
@@ -419,16 +442,14 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		}
 
 	case "s":
-		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
-			ws := m.workspaces[m.cursor]
+		if ws := m.selectedWorkspace(); ws != nil {
 			if ws.State == state.StateRunning && ws.SandboxID != "" {
 				return m, m.installAgentsCmd(ws)
 			}
 		}
 
 	case "S":
-		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
-			ws := m.workspaces[m.cursor]
+		if ws := m.selectedWorkspace(); ws != nil {
 			if ws.SandboxID != "" {
 				mgr := m.manager
 				wsName := ws.DisplayName()
@@ -441,10 +462,10 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 		}
 
 	case "d":
-		if len(m.workspaces) > 0 && m.cursor < len(m.workspaces) {
-			slog.Info("deletion requested", "workspace", m.workspaces[m.cursor].ID)
+		if ws := m.selectedWorkspace(); ws != nil {
+			slog.Info("deletion requested", "workspace", ws.ID)
 			m.confirming = true
-			m.confirmID = m.workspaces[m.cursor].ID
+			m.confirmID = ws.ID
 		}
 
 	case "r":
@@ -494,13 +515,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
-				if m.manager.State.ActiveWorkspaceID != m.lastActiveID {
-					m = m.syncCursorToActive()
-					m.lastActiveID = m.manager.State.ActiveWorkspaceID
-				}
-				if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
-					m.cursor = len(m.workspaces) - 1
-				}
+				m = m.refreshCursorPosition()
 			}
 			// Detect dead/displaced panes and clear stale state.
 			verifyLayoutIntegrity(m.manager)
@@ -526,11 +541,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
-		m = m.syncCursorToActive()
-		m.lastActiveID = m.manager.State.ActiveWorkspaceID
-		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
-			m.cursor = len(m.workspaces) - 1
-		}
+		m = m.refreshCursorPosition()
 
 	case workspaceRemovedMsg:
 		delete(m.removing, msg.id)
@@ -545,11 +556,7 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
-		m = m.syncCursorToActive()
-		m.lastActiveID = m.manager.State.ActiveWorkspaceID
-		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
-			m.cursor = len(m.workspaces) - 1
-		}
+		m = m.refreshCursorPosition()
 		// Collapse right pane when all workspaces are gone (return to zero state).
 		verifyLayoutIntegrity(m.manager)
 		applyStatusBar(m.manager)

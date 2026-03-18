@@ -173,7 +173,6 @@ output:
       colors: true
 
   # Sort order for issues
-  sort-results: true
   sort-order:
     - file
     - linter

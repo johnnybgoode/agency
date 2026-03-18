@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -525,18 +526,9 @@ func verifyLayoutIntegrity(mgr *workspace.Manager) {
 	// Verify WorkspacePaneID is alive and in the main window.
 	if mgr.State.WorkspacePaneID != "" {
 		panes, err := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
-		if err == nil {
-			found := false
-			for _, p := range panes {
-				if p == mgr.State.WorkspacePaneID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				mgr.State.WorkspacePaneID = ""
-				changed = true
-			}
+		if err == nil && !slices.Contains(panes, mgr.State.WorkspacePaneID) {
+			mgr.State.WorkspacePaneID = ""
+			changed = true
 		}
 	}
 

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -679,6 +680,51 @@ func TestListModel_SKeybinding_ReturnsNilCommandForEmptyList(t *testing.T) {
 	_, cmd := m.handleNormalKey(key)
 	if cmd != nil {
 		t.Error("expected nil command for S keybinding on empty workspace list")
+	}
+}
+
+// TestSyncDoneMsgUpdatesStatusMsg verifies that syncDoneMsg sets statusMsg on
+// success and sets err (clearing statusMsg) on failure.
+func TestSyncDoneMsgUpdatesStatusMsg(t *testing.T) {
+	m := newListModelForTest(t)
+
+	// Success case: statusMsg set, err cleared.
+	result := &workspace.SyncResult{
+		Copied:  []string{"file1.txt", "file2.txt"},
+		Skipped: nil,
+	}
+	updated, _ := m.Update(syncDoneMsg{workspaceName: "my-ws", result: result})
+	lm := updated.(listModel)
+	if lm.statusMsg == "" {
+		t.Error("expected statusMsg to be set on sync success")
+	}
+	if lm.err != nil {
+		t.Errorf("expected err to be nil on sync success, got %v", lm.err)
+	}
+
+	// Error case: err set, statusMsg cleared.
+	lm.statusMsg = "stale success"
+	updated2, _ := lm.Update(syncDoneMsg{workspaceName: "my-ws", err: fmt.Errorf("sync failed")})
+	lm2 := updated2.(listModel)
+	if lm2.err == nil {
+		t.Error("expected err to be set on sync failure")
+	}
+	if lm2.statusMsg != "" {
+		t.Errorf("expected statusMsg cleared on sync failure, got %q", lm2.statusMsg)
+	}
+}
+
+// TestHandleNormalKeyClearsStatusMsg verifies that any keypress in normal mode
+// clears the status message. This ensures that sync success messages like
+// "synced 5 file(s) from my-ws" don't persist indefinitely in the sidebar.
+func TestHandleNormalKeyClearsStatusMsg(t *testing.T) {
+	m := newListModelForTest(t)
+	m.statusMsg = "synced 3 file(s) from my-ws"
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	lm := updated.(listModel)
+	if lm.statusMsg != "" {
+		t.Errorf("expected statusMsg cleared after keypress, got %q", lm.statusMsg)
 	}
 }
 

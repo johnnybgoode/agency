@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -642,19 +643,10 @@ func (m *Manager) reconcileRunning(
 		}
 	} else if res.windowsErr == nil && ws.TmuxWindow != "" && windowSet[ws.TmuxWindow] && ws.PaneID != "" {
 		// Verify pane still exists in the window; if not, re-capture.
-		if panes, err := m.Tmux.GetWindowPanes(ws.TmuxWindow); err == nil {
-			paneFound := false
-			for _, p := range panes {
-				if p == ws.PaneID {
-					paneFound = true
-					break
-				}
-			}
-			if !paneFound && len(panes) > 0 {
-				ws.PaneID = panes[0]
-				ws.UpdatedAt = time.Now().UTC()
-				return false, true
-			}
+		if panes, err := m.Tmux.GetWindowPanes(ws.TmuxWindow); err == nil && !slices.Contains(panes, ws.PaneID) && len(panes) > 0 {
+			ws.PaneID = panes[0]
+			ws.UpdatedAt = time.Now().UTC()
+			return false, true
 		}
 	}
 	return false, false
@@ -667,19 +659,16 @@ func (m *Manager) reconcileProvisioning(
 	containerIDSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (changed bool) {
-	if res.contsErr == nil && ws.SandboxID != "" {
-		if containerIDSet[ws.SandboxID] {
-			ws.State = state.StateRunning
-			ws.UpdatedAt = time.Now().UTC()
-			return true
-		}
-		markFailed(ws, "sandbox not found during reconciliation")
-		return true
-	} else if res.contsErr == nil {
-		markFailed(ws, "sandbox not found during reconciliation")
+	if res.contsErr != nil {
+		return false
+	}
+	if ws.SandboxID != "" && containerIDSet[ws.SandboxID] {
+		ws.State = state.StateRunning
+		ws.UpdatedAt = time.Now().UTC()
 		return true
 	}
-	return false
+	markFailed(ws, "sandbox not found during reconciliation")
+	return true
 }
 
 // reconcilePaused handles reconcile logic for a workspace in StatePaused.

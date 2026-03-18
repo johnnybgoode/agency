@@ -258,7 +258,7 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 
 	windowID, err := m.Tmux.NewWindow(ws.Name)
 	if err != nil {
-		return fmt.Errorf("creating tmux window: %w", err)
+		return fmt.Errorf("%s: creating tmux window: %w", action, err)
 	}
 	ws.TmuxWindow = windowID
 
@@ -266,12 +266,19 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 		ws.PaneID = panes[0]
 	}
 
+	// The wrapper bash command:
+	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
+	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
+	//    inside the container (for cancellation) without killing the wrapper
+	//  - while loop condition: checks container existence before each exec so
+	//    the loop exits cleanly when Remove() deletes the container, preventing
+	//    "No such container" errors from flooding the workspace pane
 	trapCmd, err := m.buildTrapCmd(ws, resume)
 	if err != nil {
-		return fmt.Errorf("building trap command: %w", err)
+		return fmt.Errorf("%s: building trap command: %w", action, err)
 	}
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
-		return fmt.Errorf("sending keys to tmux window: %w", err)
+		return fmt.Errorf("%s: sending keys to tmux window: %w", action, err)
 	}
 	return nil
 }

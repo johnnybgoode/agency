@@ -43,6 +43,14 @@ type Workspace struct {
 	Error        *string        `json:"error"`
 }
 
+// DisplayName returns the workspace's display name: Name if set, Branch otherwise.
+func (ws *Workspace) DisplayName() string {
+	if ws.Name != "" {
+		return ws.Name
+	}
+	return ws.Branch
+}
+
 // State holds the persisted state for an agency project.
 type State struct {
 	Version               int    `json:"version"`

@@ -612,10 +612,7 @@ func applyStatusBar(mgr *workspace.Manager) {
 	activeName := ""
 	if mgr.State.ActiveWorkspaceID != "" {
 		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok {
-			activeName = ws.Name
-			if activeName == "" {
-				activeName = ws.Branch
-			}
+			activeName = ws.DisplayName()
 		}
 	}
 

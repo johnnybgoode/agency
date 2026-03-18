@@ -215,3 +215,22 @@ func TestIsProcessAlive(t *testing.T) {
 		}
 	})
 }
+
+func TestWorkspaceDisplayName(t *testing.T) {
+	tests := []struct {
+		name string
+		ws   Workspace
+		want string
+	}{
+		{"uses Name when set", Workspace{Name: "my-task", Branch: "feat/foo"}, "my-task"},
+		{"falls back to Branch when Name empty", Workspace{Branch: "feat/foo"}, "feat/foo"},
+		{"empty when both empty", Workspace{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.ws.DisplayName(); got != tt.want {
+				t.Errorf("DisplayName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

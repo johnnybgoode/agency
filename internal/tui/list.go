@@ -648,10 +648,7 @@ func (m listModel) View() string {
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) workspaceLabel(ws *state.Workspace, idx int, activeID string, inner int) string {
-	name := ws.Name
-	if name == "" {
-		name = ws.Branch
-	}
+	name := ws.DisplayName()
 	// Leading space + indicator + space + name; truncate name to fit.
 	// Total prefix visible width: 1 (space) + 1 (indicator) + 1 (space) = 3.
 	truncName := truncate(name, inner-3)
@@ -753,10 +750,7 @@ func (m listModel) renderSidebar() string {
 		confirmWS := m.confirmID
 		for _, ws := range m.workspaces {
 			if ws.ID == m.confirmID {
-				confirmWS = ws.Name
-				if confirmWS == "" {
-					confirmWS = ws.Branch
-				}
+				confirmWS = ws.DisplayName()
 				break
 			}
 		}

@@ -152,10 +152,7 @@ func (m quitPopupModel) buildModal() DangerModal {
 	// quitConfirmingDirty
 	name := ""
 	if len(m.dirtyQueue) > 0 {
-		name = m.dirtyQueue[0].Name
-		if name == "" {
-			name = m.dirtyQueue[0].Branch
-		}
+		name = m.dirtyQueue[0].DisplayName()
 	}
 	return DangerModal{
 		Title:  "Unsaved changes",

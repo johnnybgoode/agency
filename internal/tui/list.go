@@ -316,9 +316,9 @@ func hasNewAgents(dir string, before map[string]struct{}) bool {
 
 // installAgentsCmd opens an interactive agent installer popup for the workspace.
 // After the popup closes it checks whether any new agent .md files were added to
-// the workspace's .claude/agents directory. Only if new agents were installed does
-// it send C-d to the workspace pane so the trapCmd loop restarts Claude with
-// --continue (making the new agents available).
+// the workspace's .claude/agents directory. If new agents were installed and the
+// workspace pane is available, it clears any open command dialog, sends the
+// /reload-plugins command, and then sends C-d to restart the Claude session.
 //
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {

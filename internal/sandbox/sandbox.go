@@ -18,6 +18,7 @@ import (
 )
 
 // ValidateContainerID returns an error if id is not a valid Docker container ID.
+// A valid container ID consists of 12 to 64 lowercase hexadecimal characters.
 func ValidateContainerID(id string) error {
 	return state.ValidateContainerID(id)
 }

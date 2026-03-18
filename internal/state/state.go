@@ -102,7 +102,7 @@ func (s *State) Validate() error {
 	for id, ws := range s.Workspaces {
 		// Validate the map key matches expected workspace ID format.
 		if err := ValidateWorkspaceID(id); err != nil {
-			return fmt.Errorf("invalid workspace ID %q in state file: %w", id, err)
+			return fmt.Errorf("state file: %w", err)
 		}
 		// Validate the workspace's own ID field matches the map key.
 		if ws.ID != id {
@@ -111,7 +111,7 @@ func (s *State) Validate() error {
 		// Validate sandbox ID when present.
 		if ws.SandboxID != "" {
 			if err := ValidateContainerID(ws.SandboxID); err != nil {
-				return fmt.Errorf("invalid sandbox ID %q for workspace %s: %w", ws.SandboxID, id, err)
+				return fmt.Errorf("state file, workspace %s: %w", id, err)
 			}
 		}
 	}

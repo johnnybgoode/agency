@@ -515,7 +515,13 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
-				m = m.refreshCursorPosition()
+				if m.manager.State.ActiveWorkspaceID != m.lastActiveID {
+					// Active workspace changed — snap cursor to it.
+					m = m.refreshCursorPosition()
+				} else if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
+					// Active workspace unchanged — preserve user's cursor, only clamp.
+					m.cursor = len(m.workspaces) - 1
+				}
 			}
 			// Detect dead/displaced panes and clear stale state.
 			verifyLayoutIntegrity(m.manager)

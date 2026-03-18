@@ -19,25 +19,32 @@ import (
 	"github.com/johnnybgoode/agency/internal/worktree"
 )
 
+// newManager finds the project directory, loads config, and creates a workspace
+// Manager. Returns an error if any step fails.
+func newManager() (*workspace.Manager, *config.Config, error) {
+	projectDir, err := project.FindProjectDir()
+	if err != nil {
+		return nil, nil, err
+	}
+	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	mgr, err := workspace.NewManager(projectDir, cfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("initializing workspace manager: %w", err)
+	}
+	return mgr, cfg, nil
+}
+
 // RunPopup runs just the create form (for use in a tmux popup). It finds the
 // project directory, loads config, creates a workspace manager, presents the
 // two-field form, and submits the workspace on enter.
 func RunPopup() error {
-	projectDir, err := project.FindProjectDir()
+	mgr, _, err := newManager()
 	if err != nil {
 		return err
 	}
-
-	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	mgr, err := workspace.NewManager(projectDir, cfg)
-	if err != nil {
-		return fmt.Errorf("initializing workspace manager: %w", err)
-	}
-
 	form := newCreateModel(mgr.ProjectName)
 	p := tea.NewProgram(popupWrapper{form: form, mgr: mgr})
 	_, err = p.Run()
@@ -59,19 +66,9 @@ type QuitResultData struct {
 // (for use inside a tmux popup). It assesses workspace statuses, presents the
 // confirmation dialog, and writes the result to .agency/quit-result.json.
 func RunQuitPopup() error {
-	projectDir, err := project.FindProjectDir()
+	mgr, cfg, err := newManager()
 	if err != nil {
 		return err
-	}
-
-	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-
-	mgr, err := workspace.NewManager(projectDir, cfg)
-	if err != nil {
-		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
 	// Assess workspace statuses synchronously (fast local git checks).
@@ -88,7 +85,7 @@ func RunQuitPopup() error {
 	}
 
 	qm := finalModel.(quitPopupModel)
-	resultPath := filepath.Join(projectDir, ".agency", QuitResultFile)
+	resultPath := filepath.Join(mgr.ProjectDir, ".agency", QuitResultFile)
 	data, _ := json.Marshal(QuitResultData{Confirmed: qm.result.Confirmed})
 	return os.WriteFile(resultPath, data, 0o600)
 }

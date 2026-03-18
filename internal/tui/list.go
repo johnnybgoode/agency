@@ -431,7 +431,7 @@ func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 			ws := m.workspaces[m.cursor]
 			if ws.SandboxID != "" {
 				mgr := m.manager
-				wsName := ws.Name
+				wsName := ws.DisplayName()
 				wsID := ws.ID
 				return m, func() tea.Msg {
 					result, err := mgr.SyncHome(context.Background(), wsID, workspace.SyncOpts{})

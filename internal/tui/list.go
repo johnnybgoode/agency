@@ -94,6 +94,7 @@ type listModel struct {
 	agencyBin         string               // absolute path to the agency binary for popup invocation
 	quitInfos         []workspace.QuitInfo // populated by popup result for quit cleanup
 	shouldKillSession bool
+	lastActiveID      string                          // tracks active workspace ID to detect changes
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
 	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
@@ -109,11 +110,31 @@ func newListModel(mgr *workspace.Manager) listModel {
 		manager:      mgr,
 		workspaces:   mgr.List(),
 		removing:     make(map[string]bool),
+		lastActiveID: mgr.State.ActiveWorkspaceID,
 		agencyBin:    bin,
 		popup:        mgr.Tmux,
 		installerCmd: installerCmdFor,
 		sleepFn:      time.Sleep,
 	}
+}
+
+// syncCursorToActive moves the cursor to the index of the active workspace.
+// If no workspace is active or the active ID is not in the list, the cursor
+// is left unchanged (but still clamped to bounds).
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) syncCursorToActive() listModel {
+	activeID := m.manager.State.ActiveWorkspaceID
+	if activeID == "" {
+		return m
+	}
+	for i, ws := range m.workspaces {
+		if ws.ID == activeID {
+			m.cursor = i
+			return m
+		}
+	}
+	return m
 }
 
 // Init returns the initial commands: an immediate background reconcile and the
@@ -473,6 +494,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
+				if m.manager.State.ActiveWorkspaceID != m.lastActiveID {
+					m = m.syncCursorToActive()
+					m.lastActiveID = m.manager.State.ActiveWorkspaceID
+				}
 				if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 					m.cursor = len(m.workspaces) - 1
 				}
@@ -501,6 +526,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
+		m = m.syncCursorToActive()
+		m.lastActiveID = m.manager.State.ActiveWorkspaceID
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}
@@ -518,6 +545,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 		}
+		m = m.syncCursorToActive()
+		m.lastActiveID = m.manager.State.ActiveWorkspaceID
 		if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 			m.cursor = len(m.workspaces) - 1
 		}

@@ -404,36 +404,36 @@ func TestCursorFollowsActive_OnTick(t *testing.T) {
 	// After a tick reloads state, cursor should move to the active workspace.
 	m := newListModelForTest(t)
 
-	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
-	ws2 := &state.Workspace{ID: "ws-2", Name: "second", State: state.StateRunning, Branch: "b2"}
-	ws3 := &state.Workspace{ID: "ws-3", Name: "third", State: state.StateRunning, Branch: "b3"}
+	ws1 := &state.Workspace{ID: "ws-aabbcc01", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws2 := &state.Workspace{ID: "ws-aabbcc02", Name: "second", State: state.StateRunning, Branch: "b2"}
+	ws3 := &state.Workspace{ID: "ws-aabbcc03", Name: "third", State: state.StateRunning, Branch: "b3"}
 	m.manager.State.Workspaces = map[string]*state.Workspace{
-		"ws-1": ws1, "ws-2": ws2, "ws-3": ws3,
+		"ws-aabbcc01": ws1, "ws-aabbcc02": ws2, "ws-aabbcc03": ws3,
 	}
-	m.manager.State.ActiveWorkspaceID = "ws-3"
+	m.manager.State.ActiveWorkspaceID = "ws-aabbcc03"
 	_ = m.manager.SaveState()
 
 	m.workspaces = m.manager.List()
 	m.cursor = 0        // cursor stuck at first item
-	m.lastActiveID = "" // active changed from nothing to ws-3
+	m.lastActiveID = "" // active changed from nothing to ws-aabbcc03
 
 	// Simulate tick: reload state from disk.
 	next, _ := m.Update(tickMsg{})
 	lm := next.(listModel)
 
-	// Find the index of ws-3 in the refreshed list.
+	// Find the index of ws-aabbcc03 in the refreshed list.
 	activeIdx := -1
 	for i, ws := range lm.workspaces {
-		if ws.ID == "ws-3" {
+		if ws.ID == "ws-aabbcc03" {
 			activeIdx = i
 			break
 		}
 	}
 	if activeIdx < 0 {
-		t.Fatal("active workspace ws-3 not found in list")
+		t.Fatal("active workspace ws-aabbcc03 not found in list")
 	}
 	if lm.cursor != activeIdx {
-		t.Errorf("cursor = %d, want %d (index of active workspace ws-3)", lm.cursor, activeIdx)
+		t.Errorf("cursor = %d, want %d (index of active workspace ws-aabbcc03)", lm.cursor, activeIdx)
 	}
 }
 
@@ -510,13 +510,13 @@ func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
 	// the cursor back.
 	m := newListModelForTest(t)
 
-	ws1 := &state.Workspace{ID: "ws-1", Name: "first", State: state.StateRunning, Branch: "b1"}
-	ws2 := &state.Workspace{ID: "ws-2", Name: "second", State: state.StateRunning, Branch: "b2"}
-	ws3 := &state.Workspace{ID: "ws-3", Name: "third", State: state.StateRunning, Branch: "b3"}
+	ws1 := &state.Workspace{ID: "ws-aabbcc01", Name: "first", State: state.StateRunning, Branch: "b1"}
+	ws2 := &state.Workspace{ID: "ws-aabbcc02", Name: "second", State: state.StateRunning, Branch: "b2"}
+	ws3 := &state.Workspace{ID: "ws-aabbcc03", Name: "third", State: state.StateRunning, Branch: "b3"}
 	m.manager.State.Workspaces = map[string]*state.Workspace{
-		"ws-1": ws1, "ws-2": ws2, "ws-3": ws3,
+		"ws-aabbcc01": ws1, "ws-aabbcc02": ws2, "ws-aabbcc03": ws3,
 	}
-	m.manager.State.ActiveWorkspaceID = "ws-3"
+	m.manager.State.ActiveWorkspaceID = "ws-aabbcc03"
 	_ = m.manager.SaveState()
 
 	m.workspaces = m.manager.List()
@@ -528,7 +528,7 @@ func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
 
 	activeIdx := -1
 	for i, ws := range lm.workspaces {
-		if ws.ID == "ws-3" {
+		if ws.ID == "ws-aabbcc03" {
 			activeIdx = i
 			break
 		}

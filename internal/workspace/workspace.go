@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -85,16 +84,9 @@ func generateID() string {
 	return "ws-" + hex.EncodeToString(b)
 }
 
-// workspaceIDRe matches the expected workspace ID format: ws-<8 hex chars>.
-var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
-
-// validateWorkspaceID returns an error if id does not match the expected
-// workspace ID format (ws-<8hex>).
-func validateWorkspaceID(id string) error {
-	if !workspaceIDRe.MatchString(id) {
-		return fmt.Errorf("invalid workspace ID %q: must match ws-[a-f0-9]{8}", id)
-	}
-	return nil
+// ValidateWorkspaceID returns an error if id does not match the workspace ID format.
+func ValidateWorkspaceID(id string) error {
+	return state.ValidateWorkspaceID(id)
 }
 
 // validateCreate checks that name and branch are non-empty, that neither
@@ -243,7 +235,7 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
-	if err := validateWorkspaceID(ws.ID); err != nil {
+	if err := ValidateWorkspaceID(ws.ID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	agencyBin, _ := os.Executable()

@@ -234,3 +234,51 @@ func TestWorkspaceDisplayName(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateWorkspaceID(t *testing.T) {
+	tests := []struct {
+		id      string
+		wantErr bool
+	}{
+		{"ws-a1b2c3d4", false},
+		{"ws-00000000", false},
+		{"ws-ffffffff", false},
+		{"ws-short", true},
+		{"ws-ABCDEF12", true},
+		{"notws-a1b2c3d4", true},
+		{"ws-a1b2c3d4-extra", true},
+		{"", true},
+		{"ws-", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			err := ValidateWorkspaceID(tt.id)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateWorkspaceID(%q) error = %v, wantErr %v", tt.id, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateContainerID(t *testing.T) {
+	tests := []struct {
+		id      string
+		wantErr bool
+	}{
+		{"abcdef012345", false}, // 12 hex chars — min valid
+		{"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", false}, // 64 hex chars — max valid
+		{"abc", true},          // too short
+		{"ABCDEF012345", true}, // uppercase not allowed
+		{"abcdef01234g", true}, // non-hex char
+		{"", true},
+		{"abcdef01234", true}, // 11 chars, below minimum
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			err := ValidateContainerID(tt.id)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateContainerID(%q) error = %v, wantErr %v", tt.id, err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -78,22 +78,41 @@ var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
 // containerIDRe matches 12-64 hex chars (Docker container IDs).
 var containerIDRe = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 
+// ValidateWorkspaceID returns an error if id does not match the expected
+// workspace ID format (ws-<8hex>).
+func ValidateWorkspaceID(id string) error {
+	if !workspaceIDRe.MatchString(id) {
+		return fmt.Errorf("invalid workspace ID %q: must match ws-[a-f0-9]{8}", id)
+	}
+	return nil
+}
+
+// ValidateContainerID returns an error if id is not a valid Docker container ID.
+func ValidateContainerID(id string) error {
+	if !containerIDRe.MatchString(id) {
+		return fmt.Errorf("invalid container ID %q: must match [a-f0-9]{12,64}", id)
+	}
+	return nil
+}
+
 // Validate checks that all workspace IDs and sandbox IDs in the state
 // conform to expected formats. This prevents command injection via
 // tampered state files.
 func (s *State) Validate() error {
 	for id, ws := range s.Workspaces {
 		// Validate the map key matches expected workspace ID format.
-		if !workspaceIDRe.MatchString(id) {
-			return fmt.Errorf("invalid workspace ID %q in state file", id)
+		if err := ValidateWorkspaceID(id); err != nil {
+			return fmt.Errorf("invalid workspace ID %q in state file: %w", id, err)
 		}
 		// Validate the workspace's own ID field matches the map key.
 		if ws.ID != id {
 			return fmt.Errorf("workspace ID mismatch: key=%q, field=%q", id, ws.ID)
 		}
 		// Validate sandbox ID when present.
-		if ws.SandboxID != "" && !containerIDRe.MatchString(ws.SandboxID) {
-			return fmt.Errorf("invalid sandbox ID %q for workspace %s", ws.SandboxID, id)
+		if ws.SandboxID != "" {
+			if err := ValidateContainerID(ws.SandboxID); err != nil {
+				return fmt.Errorf("invalid sandbox ID %q for workspace %s: %w", ws.SandboxID, id, err)
+			}
 		}
 	}
 	return nil

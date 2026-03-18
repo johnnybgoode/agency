@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -85,16 +84,9 @@ func generateID() string {
 	return "ws-" + hex.EncodeToString(b)
 }
 
-// workspaceIDRe matches the expected workspace ID format: ws-<8 hex chars>.
-var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
-
-// validateWorkspaceID returns an error if id does not match the expected
-// workspace ID format (ws-<8hex>).
-func validateWorkspaceID(id string) error {
-	if !workspaceIDRe.MatchString(id) {
-		return fmt.Errorf("invalid workspace ID %q: must match ws-[a-f0-9]{8}", id)
-	}
-	return nil
+// ValidateWorkspaceID returns an error if id does not match the workspace ID format.
+func ValidateWorkspaceID(id string) error {
+	return state.ValidateWorkspaceID(id)
 }
 
 // validateCreate checks that name and branch are non-empty, that neither
@@ -186,10 +178,8 @@ func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, c
 	}
 
 	sharedHome := ""
-	if candidate := filepath.Join(m.ProjectDir, ".agency", "home"); func() bool {
-		info, err := os.Stat(candidate)
-		return err == nil && info.IsDir()
-	}() {
+	candidate := filepath.Join(m.ProjectDir, ".agency", "home")
+	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
 		sharedHome = candidate
 	}
 
@@ -243,7 +233,7 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
-	if err := validateWorkspaceID(ws.ID); err != nil {
+	if err := ValidateWorkspaceID(ws.ID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	agencyBin, _ := os.Executable()
@@ -257,61 +247,52 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 	), nil
 }
 
-// provisionTmux opens a new tmux window for ws, captures the pane ID, and
-// launches the agent inside the container.
-func (m *Manager) provisionTmux(ws *state.Workspace) error {
-	slog.Debug("provisioning tmux window", "workspace", ws.ID, "name", ws.Name)
+// openTmuxWindow creates a new tmux window for ws, captures its pane ID, and
+// sends the trap-loop command. If resume is true, Claude starts with --continue.
+func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
+	action := "provisioning"
+	if resume {
+		action = "resuming"
+	}
+	slog.Debug(action+" tmux window", "workspace", ws.ID, "name", ws.DisplayName())
+
 	windowID, err := m.Tmux.NewWindow(ws.Name)
 	if err != nil {
-		return fmt.Errorf("creating tmux window: %w", err)
+		return fmt.Errorf("%s: creating tmux window: %w", action, err)
 	}
 	ws.TmuxWindow = windowID
 
-	// Capture pane ID for the new window.
 	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
 		ws.PaneID = panes[0]
 	}
 
-	// The wrapper bash:
+	// The wrapper bash command:
 	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
 	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
 	//    inside the container (for cancellation) without killing the wrapper
 	//  - while loop condition: checks container existence before each exec so
 	//    the loop exits cleanly when Remove() deletes the container, preventing
 	//    "No such container" errors from flooding the workspace pane
-	trapCmd, err := m.buildTrapCmd(ws, false)
+	trapCmd, err := m.buildTrapCmd(ws, resume)
 	if err != nil {
-		return fmt.Errorf("building trap command: %w", err)
+		return fmt.Errorf("%s: building trap command: %w", action, err)
 	}
 	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
-		return fmt.Errorf("sending keys to tmux window: %w", err)
+		return fmt.Errorf("%s: sending keys to tmux window: %w", action, err)
 	}
 	return nil
+}
+
+// provisionTmux opens a new tmux window for ws, captures the pane ID, and
+// launches the agent inside the container.
+func (m *Manager) provisionTmux(ws *state.Workspace) error {
+	return m.openTmuxWindow(ws, false)
 }
 
 // resumeTmux opens a new tmux window for ws and launches the agent with
 // --continue so it resumes where it left off.
 func (m *Manager) resumeTmux(ws *state.Workspace) error {
-	slog.Debug("resuming tmux window", "workspace", ws.ID, "name", ws.Name)
-	windowID, err := m.Tmux.NewWindow(ws.Name)
-	if err != nil {
-		return fmt.Errorf("creating tmux window for resume: %w", err)
-	}
-	ws.TmuxWindow = windowID
-
-	// Capture pane ID for the new window.
-	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
-		ws.PaneID = panes[0]
-	}
-
-	trapCmd, err := m.buildTrapCmd(ws, true)
-	if err != nil {
-		return fmt.Errorf("building trap command for resume: %w", err)
-	}
-	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
-		return fmt.Errorf("sending keys to tmux window for resume: %w", err)
-	}
-	return nil
+	return m.openTmuxWindow(ws, true)
 }
 
 // Create provisions a full workspace for the given name and branch: worktree → sandbox →

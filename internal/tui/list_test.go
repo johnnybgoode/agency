@@ -705,3 +705,105 @@ func TestInstallerCmdFor(t *testing.T) {
 		t.Errorf("installerCmdFor has bare tilde that would be host-expanded: %q", got)
 	}
 }
+
+// ----- refreshCursorPosition -----
+
+func TestRefreshCursorPosition(t *testing.T) {
+	ws1 := &state.Workspace{ID: "ws-aaaaaaaa", Name: "first"}
+	ws2 := &state.Workspace{ID: "ws-bbbbbbbb", Name: "second"}
+
+	makeModel := func(workspaces []*state.Workspace, activeID string, cursor int) listModel {
+		s := &state.State{
+			ActiveWorkspaceID: activeID,
+			Workspaces:        make(map[string]*state.Workspace),
+		}
+		for _, ws := range workspaces {
+			s.Workspaces[ws.ID] = ws
+		}
+		return listModel{
+			manager:    &workspace.Manager{State: s},
+			workspaces: workspaces,
+			cursor:     cursor,
+			removing:   make(map[string]bool),
+		}
+	}
+
+	tests := []struct {
+		name       string
+		workspaces []*state.Workspace
+		activeID   string
+		cursor     int
+		wantCursor int
+	}{
+		{
+			name:       "clamps cursor when list shrinks",
+			workspaces: []*state.Workspace{ws1},
+			activeID:   "",
+			cursor:     5,
+			wantCursor: 0,
+		},
+		{
+			name:       "syncs cursor to active workspace",
+			workspaces: []*state.Workspace{ws1, ws2},
+			activeID:   "ws-bbbbbbbb",
+			cursor:     0,
+			wantCursor: 1,
+		},
+		{
+			name:       "no-op when list is empty",
+			workspaces: []*state.Workspace{},
+			activeID:   "",
+			cursor:     0,
+			wantCursor: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := makeModel(tt.workspaces, tt.activeID, tt.cursor)
+			m = m.refreshCursorPosition()
+			if m.cursor != tt.wantCursor {
+				t.Errorf("cursor = %d, want %d", m.cursor, tt.wantCursor)
+			}
+			if m.lastActiveID != tt.activeID {
+				t.Errorf("lastActiveID = %q, want %q", m.lastActiveID, tt.activeID)
+			}
+		})
+	}
+}
+
+// ----- selectedWorkspace -----
+
+func TestSelectedWorkspace(t *testing.T) {
+	ws1 := &state.Workspace{ID: "ws-aaaaaaaa", Name: "first"}
+	ws2 := &state.Workspace{ID: "ws-bbbbbbbb", Name: "second"}
+
+	tests := []struct {
+		name       string
+		workspaces []*state.Workspace
+		cursor     int
+		wantNil    bool
+		wantID     string
+	}{
+		{"returns workspace at cursor", []*state.Workspace{ws1, ws2}, 1, false, "ws-bbbbbbbb"},
+		{"returns nil when list empty", []*state.Workspace{}, 0, true, ""},
+		{"returns nil when cursor out of bounds", []*state.Workspace{ws1}, 5, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := listModel{workspaces: tt.workspaces, cursor: tt.cursor, removing: make(map[string]bool)}
+			got := m.selectedWorkspace()
+			if tt.wantNil {
+				if got != nil {
+					t.Errorf("expected nil, got %+v", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("expected non-nil workspace")
+			}
+			if got.ID != tt.wantID {
+				t.Errorf("ID = %q, want %q", got.ID, tt.wantID)
+			}
+		})
+	}
+}

@@ -11,20 +11,16 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
-)
 
-var containerIDRe = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+	"github.com/johnnybgoode/agency/internal/state"
+)
 
 // ValidateContainerID returns an error if id is not a valid Docker container ID.
 // A valid container ID consists of 12 to 64 lowercase hexadecimal characters.
 func ValidateContainerID(id string) error {
-	if !containerIDRe.MatchString(id) {
-		return fmt.Errorf("invalid container ID %q: must match [a-f0-9]{12,64}", id)
-	}
-	return nil
+	return state.ValidateContainerID(id)
 }
 
 // CreateOpts holds all options required to create a sandbox container.

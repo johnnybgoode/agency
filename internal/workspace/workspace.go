@@ -659,19 +659,16 @@ func (m *Manager) reconcileProvisioning(
 	containerIDSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (changed bool) {
-	if res.contsErr == nil && ws.SandboxID != "" {
-		if containerIDSet[ws.SandboxID] {
-			ws.State = state.StateRunning
-			ws.UpdatedAt = time.Now().UTC()
-			return true
-		}
-		markFailed(ws, "sandbox not found during reconciliation")
-		return true
-	} else if res.contsErr == nil {
-		markFailed(ws, "sandbox not found during reconciliation")
+	if res.contsErr != nil {
+		return false
+	}
+	if ws.SandboxID != "" && containerIDSet[ws.SandboxID] {
+		ws.State = state.StateRunning
+		ws.UpdatedAt = time.Now().UTC()
 		return true
 	}
-	return false
+	markFailed(ws, "sandbox not found during reconciliation")
+	return true
 }
 
 // reconcilePaused handles reconcile logic for a workspace in StatePaused.

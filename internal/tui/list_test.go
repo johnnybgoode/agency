@@ -764,6 +764,9 @@ func TestRefreshCursorPosition(t *testing.T) {
 			if m.cursor != tt.wantCursor {
 				t.Errorf("cursor = %d, want %d", m.cursor, tt.wantCursor)
 			}
+			if m.lastActiveID != tt.activeID {
+				t.Errorf("lastActiveID = %q, want %q", m.lastActiveID, tt.activeID)
+			}
 		})
 	}
 }

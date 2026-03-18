@@ -88,7 +88,8 @@ type listModel struct {
 	width             int
 	height            int
 	err               error
-	confirming        bool // inline delete confirm (shown in help area)
+	statusMsg         string // non-error status from completed operations (e.g. sync results)
+	confirming        bool   // inline delete confirm (shown in help area)
 	confirmID         string
 	removing          map[string]bool      // workspace IDs currently being torn down
 	agencyBin         string               // absolute path to the agency binary for popup invocation
@@ -412,6 +413,7 @@ func (m listModel) confirmQuit() (listModel, tea.Cmd) {
 //
 //nolint:gocritic,gocyclo // bubbletea model must use value receivers; key dispatch is inherently branchy
 func (m listModel) handleNormalKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
+	m.statusMsg = ""
 	switch msg.String() {
 	case "q", "ctrl+c":
 		slog.Info("quit requested via popup")
@@ -544,8 +546,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			slog.Error("workspace creation failed", "error", msg.err)
 			m.err = friendlyError(msg.err)
+			m.statusMsg = ""
 		} else {
 			m.err = nil
+			m.statusMsg = ""
 		}
 		m = m.refreshCursorPosition()
 
@@ -559,8 +563,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			slog.Error("workspace removal failed", "workspace", msg.id, "error", msg.err)
 			m.err = friendlyError(msg.err)
+			m.statusMsg = ""
 		} else {
 			m.err = nil
+			m.statusMsg = ""
 		}
 		m = m.refreshCursorPosition()
 		// Collapse right pane when all workspaces are gone (return to zero state).
@@ -578,21 +584,25 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			m.err = msg.err
+			m.statusMsg = ""
 		} else {
 			m.err = nil
+			m.statusMsg = ""
 		}
 
 	case syncDoneMsg:
 		if msg.err != nil {
 			m.err = friendlyError(msg.err)
+			m.statusMsg = ""
 		} else {
 			synced := len(msg.result.Copied)
 			skipped := len(msg.result.Skipped)
 			if skipped > 0 {
-				m.err = fmt.Errorf("synced %d file(s) from %s, %d skipped (host is newer)", synced, msg.workspaceName, skipped)
+				m.statusMsg = fmt.Sprintf("synced %d file(s) from %s, %d skipped (host is newer)", synced, msg.workspaceName, skipped)
 			} else {
-				m.err = fmt.Errorf("synced %d file(s) from %s", synced, msg.workspaceName)
+				m.statusMsg = fmt.Sprintf("synced %d file(s) from %s", synced, msg.workspaceName)
 			}
+			m.err = nil
 		}
 	}
 
@@ -736,9 +746,12 @@ func (m listModel) renderSidebar() string {
 		}
 	}
 
-	// Error line if any.
-	if m.err != nil {
+	// Status/error line.
+	switch {
+	case m.err != nil:
 		rows = append(rows, blank, row(errorStyle.Render(truncate("! "+m.err.Error(), inner))))
+	case m.statusMsg != "":
+		rows = append(rows, blank, row(truncate(m.statusMsg, inner)))
 	}
 
 	// Fill remaining space above help section.

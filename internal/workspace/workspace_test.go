@@ -515,11 +515,11 @@ func TestNewTestManager_TempDirCleaned(t *testing.T) {
 	}
 }
 
-// ----- provisionTmux: trapCmd must use docker sandbox inspect -----
+// ----- provisionTmux: trapCmd must use docker sandbox ls to check existence -----
 
 // TestProvisionTmux_TrapCmdChecksSandboxExistence verifies that the shell
 // command sent to the workspace's tmux window uses a sandbox-existence check
-// in the loop condition (docker sandbox inspect) rather than "while true".
+// in the loop condition (docker sandbox ls -q | grep) rather than "while true".
 func TestProvisionTmux_TrapCmdChecksSandboxExistence(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
@@ -577,9 +577,9 @@ func TestProvisionTmux_TrapCmdChecksSandboxExistence(t *testing.T) {
 	if strings.Contains(captured, "while true") {
 		t.Errorf("trapCmd uses 'while true'; it must check sandbox existence instead")
 	}
-	// The loop must check sandbox existence via docker sandbox inspect.
-	if !strings.Contains(captured, "docker sandbox inspect") {
-		t.Errorf("trapCmd does not contain 'docker sandbox inspect'; got: %s", captured)
+	// The loop must check sandbox existence via docker sandbox ls -q | grep.
+	if !strings.Contains(captured, "docker sandbox ls -q | grep -qx") {
+		t.Errorf("trapCmd does not contain 'docker sandbox ls -q | grep -qx'; got: %s", captured)
 	}
 }
 
@@ -1785,9 +1785,9 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 			if !strings.Contains(cmd, ws.SandboxID) {
 				t.Errorf("buildTrapCmd: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
 			}
-			// Must use docker sandbox inspect and docker sandbox exec.
-			if !strings.Contains(cmd, "docker sandbox inspect") {
-				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox inspect'\ngot: %s", cmd)
+			// Must use docker sandbox ls -q | grep to check existence, and docker sandbox exec.
+			if !strings.Contains(cmd, "docker sandbox ls -q | grep -qx") {
+				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox ls -q | grep -qx'\ngot: %s", cmd)
 			}
 			if !strings.Contains(cmd, "docker sandbox exec") {
 				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox exec'\ngot: %s", cmd)
@@ -1947,8 +1947,7 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 	// Fake docker that handles sandbox subcommands:
 	// - "image inspect" → exit 0 (image exists)
 	// - "sandbox version" → exit 0
-	// - "sandbox ls --json" → returns empty JSON
-	// - "sandbox inspect" → exit 0 (sandbox exists)
+	// - "sandbox ls --json" → returns sandbox list JSON
 	// - "sandbox create" → exit 0, echoes name
 	// - "sandbox exec" → exit 0
 	script := "#!/bin/sh\n" +
@@ -1963,8 +1962,7 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 		`  sandbox)` + "\n" +
 		`    case "$1" in` + "\n" +
 		`      version) exit 0;;` + "\n" +
-		`      ls) echo "{\"vms\":[{\"name\":\"agency-testproject\",\"status\":\"running\"}]}";;` + "\n" +
-		`      inspect) exit 0;;` + "\n" +
+		`      ls) echo "{\"vms\":[{\"name\":\"agency-testproject\",\"status\":\"running\",\"socket_path\":\"/tmp/agency-testproject.sock\"}]}";;` + "\n" +
 		`      create) echo "agency-testproject"; exit 0;;` + "\n" +
 		`      exec) exit 0;;` + "\n" +
 		`    esac;;` + "\n" +

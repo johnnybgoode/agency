@@ -25,8 +25,16 @@ func ValidateSandboxName(name string) error {
 //
 //nolint:revive // SandboxInfo is intentional: avoids ambiguity when imported as sandbox.SandboxInfo.
 type SandboxInfo struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // "running", "stopped"
+	Name       string `json:"name"`
+	Status     string `json:"status"`      // "running", "stopped" — note: status alone is unreliable
+	SocketPath string `json:"socket_path"` // non-empty only when the VM is actually running
+}
+
+// IsRunning reports whether this sandbox's VM is actually running.
+// The status field can report "running" even when the VM is gone;
+// the presence of a socket_path is the reliable indicator.
+func (s *SandboxInfo) IsRunning() bool {
+	return s.SocketPath != ""
 }
 
 // Manager shells out to the docker CLI to manage Docker sandboxes.
@@ -79,7 +87,7 @@ func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (s
 	if err != nil {
 		return "", fmt.Errorf("finding sandbox %q: %w", name, err)
 	}
-	if info != nil && info.Status == "running" {
+	if info != nil && info.IsRunning() {
 		return info.Name, nil
 	}
 
@@ -150,16 +158,11 @@ func (m *Manager) Remove(ctx context.Context, sandboxName string) error {
 
 // IsRunning reports whether the sandbox is in the running state.
 func (m *Manager) IsRunning(ctx context.Context, sandboxName string) (bool, error) {
-	out, err := m.docker(ctx, "sandbox", "inspect", sandboxName)
+	info, err := m.FindByName(ctx, sandboxName)
 	if err != nil {
 		return false, err
 	}
-
-	var info SandboxInfo
-	if err := json.Unmarshal([]byte(out), &info); err != nil {
-		return false, fmt.Errorf("parsing sandbox inspect JSON: %w", err)
-	}
-	return info.Status == "running", nil
+	return info != nil && info.IsRunning(), nil
 }
 
 // ImageExists reports whether the named image is present in the local Docker

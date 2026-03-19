@@ -46,7 +46,6 @@ func newFakeDocker(t *testing.T, imageExists bool) (mgr *Manager, argsLogFile st
 		`        echo "$name"; exit 0;;` + "\n" +
 		`      stop)    exit 0;;` + "\n" +
 		`      rm)      exit 0;;` + "\n" +
-		`      inspect) echo '{"name":"test","status":"running"}'; exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
 		`esac` + "\n"
 
@@ -191,7 +190,7 @@ func TestFindByName_ReturnsSandboxWhenFound(t *testing.T) {
 		`  sandbox)` + "\n" +
 		`    case "$1" in` + "\n" +
 		`      version) exit 0;;` + "\n" +
-		`      ls) echo '{"vms":[{"name":"my-sandbox","status":"running"}]}'; exit 0;;` + "\n" +
+		`      ls) echo '{"vms":[{"name":"my-sandbox","status":"running","socket_path":"/tmp/my-sandbox.sock"}]}'; exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
 		`esac` + "\n"
 

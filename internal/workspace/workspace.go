@@ -261,7 +261,7 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 		cmd = fmt.Sprintf("--resume %s", ws.SessionID)
 	}
 	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
-		`bash -c 'clear; trap "cd \"%s\" && %s gc --workspace-id %s" EXIT; trap "" INT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
+		`bash -c 'clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; trap "" INT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
 		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
 		shellEscapeDouble(cmd), ws.SandboxID,
 		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,

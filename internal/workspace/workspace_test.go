@@ -1964,6 +1964,7 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 		`      version) exit 0;;` + "\n" +
 		`      ls) echo "{\"vms\":[{\"name\":\"agency-testproject\",\"status\":\"running\",\"socket_path\":\"/tmp/agency-testproject.sock\"}]}";;` + "\n" +
 		`      create) echo "agency-testproject"; exit 0;;` + "\n" +
+		`      run)    exit 0;;` + "\n" +
 		`      exec) exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
 		`esac` + "\n"

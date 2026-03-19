@@ -44,6 +44,7 @@ func newFakeDocker(t *testing.T, imageExists bool) (mgr *Manager, argsLogFile st
 		`          prev="$arg"` + "\n" +
 		`        done` + "\n" +
 		`        echo "$name"; exit 0;;` + "\n" +
+		`      run)     exit 0;;` + "\n" +
 		`      stop)    exit 0;;` + "\n" +
 		`      rm)      exit 0;;` + "\n" +
 		`    esac;;` + "\n" +

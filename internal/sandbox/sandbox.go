@@ -80,15 +80,26 @@ func truncateLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// Ensure returns the name of a sandbox with the given name, creating one if it
-// does not already exist. A sandbox that exists but is stopped is still reused —
-// `docker sandbox exec` and `docker sandbox run` will start it on demand.
+// Ensure returns the name of a running sandbox, starting or creating as needed:
+//   - running  → return immediately
+//   - stopped  → start via `docker sandbox run`
+//   - absent   → create via `docker sandbox create`
 func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (string, error) {
 	info, err := m.FindByName(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("finding sandbox %q: %w", name, err)
 	}
+
 	if info != nil {
+		if info.IsRunning() {
+			return info.Name, nil
+		}
+		// Sandbox exists but is stopped — start it.
+		slog.Info("starting stopped sandbox", "name", name)
+		_, err = m.docker(ctx, "sandbox", "run", name)
+		if err != nil {
+			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
+		}
 		return info.Name, nil
 	}
 

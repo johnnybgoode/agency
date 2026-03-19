@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -45,32 +46,57 @@ var syncDenylist = map[string]bool{
 	"subagents":    true,
 }
 
-// SyncHome copies files from the agent container's /home/agent/ directory back
+// SyncHome copies files from the agent sandbox's /home/agent/ directory back
 // to the host's .agency/home/ directory, applying timestamp-based conflict
-// resolution. Works on both running and stopped containers.
+// resolution. Works on running sandboxes via docker sandbox exec + tar pipe.
 func (m *Manager) SyncHome(ctx context.Context, wsID string, opts SyncOpts) (*SyncResult, error) {
 	ws, ok := m.State.Workspaces[wsID]
 	if !ok {
 		return nil, fmt.Errorf("workspace %s not found", wsID)
 	}
-	if ws.SandboxID == "" {
-		return nil, fmt.Errorf("workspace %s has no container", wsID)
+	if m.State.SandboxID == "" {
+		return nil, fmt.Errorf("no project sandbox available")
 	}
 	if m.Sandbox == nil {
 		return nil, fmt.Errorf("docker is not available")
 	}
+	// Keep ws reference alive (the variable is used in the error message only).
+	_ = ws
 
 	hostHome := filepath.Join(m.ProjectDir, ".agency", "home")
 
-	// Copy container's /home/agent/ to a temp directory.
+	// Copy sandbox's /home/agent/ to a temp directory via tar pipe.
+	// docker sandbox exec <name> tar cf - -C /home/agent/ . | tar xf - -C <tmpDir>
 	tmpDir, err := os.MkdirTemp("", "agency-sync-*")
 	if err != nil {
 		return nil, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := m.Sandbox.CopyFrom(ctx, ws.SandboxID, "/home/agent/.", tmpDir); err != nil {
-		return nil, fmt.Errorf("copying from container: %w", err)
+	tarCmd := exec.CommandContext(ctx, "docker", "sandbox", "exec", m.State.SandboxID, "tar", "cf", "-", "-C", "/home/agent/", ".") //nolint:gosec // SandboxID is validated via state.ValidateSandboxName before storage
+	extractCmd := exec.CommandContext(ctx, "tar", "xf", "-", "-C", tmpDir)
+
+	pipe, err := tarCmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating tar pipe: %w", err)
+	}
+	extractCmd.Stdin = pipe
+
+	if err := tarCmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting tar from sandbox: %w", err)
+	}
+	if err := extractCmd.Start(); err != nil {
+		_ = tarCmd.Process.Kill()
+		return nil, fmt.Errorf("starting tar extract: %w", err)
+	}
+
+	tarErr := tarCmd.Wait()
+	extractErr := extractCmd.Wait()
+	if tarErr != nil {
+		return nil, fmt.Errorf("tar from sandbox: %w", tarErr)
+	}
+	if extractErr != nil {
+		return nil, fmt.Errorf("tar extract: %w", extractErr)
 	}
 
 	result := &SyncResult{}

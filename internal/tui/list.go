@@ -346,10 +346,10 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupHeight = 30
 	popup := m.popup
 	sleepFn := m.sleepFn
-	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
-		slog.Error("refusing to run installer: invalid container ID", "sandbox_id", ws.SandboxID, "error", err)
+	if err := sandbox.ValidateSandboxName(ws.SandboxID); err != nil {
+		slog.Error("refusing to run installer: invalid sandbox name", "sandbox_id", ws.SandboxID, "error", err)
 		return func() tea.Msg {
-			return reconcileDoneMsg{err: fmt.Errorf("invalid container ID: %w", err)}
+			return reconcileDoneMsg{err: fmt.Errorf("invalid sandbox name: %w", err)}
 		}
 	}
 	installerCmd := m.installerCmd(ws.SandboxID)

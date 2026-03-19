@@ -7,17 +7,18 @@ import (
 	"github.com/johnnybgoode/agency/internal/state"
 )
 
-// --- Issue 1 & 7: buildTrapCmd validates container ID and workspace ID ---
+// --- Issue 1 & 7: buildTrapCmd validates sandbox name and workspace ID ---
 
-func TestBuildTrapCmd_RejectsInvalidContainerID(t *testing.T) {
+func TestBuildTrapCmd_RejectsInvalidSandboxName(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
-		SandboxID: "INVALID_ID_WITH_UPPERCASE",
+		SandboxID: "invalid name with spaces",
+		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
 	_, err := mgr.buildTrapCmd(ws, false)
 	if err == nil {
-		t.Error("buildTrapCmd should return error for invalid container ID")
+		t.Error("buildTrapCmd should return error for invalid sandbox name")
 	}
 }
 
@@ -26,10 +27,11 @@ func TestBuildTrapCmd_RejectsShellInjectionContainerID(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		SandboxID: "abc123def456; rm -rf /",
+		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
 	_, err := mgr.buildTrapCmd(ws, false)
 	if err == nil {
-		t.Error("buildTrapCmd should reject container ID containing shell metacharacters")
+		t.Error("buildTrapCmd should reject sandbox name containing shell metacharacters")
 	}
 }
 
@@ -37,7 +39,8 @@ func TestBuildTrapCmd_RejectsInvalidWorkspaceID(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "not-a-valid-ws-id",
-		SandboxID: "abc123def456abc1", // valid container ID
+		SandboxID: "agency-testproject", // valid sandbox name
+		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
 	_, err := mgr.buildTrapCmd(ws, false)
 	if err == nil {
@@ -49,7 +52,8 @@ func TestBuildTrapCmd_AcceptsValidIDs(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
-		SandboxID: "abc123def456abc1", // 16 hex chars — valid
+		SandboxID: "agency-testproject", // valid sandbox name
+		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
 	cmd, err := mgr.buildTrapCmd(ws, false)
 	if err != nil {
@@ -144,7 +148,8 @@ func TestBuildTrapCmd_ProjectDirSpecialChars(t *testing.T) {
 
 			ws := &state.Workspace{
 				ID:        "ws-aabbccdd",
-				SandboxID: "abc123def456abc1",
+				SandboxID: "agency-testproject",
+				SessionID: "12345678-1234-4234-8234-123456789abc",
 			}
 			cmd, err := mgr.buildTrapCmd(ws, false)
 			if err != nil {

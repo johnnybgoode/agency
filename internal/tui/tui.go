@@ -629,7 +629,7 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
 		// Always stop the container, regardless of workspace state.
 		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
-			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID, 10)
+			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID)
 		}
 		// info.WS points into mgr.State.Workspaces (via List()), so
 		// mutating it here updates the authoritative state before SaveState.

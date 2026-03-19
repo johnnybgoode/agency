@@ -554,16 +554,16 @@ func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
 
 // TestInstallAgentsCmd_RejectsInvalidContainerID verifies that installAgentsCmd
 // refuses to build a shell command when the workspace SandboxID is not a valid
-// Docker container hash. Security regression test for audit finding #1.
+// Docker sandbox name. Security regression test for audit finding #1.
 func TestInstallAgentsCmd_RejectsInvalidContainerID(t *testing.T) {
 	maliciousIDs := []string{
 		"$(rm -rf /)",
 		"; cat /etc/passwd",
 		"abc123 && echo pwned",
 		"abc|cat /etc/shadow",
-		"not-a-hex-id",
+		"invalid name with spaces",
 		"",
-		"ABCDEF123456", // uppercase not valid
+		"has/slash", // slashes not valid
 	}
 
 	for _, badID := range maliciousIDs {

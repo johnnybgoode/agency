@@ -94,9 +94,11 @@ func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (s
 		if info.IsRunning() {
 			return info.Name, nil
 		}
-		// Sandbox exists but is stopped — start it.
+		// Sandbox exists but is stopped — wake it with a no-op exec.
+		// `docker sandbox run` is interactive and blocks, so we use exec
+		// which starts the VM on demand and returns immediately.
 		slog.Info("starting stopped sandbox", "name", name)
-		_, err = m.docker(ctx, "sandbox", "run", name)
+		_, err = m.docker(ctx, "sandbox", "exec", name, "true")
 		if err != nil {
 			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
 		}

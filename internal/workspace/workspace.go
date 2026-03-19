@@ -57,13 +57,6 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 
 	tc := tmux.New("agency-" + projectName)
 
-	var sbm *sandbox.Manager
-	if sm, err := sandbox.New(); err == nil {
-		sbm = sm
-	} else {
-		slog.Warn("docker unavailable", "error", err)
-	}
-
 	slog.Info("workspace manager initialized", "project", projectName, "workspaces", len(s.Workspaces))
 	return &Manager{
 		StatePath:   statePath,
@@ -71,7 +64,7 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 		ProjectName: projectName,
 		State:       s,
 		Tmux:        tc,
-		Sandbox:     sbm,
+		Sandbox:     sandbox.NewLazy(),
 		Cfg:         cfg,
 	}, nil
 }
@@ -135,7 +128,7 @@ func (m *Manager) provisionWorktree(ws *state.Workspace) error {
 // provisionContainer creates and starts the Docker container for ws.
 func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, cfg *config.Config) error {
 	slog.Debug("provisioning container", "workspace", ws.ID)
-	if m.Sandbox == nil {
+	if !m.Sandbox.Available() {
 		return errors.New("docker is not available")
 	}
 
@@ -391,7 +384,7 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 	}
 
 	// Stop and remove the sandbox container.
-	if ws.SandboxID != "" && m.Sandbox != nil {
+	if ws.SandboxID != "" && m.Sandbox.Available() {
 		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 5)
 		_ = m.Sandbox.Remove(ctx, ws.SandboxID)
 	}
@@ -473,7 +466,7 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if m.Sandbox != nil {
+		if m.Sandbox.Available() {
 			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, m.ContainerPrefix())
 		}
 	}()
@@ -689,7 +682,7 @@ func (m *Manager) reconcilePaused(
 	}
 
 	// If Docker is unavailable, do nothing — we cannot make progress.
-	if res.contsErr != nil || m.Sandbox == nil {
+	if res.contsErr != nil || !m.Sandbox.Available() {
 		return false
 	}
 
@@ -1062,7 +1055,7 @@ func (m *Manager) AssessQuitStatuses(ctx context.Context) ([]QuitInfo, error) {
 // No-op if no container is running. Does not remove the worktree or state.
 func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error {
 	slog.Info("stopping workspace", "workspace", ws.ID)
-	if ws.SandboxID != "" && m.Sandbox != nil {
+	if ws.SandboxID != "" && m.Sandbox.Available() {
 		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 10)
 	}
 	ws.State = state.StatePaused
@@ -1074,7 +1067,7 @@ func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error 
 // transitions ws to StatePaused. The docker daemon handles the actual shutdown
 // independently; the agency process need not wait for it.
 func (m *Manager) StopWorkspaceBackground(ctx context.Context, ws *state.Workspace) error {
-	if ws.SandboxID != "" && m.Sandbox != nil {
+	if ws.SandboxID != "" && m.Sandbox.Available() {
 		_ = m.Sandbox.StopBackground(ctx, ws.SandboxID, 10)
 	}
 	ws.State = state.StatePaused

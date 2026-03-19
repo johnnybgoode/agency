@@ -269,7 +269,7 @@ var gcCmd = &cobra.Command{
 				return nil // already cleaned up; exit quietly
 			}
 			dirty, _ := worktree.IsDirty(ws.WorktreePath)
-			if ws.SandboxID != "" && mgr.Sandbox != nil {
+			if ws.SandboxID != "" && mgr.Sandbox.Available() {
 				_ = mgr.Sandbox.Stop(ctx, ws.SandboxID, 10)
 				_ = mgr.Sandbox.Remove(ctx, ws.SandboxID)
 			}
@@ -309,7 +309,7 @@ var gcCmd = &cobra.Command{
 		// Find orphan containers.
 		var orphanContainers []string // container IDs
 		var orphanContainerNames []string
-		if mgr.Sandbox != nil {
+		if mgr.Sandbox.Available() {
 			if containers, err := mgr.Sandbox.ListByProject(ctx, mgr.ContainerPrefix()); err == nil {
 				for _, c := range containers {
 					if !knownSandboxIDs[c.ID] {
@@ -368,7 +368,7 @@ var gcCmd = &cobra.Command{
 
 		// Remove orphan containers.
 		for i, cid := range orphanContainers {
-			if mgr.Sandbox != nil {
+			if mgr.Sandbox.Available() {
 				if err := mgr.Sandbox.Remove(ctx, cid); err != nil {
 					slog.Warn("gc: failed to remove container", "name", orphanContainerNames[i], "error", err)
 					fmt.Fprintf(os.Stderr, "warning: removing container %s: %v\n", orphanContainerNames[i], err)

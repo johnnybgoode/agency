@@ -613,6 +613,167 @@ func TestWindowWidth(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// RunBatch
+// ---------------------------------------------------------------------------
+
+func TestRunBatch(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmds    [][]string
+		wantSeq []string
+	}{
+		{
+			name: "two commands chained with semicolon",
+			cmds: [][]string{
+				{"set-option", "-t", "sess", "status", "on"},
+				{"set-option", "-t", "sess", "status-left", "hi"},
+			},
+			wantSeq: []string{"set-option", "-t", "sess", "status", "on", ";", "set-option", "-t", "sess", "status-left", "hi"},
+		},
+		{
+			name: "single command has no semicolons",
+			cmds: [][]string{
+				{"set-option", "-t", "sess", "status", "on"},
+			},
+			wantSeq: []string{"set-option", "-t", "sess", "status", "on"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, "")
+			if err := c.RunBatch(tt.cmds); err != nil {
+				t.Fatalf("RunBatch() error: %v", err)
+			}
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, tt.wantSeq...) {
+				t.Errorf("RunBatch args = %v, want sequence %v", args, tt.wantSeq)
+			}
+		})
+	}
+}
+
+func TestRunBatchEmpty(t *testing.T) {
+	c, _ := newFakeClient(t, "")
+	if err := c.RunBatch(nil); err != nil {
+		t.Fatalf("RunBatch(nil) error: %v", err)
+	}
+}
+
+func TestRunBatchError(t *testing.T) {
+	c := &Client{SessionName: "x", tmuxPath: ""}
+	err := c.RunBatch([][]string{{"set-option", "foo", "bar"}})
+	if err == nil {
+		t.Fatal("RunBatch with empty tmuxPath should return error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AllEnvironments
+// ---------------------------------------------------------------------------
+
+func TestAllEnvironments(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   map[string]string
+	}{
+		{
+			name:   "multiple variables",
+			output: "FOO=bar\nBAZ=qux\nAGENCY_NAV=%5",
+			want:   map[string]string{"FOO": "bar", "BAZ": "qux", "AGENCY_NAV": "%5"},
+		},
+		{
+			name:   "removed variables are excluded",
+			output: "FOO=bar\n-REMOVED_VAR\nBAZ=qux",
+			want:   map[string]string{"FOO": "bar", "BAZ": "qux"},
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   map[string]string{},
+		},
+		{
+			name:   "value contains equals sign",
+			output: "KEY=a=b=c",
+			want:   map[string]string{"KEY": "a=b=c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, tt.output)
+			got, err := c.AllEnvironments()
+			if err != nil {
+				t.Fatalf("AllEnvironments() error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("AllEnvironments() returned %d entries, want %d: %v", len(got), len(tt.want), got)
+			}
+			for k, v := range tt.want {
+				if got[k] != v {
+					t.Errorf("AllEnvironments()[%q] = %q, want %q", k, got[k], v)
+				}
+			}
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, "show-environment", "-t", "test-session") {
+				t.Errorf("AllEnvironments args = %v, want [show-environment -t test-session]", args)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SessionPaneIDs
+// ---------------------------------------------------------------------------
+
+func TestSessionPaneIDs(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   map[string]bool
+	}{
+		{
+			name:   "multiple panes",
+			output: "%1\n%2\n%5",
+			want:   map[string]bool{"%1": true, "%2": true, "%5": true},
+		},
+		{
+			name:   "single pane",
+			output: "%3",
+			want:   map[string]bool{"%3": true},
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   map[string]bool{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, argsFile := newFakeClient(t, tt.output)
+			got, err := c.SessionPaneIDs()
+			if err != nil {
+				t.Fatalf("SessionPaneIDs() error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("SessionPaneIDs() returned %d entries, want %d: %v", len(got), len(tt.want), got)
+			}
+			for k := range tt.want {
+				if !got[k] {
+					t.Errorf("SessionPaneIDs() missing %q", k)
+				}
+			}
+			args := readArgs(t, argsFile)
+			if !argsContainSequence(args, "list-panes", "-s", "-t", "test-session") {
+				t.Errorf("SessionPaneIDs args = %v, want [list-panes -s -t test-session ...]", args)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // SetHook
 // ---------------------------------------------------------------------------
 

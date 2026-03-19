@@ -45,8 +45,19 @@ func newFakeTuiManager(t *testing.T, fakeOutputByCmd map[string]string) (mgr *wo
 		cases += "  " + cmd + ") echo '" + out + "';;\n"
 	}
 
+	// The script records every sub-command. When RunBatch is used, the args
+	// contain ";" separators — we split on those and record each sub-command.
 	script := "#!/bin/sh\n" +
-		`echo "$1" >> ` + argsFile + "\n" +
+		`cmd=""` + "\n" +
+		`for arg in "$@"; do` + "\n" +
+		`  if [ "$arg" = ";" ]; then` + "\n" +
+		`    [ -n "$cmd" ] && echo "$cmd" >> ` + argsFile + "\n" +
+		`    cmd=""` + "\n" +
+		`  elif [ -z "$cmd" ]; then` + "\n" +
+		`    cmd="$arg"` + "\n" +
+		`  fi` + "\n" +
+		`done` + "\n" +
+		`[ -n "$cmd" ] && echo "$cmd" >> ` + argsFile + "\n" +
 		`case "$1" in` + "\n" +
 		cases +
 		`esac` + "\n"

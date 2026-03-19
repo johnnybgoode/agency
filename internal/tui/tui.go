@@ -171,30 +171,30 @@ func Run() error {
 // split the window — runSidebar handles the 2-pane layout after the terminal is
 // attached so that tmux applies percentages against the real terminal size.
 // It does not acquire the lock — the sidebar process inside the pane does that.
+//
+// This uses a lightweight path: only a tmux client and state file are needed,
+// avoiding config.Load, sandbox.New (exec.LookPath("docker")), and full
+// Manager construction.
 func runAndAttach(projectDir string) error {
 	slog.Info("bootstrapping tmux session", "projectDir", projectDir)
-	cfg, err := config.Load(config.GlobalConfigPath(), config.ProjectConfigPath(projectDir))
-	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
+	projectName := filepath.Base(projectDir)
+	tc := tmux.New("agency-" + projectName)
 
-	mgr, err := workspace.NewManager(projectDir, cfg)
-	if err != nil {
-		return fmt.Errorf("initializing workspace manager: %w", err)
-	}
-
-	if err := mgr.Tmux.EnsureSession(); err != nil {
+	if err := tc.EnsureSession(); err != nil {
 		return fmt.Errorf("ensuring tmux session: %w", err)
 	}
 
 	// Check if the sidebar is already running (live PID in state).
+	statePath := filepath.Join(projectDir, ".agency", "state.json")
 	alreadyRunning := false
-	if s, err := state.Read(mgr.StatePath); err == nil && s.PID > 0 && state.IsProcessAlive(s.PID) {
+	s, stateErr := state.Read(statePath)
+	if stateErr == nil && s.PID > 0 && state.IsProcessAlive(s.PID) {
 		alreadyRunning = true
 	}
 
 	if !alreadyRunning {
-		leftPaneID, findErr := findSidebarPane(mgr)
+		// Lightweight findSidebarPane: uses tc + workspace map directly.
+		leftPaneID, findErr := findSidebarPaneLite(tc, s)
 		if findErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not find pane for sidebar: %v\n", findErr)
 		} else {
@@ -204,15 +204,44 @@ func runAndAttach(projectDir string) error {
 			}
 			// Loop restarts agency on non-zero exit (crash). Exit 0 (graceful quit) breaks the loop.
 			cmd := fmt.Sprintf("cd %q && while ! %q; do true; done", projectDir, exe)
-			if err := mgr.Tmux.SendKeysToPane(leftPaneID, cmd); err != nil {
+			if err := tc.SendKeysToPane(leftPaneID, cmd); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not start sidebar in pane: %v\n", err)
 			}
 			// Focus the left pane so the user lands there after attach.
-			_ = mgr.Tmux.SelectPane(leftPaneID)
+			_ = tc.SelectPane(leftPaneID)
 		}
 	}
 
-	return mgr.Tmux.Attach()
+	return tc.Attach()
+}
+
+// findSidebarPaneLite is a lightweight version of findSidebarPane that takes
+// a tmux client and state directly, without requiring a full workspace.Manager.
+func findSidebarPaneLite(tc *tmux.Client, s *state.State) (string, error) {
+	windows, err := tc.ListWindows()
+	if err != nil {
+		return "", err
+	}
+
+	var workspaces map[string]*state.Workspace
+	if s != nil {
+		workspaces = s.Workspaces
+	}
+	winID, _ := firstNonWorkspaceWindow(windows, workspaces)
+
+	if winID == "" {
+		winID, err = tc.NewWindow("agency")
+		if err != nil {
+			return "", fmt.Errorf("creating window: %w", err)
+		}
+	}
+
+	panes, err := tc.GetWindowPanes(winID)
+	if err != nil || len(panes) == 0 {
+		return "", fmt.Errorf("getting panes: %w", err)
+	}
+
+	return panes[0], nil
 }
 
 // firstNonWorkspaceWindow returns the ID of the first window that does not
@@ -230,32 +259,6 @@ func firstNonWorkspaceWindow(windows []tmux.Window, workspaces map[string]*state
 		}
 	}
 	return "", false
-}
-
-// findSidebarPane finds or creates a single-pane window suitable for the
-// sidebar. It reuses the first non-workspace window, or creates a new one.
-// Does NOT split — the split is deferred to runSidebar's ensureLayout call.
-func findSidebarPane(mgr *workspace.Manager) (string, error) {
-	windows, err := mgr.Tmux.ListWindows()
-	if err != nil {
-		return "", err
-	}
-
-	winID, _ := firstNonWorkspaceWindow(windows, mgr.State.Workspaces)
-
-	if winID == "" {
-		winID, err = mgr.Tmux.NewWindow("agency")
-		if err != nil {
-			return "", fmt.Errorf("creating window: %w", err)
-		}
-	}
-
-	panes, err := mgr.Tmux.GetWindowPanes(winID)
-	if err != nil || len(panes) == 0 {
-		return "", fmt.Errorf("getting panes: %w", err)
-	}
-
-	return panes[0], nil
 }
 
 // acquireSidebarLock acquires the agency flock, handling the stale-lock case
@@ -378,18 +381,25 @@ func runSidebar(projectDir string) error {
 }
 
 // recoverLayoutFromEnv attempts to recover pane IDs from tmux session
-// environment variables. Returns (navPane, workspacePane, mainWindow, ok).
+// environment variables. Uses bulk queries (AllEnvironments + SessionPaneIDs)
+// to reduce exec calls from 5 to 2. Returns (navPane, workspacePane, mainWindow, ok).
 func recoverLayoutFromEnv(mgr *workspace.Manager) (navPane, workspacePane, mainWindow string, ok bool) {
-	navPane, _ = mgr.Tmux.GetEnvironment(tmux.EnvNavPane)
-	workspacePane, _ = mgr.Tmux.GetEnvironment(tmux.EnvWorkspacePane)
-	mainWindow, _ = mgr.Tmux.GetEnvironment(tmux.EnvMainWindow)
+	env, err := mgr.Tmux.AllEnvironments()
+	if err != nil {
+		return "", "", "", false
+	}
+
+	navPane = env[tmux.EnvNavPane]
+	workspacePane = env[tmux.EnvWorkspacePane]
+	mainWindow = env[tmux.EnvMainWindow]
 
 	if navPane == "" || workspacePane == "" || mainWindow == "" {
 		return "", "", "", false
 	}
 
-	// Verify both panes actually exist in tmux.
-	if !mgr.Tmux.PaneExists(navPane) || !mgr.Tmux.PaneExists(workspacePane) {
+	// Verify both panes actually exist in tmux (single exec).
+	paneIDs, err := mgr.Tmux.SessionPaneIDs()
+	if err != nil || !paneIDs[navPane] || !paneIDs[workspacePane] {
 		return "", "", "", false
 	}
 
@@ -398,11 +408,14 @@ func recoverLayoutFromEnv(mgr *workspace.Manager) (navPane, workspacePane, mainW
 }
 
 // persistLayoutEnv writes pane IDs to tmux session environment variables
-// for crash-resilient rediscovery.
+// for crash-resilient rediscovery (single batched fork).
 func persistLayoutEnv(mgr *workspace.Manager, navPane, wsPane, mainWin string) {
-	_ = mgr.Tmux.SetEnvironment(tmux.EnvNavPane, navPane)
-	_ = mgr.Tmux.SetEnvironment(tmux.EnvWorkspacePane, wsPane)
-	_ = mgr.Tmux.SetEnvironment(tmux.EnvMainWindow, mainWin)
+	sess := mgr.Tmux.SessionName
+	_ = mgr.Tmux.RunBatch([][]string{
+		{"set-environment", "-t", sess, tmux.EnvNavPane, navPane},
+		{"set-environment", "-t", sess, tmux.EnvWorkspacePane, wsPane},
+		{"set-environment", "-t", sess, tmux.EnvMainWindow, mainWin},
+	})
 }
 
 // protectWorkspacePane sets remain-on-exit and installs a pane-died hook
@@ -577,25 +590,36 @@ func ensureSplitOnFirstWorkspace(mgr *workspace.Manager) {
 }
 
 // finalizeLayout applies common layout configuration: status bar, pane
-// protection, keybindings, and the custom status bar.
+// protection, keybindings, and the custom status bar — all in a single
+// batched tmux fork.
 func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {
-	_ = mgr.Tmux.SetOption("status", "on")
-	_ = mgr.Tmux.SetOption("status-position", "top")
-	if rightPaneID != "" {
-		protectWorkspacePane(mgr, rightPaneID)
+	sess := mgr.Tmux.SessionName
+	left, right := computeStatusBarStrings(mgr)
+
+	cmds := [][]string{
+		{"set-option", "-t", sess, "status", "on"},
+		{"set-option", "-t", sess, "status-position", "top"},
 	}
-	installKeybindings(mgr)
-	applyStatusBar(mgr)
+	if rightPaneID != "" {
+		// protectWorkspacePane inline
+		cmds = append(cmds, []string{"set-option", "-p", "-t", rightPaneID, "remain-on-exit", "on"})
+		hookCmd := fmt.Sprintf(
+			"if-shell -F '#{==:#{pane_id},%s}' 'respawn-pane -t %s'",
+			rightPaneID, rightPaneID,
+		)
+		cmds = append(cmds, []string{"set-hook", "-t", sess, "pane-died[respawn-workspace]", hookCmd})
+	}
+	// installKeybindings inline
+	cmds = append(cmds, []string{"bind-key", "-n", "-T", "root", "C-Space", "last-pane"})
+	// applyStatusBar inline
+	cmds = append(cmds, statusBarBatchCmds(sess, left, right)...)
+
+	_ = mgr.Tmux.RunBatch(cmds)
 }
 
-// installKeybindings sets up session-scoped key bindings for pane navigation.
-func installKeybindings(mgr *workspace.Manager) {
-	// C-Space: toggle last pane (quick switch between nav and workspace).
-	_ = mgr.Tmux.BindKey("C-Space", "last-pane")
-}
-
-// applyStatusBar configures the tmux status bar with project and workspace info.
-func applyStatusBar(mgr *workspace.Manager) {
+// computeStatusBarStrings returns the left and right status bar strings
+// for the current workspace state. This is a pure function for caching.
+func computeStatusBarStrings(mgr *workspace.Manager) (left, right string) {
 	wsCount := len(mgr.State.Workspaces)
 
 	activeName := ""
@@ -605,18 +629,30 @@ func applyStatusBar(mgr *workspace.Manager) {
 		}
 	}
 
-	left := fmt.Sprintf(" agency · %s ", mgr.ProjectName)
+	left = fmt.Sprintf(" agency · %s ", mgr.ProjectName)
 
-	right := fmt.Sprintf(" %d workspace(s) ", wsCount)
+	right = fmt.Sprintf(" %d workspace(s) ", wsCount)
 	if activeName != "" {
 		right = fmt.Sprintf(" %s · %d workspace(s) ", activeName, wsCount)
 	}
+	return left, right
+}
 
-	_ = mgr.Tmux.SetOption("status-style", "bg=default,fg=default")
-	_ = mgr.Tmux.SetOption("status-left-length", "60")
-	_ = mgr.Tmux.SetOption("status-right-length", "60")
-	_ = mgr.Tmux.SetOption("status-left", left)
-	_ = mgr.Tmux.SetOption("status-right", right)
+// statusBarBatchCmds returns the tmux batch commands for the status bar.
+func statusBarBatchCmds(sess, left, right string) [][]string {
+	return [][]string{
+		{"set-option", "-t", sess, "status-style", "bg=default,fg=default"},
+		{"set-option", "-t", sess, "status-left-length", "60"},
+		{"set-option", "-t", sess, "status-right-length", "60"},
+		{"set-option", "-t", sess, "status-left", left},
+		{"set-option", "-t", sess, "status-right", right},
+	}
+}
+
+// applyStatusBar configures the tmux status bar with project and workspace info.
+func applyStatusBar(mgr *workspace.Manager) {
+	left, right := computeStatusBarStrings(mgr)
+	_ = mgr.Tmux.RunBatch(statusBarBatchCmds(mgr.Tmux.SessionName, left, right))
 }
 
 // doQuitCleanup stops all containers and cleans up clean worktrees on quit.
@@ -628,7 +664,7 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	for _, info := range infos {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
 		// Always stop the container, regardless of workspace state.
-		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
+		if info.WS.SandboxID != "" && mgr.Sandbox.Available() {
 			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID, 10)
 		}
 		// info.WS points into mgr.State.Workspaces (via List()), so

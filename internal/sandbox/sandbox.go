@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/johnnybgoode/agency/internal/state"
 )
@@ -47,19 +48,51 @@ type ContainerInfo struct {
 }
 
 // Manager shells out to the docker CLI to manage sandbox containers.
-type Manager struct{}
+// The docker binary lookup is deferred to the first call to Available() via
+// sync.Once, so constructing a Manager is free of exec calls.
+type Manager struct {
+	once      sync.Once
+	available bool
+}
 
 // New verifies that docker is installed and returns a Manager ready for use.
 // The daemon health check is intentionally skipped at construction time so
 // startup is fast; any daemon-reachability error surfaces on the first real
 // operation (Create, Start, etc.).
+//
+// Deprecated: prefer NewLazy which defers the LookPath check.
 func New() (*Manager, error) {
 	path, err := exec.LookPath("docker")
 	if err != nil {
 		return nil, errors.New("docker is not installed")
 	}
 	slog.Debug("docker binary found", "path", path)
-	return &Manager{}, nil
+	m := &Manager{}
+	m.once.Do(func() { m.available = true })
+	return m, nil
+}
+
+// NewLazy returns a Manager without performing any exec calls. The docker
+// binary availability is checked lazily on the first call to Available().
+func NewLazy() *Manager {
+	return &Manager{}
+}
+
+// Available reports whether docker is installed (LookPath succeeds).
+// The check is performed once and cached. Safe to call on a nil receiver.
+func (m *Manager) Available() bool {
+	if m == nil {
+		return false
+	}
+	m.once.Do(func() {
+		if path, err := exec.LookPath("docker"); err == nil {
+			slog.Debug("docker binary found (lazy)", "path", path)
+			m.available = true
+		} else {
+			slog.Warn("docker unavailable (lazy check)", "error", err)
+		}
+	})
+	return m.available
 }
 
 // redactArgs returns a copy of args with sensitive -e KEY=VALUE pairs redacted.

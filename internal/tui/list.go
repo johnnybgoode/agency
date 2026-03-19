@@ -96,6 +96,8 @@ type listModel struct {
 	quitInfos         []workspace.QuitInfo // populated by popup result for quit cleanup
 	shouldKillSession bool
 	lastActiveID      string                          // tracks active workspace ID to detect changes
+	lastStatusLeft    string                          // cached status bar left string for change detection
+	lastStatusRight   string                          // cached status bar right string for change detection
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
 	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
@@ -534,8 +536,13 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			verifyLayoutIntegrity(m.manager)
 			// Create the right-pane split when the first workspace appears.
 			ensureSplitOnFirstWorkspace(m.manager)
-			// Update status bar with current workspace info.
-			applyStatusBar(m.manager)
+			// Update status bar only when strings actually changed.
+			left, right := computeStatusBarStrings(m.manager)
+			if left != m.lastStatusLeft || right != m.lastStatusRight {
+				m.lastStatusLeft = left
+				m.lastStatusRight = right
+				_ = m.manager.Tmux.RunBatch(statusBarBatchCmds(m.manager.Tmux.SessionName, left, right))
+			}
 		}
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
 

@@ -56,7 +56,7 @@ func (m *Manager) SyncHome(ctx context.Context, wsID string, opts SyncOpts) (*Sy
 	if ws.SandboxID == "" {
 		return nil, fmt.Errorf("workspace %s has no container", wsID)
 	}
-	if m.Sandbox == nil {
+	if !m.Sandbox.Available() {
 		return nil, fmt.Errorf("docker is not available")
 	}
 

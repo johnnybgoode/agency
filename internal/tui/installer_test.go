@@ -855,8 +855,8 @@ func TestInstall_SKeyDispatchesCmd(t *testing.T) {
 	}
 }
 
-func TestInstall_PopupCmdContainerID(t *testing.T) {
-	const containerID = "aabb00cc11ddbbee"
+func TestInstall_PopupCmdSandboxName(t *testing.T) {
+	const sandboxName = "agency-testproject"
 	runner := &fakePopupRunner{
 		// Use a no-op command so DisplayPopup succeeds without executing anything real.
 		runErr: nil,
@@ -864,7 +864,7 @@ func TestInstall_PopupCmdContainerID(t *testing.T) {
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		State:     state.StateRunning,
-		SandboxID: containerID,
+		SandboxID: sandboxName,
 	}
 	cmdFn := func(id string) string { return "echo installed-" + id }
 	m := newInstallerListModel(t, runner, cmdFn, ws)
@@ -878,8 +878,8 @@ func TestInstall_PopupCmdContainerID(t *testing.T) {
 	got := runner.popupCmd
 	runner.mu.Unlock()
 
-	if !strings.Contains(got, containerID) {
-		t.Errorf("DisplayPopup called with %q, want it to contain %q", got, containerID)
+	if !strings.Contains(got, sandboxName) {
+		t.Errorf("DisplayPopup called with %q, want it to contain %q", got, sandboxName)
 	}
 }
 

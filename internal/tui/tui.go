@@ -619,18 +619,20 @@ func applyStatusBar(mgr *workspace.Manager) {
 	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
-// doQuitCleanup stops all containers and cleans up clean worktrees on quit.
-// Container stops are fired as non-blocking background calls so the user isn't
+// doQuitCleanup stops the project sandbox and cleans up clean worktrees on quit.
+// The sandbox stop is fired as a non-blocking background call so the user isn't
 // blocked waiting for docker.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	slog.Info("quit cleanup starting", "workspaces", len(infos))
 	ctx := context.Background()
+
+	// Stop the shared project sandbox once (not per-workspace).
+	if mgr.Sandbox != nil {
+		_ = mgr.StopProjectSandbox(ctx)
+	}
+
 	for _, info := range infos {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
-		// Always stop the container, regardless of workspace state.
-		if info.WS.SandboxID != "" && mgr.Sandbox != nil {
-			_ = mgr.Sandbox.StopBackground(ctx, info.WS.SandboxID)
-		}
 		// info.WS points into mgr.State.Workspaces (via List()), so
 		// mutating it here updates the authoritative state before SaveState.
 		if info.IsActive {

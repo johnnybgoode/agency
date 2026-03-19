@@ -23,31 +23,11 @@ func Merge(base, override *Config) *Config {
 	result.Agent.MCPServers = mergeMCPServers(base.Agent.MCPServers, override.Agent.MCPServers)
 
 	// Sandbox
-	if override.Sandbox.Type != "" {
-		result.Sandbox.Type = override.Sandbox.Type
-	}
 	if override.Sandbox.Image != "" {
 		result.Sandbox.Image = override.Sandbox.Image
 	}
-	if override.Sandbox.Memory != "" {
-		result.Sandbox.Memory = override.Sandbox.Memory
-	}
-	if override.Sandbox.CPUs != 0 {
-		result.Sandbox.CPUs = override.Sandbox.CPUs
-	}
-	if override.Sandbox.Network != "" {
-		result.Sandbox.Network = override.Sandbox.Network
-	}
 	if override.Sandbox.DockerfileDir != "" {
 		result.Sandbox.DockerfileDir = override.Sandbox.DockerfileDir
-	}
-
-	// Credentials
-	if override.Credentials.AnthropicAPIKey != "" {
-		result.Credentials.AnthropicAPIKey = override.Credentials.AnthropicAPIKey
-	}
-	if override.Credentials.GithubToken != "" {
-		result.Credentials.GithubToken = override.Credentials.GithubToken
 	}
 
 	// Worktree

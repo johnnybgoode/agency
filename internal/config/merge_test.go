@@ -82,14 +82,7 @@ func TestMerge(t *testing.T) {
 				Model:       "base-model",
 			},
 			Sandbox: SandboxConfig{
-				Type:   "docker",
-				Image:  "base-image",
-				Memory: "4g",
-				CPUs:   2,
-			},
-			Credentials: CredentialsConfig{
-				AnthropicAPIKey: "base-key",
-				GithubToken:     "base-token",
+				Image: "base-image",
 			},
 			Worktree: WorktreeConfig{
 				BranchPrefix: "agent/",
@@ -102,14 +95,7 @@ func TestMerge(t *testing.T) {
 				Model:       "override-model",
 			},
 			Sandbox: SandboxConfig{
-				Type:   "podman",
-				Image:  "override-image",
-				Memory: "8g",
-				CPUs:   4,
-			},
-			Credentials: CredentialsConfig{
-				AnthropicAPIKey: "override-key",
-				GithubToken:     "override-token",
+				Image: "override-image",
 			},
 			Worktree: WorktreeConfig{
 				BranchPrefix: "dev/",
@@ -127,20 +113,8 @@ func TestMerge(t *testing.T) {
 		if result.Agent.Model != "override-model" {
 			t.Errorf("Agent.Model = %q, want %q", result.Agent.Model, "override-model")
 		}
-		if result.Sandbox.Type != "podman" {
-			t.Errorf("Sandbox.Type = %q, want %q", result.Sandbox.Type, "podman")
-		}
 		if result.Sandbox.Image != "override-image" {
 			t.Errorf("Sandbox.Image = %q, want %q", result.Sandbox.Image, "override-image")
-		}
-		if result.Sandbox.Memory != "8g" {
-			t.Errorf("Sandbox.Memory = %q, want %q", result.Sandbox.Memory, "8g")
-		}
-		if result.Sandbox.CPUs != 4 {
-			t.Errorf("Sandbox.CPUs = %d, want %d", result.Sandbox.CPUs, 4)
-		}
-		if result.Credentials.AnthropicAPIKey != "override-key" {
-			t.Errorf("Credentials.AnthropicAPIKey = %q, want %q", result.Credentials.AnthropicAPIKey, "override-key")
 		}
 		if result.Worktree.BranchPrefix != "dev/" {
 			t.Errorf("Worktree.BranchPrefix = %q, want %q", result.Worktree.BranchPrefix, "dev/")
@@ -188,8 +162,6 @@ func TestMerge(t *testing.T) {
 				Model:   "base-model",
 			},
 			Sandbox: SandboxConfig{
-				Type:  "docker",
-				CPUs:  2,
 				Image: "base-image",
 			},
 		}
@@ -203,11 +175,8 @@ func TestMerge(t *testing.T) {
 		if result.Agent.Model != "base-model" {
 			t.Errorf("Agent.Model = %q, want %q", result.Agent.Model, "base-model")
 		}
-		if result.Sandbox.Type != "docker" {
-			t.Errorf("Sandbox.Type = %q, want %q", result.Sandbox.Type, "docker")
-		}
-		if result.Sandbox.CPUs != 2 {
-			t.Errorf("Sandbox.CPUs = %d, want %d", result.Sandbox.CPUs, 2)
+		if result.Sandbox.Image != "base-image" {
+			t.Errorf("Sandbox.Image = %q, want %q", result.Sandbox.Image, "base-image")
 		}
 	})
 

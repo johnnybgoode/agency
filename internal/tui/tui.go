@@ -619,7 +619,10 @@ func applyStatusBar(mgr *workspace.Manager) {
 	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
-// doQuitCleanup stops the project sandbox and cleans up finished worktrees.
+// doQuitCleanup stops the project sandbox and marks workspaces as paused.
+// Worktree removal is deferred to the next launch's GC phase — removing
+// mounted filesystem content while the sandbox daemon is still tearing down
+// can corrupt Docker's internal state.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	slog.Info("quit cleanup starting", "workspaces", len(infos))
 	ctx := context.Background()
@@ -631,16 +634,9 @@ func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 
 	for _, info := range infos {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
-		// info.WS points into mgr.State.Workspaces (via List()), so
-		// mutating it here updates the authoritative state before SaveState.
 		if info.IsActive {
 			info.WS.State = state.StatePaused
 			info.WS.UpdatedAt = time.Now().UTC()
-		}
-
-		if !info.IsDirty {
-			// CLEAN: remove worktree, kill tmux window, purge state.
-			_ = mgr.CleanupDoneWorkspace(ctx, info.WS)
 		}
 	}
 	_ = mgr.SaveState()

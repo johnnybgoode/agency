@@ -85,17 +85,20 @@ func truncateLog(s string, maxLen int) string {
 //   - stopped  → start via `docker sandbox run`
 //   - absent   → create via `docker sandbox create`
 func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (string, error) {
+	slog.Debug("ensure sandbox", "name", name, "projectDir", projectDir, "image", image)
 	info, err := m.FindByName(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("finding sandbox %q: %w", name, err)
 	}
 
 	if info != nil {
+		slog.Debug("sandbox found", "name", info.Name, "status", info.Status, "socket_path", info.SocketPath, "is_running", info.IsRunning())
 		if info.IsRunning() {
+			slog.Info("sandbox already running", "name", name)
 			return info.Name, nil
 		}
 		// Sandbox exists but is stopped — start it detached.
-		slog.Info("starting stopped sandbox", "name", name)
+		slog.Info("starting stopped sandbox", "name", name, "status", info.Status, "socket_path", info.SocketPath)
 		_, err = m.docker(ctx, "sandbox", "run", "-d", name)
 		if err != nil {
 			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
@@ -103,7 +106,7 @@ func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (s
 		return info.Name, nil
 	}
 
-	slog.Info("creating sandbox", "name", name, "image", image, "projectDir", projectDir)
+	slog.Info("creating sandbox (not found in ls)", "name", name, "image", image, "projectDir", projectDir)
 	_, err = m.docker(ctx, "sandbox", "create", "--name", name, "-t", image, "claude", projectDir)
 	if err != nil {
 		return "", fmt.Errorf("creating sandbox %q: %w", name, err)
@@ -121,19 +124,26 @@ type sandboxListOutput struct {
 func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, error) {
 	out, err := m.docker(ctx, "sandbox", "ls", "--json")
 	if err != nil {
+		slog.Error("sandbox ls --json failed", "error", err)
 		return nil, fmt.Errorf("listing sandboxes: %w", err)
 	}
 
+	slog.Debug("sandbox ls --json raw output", "output", out)
+
 	var result sandboxListOutput
 	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		slog.Error("sandbox ls --json parse failed", "error", err, "raw", truncateLog(out, 500))
 		return nil, fmt.Errorf("parsing sandbox list JSON: %w", err)
 	}
 
+	slog.Debug("sandbox ls parsed", "vm_count", len(result.VMs))
 	for i, vm := range result.VMs {
+		slog.Debug("sandbox ls entry", "name", vm.Name, "status", vm.Status, "socket_path", vm.SocketPath)
 		if vm.Name == name {
 			return &result.VMs[i], nil
 		}
 	}
+	slog.Debug("sandbox not found in ls", "wanted", name)
 	return nil, nil //nolint:nilnil // nil,nil means "not found" which is the documented API
 }
 
@@ -149,7 +159,12 @@ func ExecArgs(sandboxName string, args []string) []string {
 // Stop stops a running sandbox.
 func (m *Manager) Stop(ctx context.Context, sandboxName string) error {
 	slog.Info("stopping sandbox", "sandbox", sandboxName)
-	_, err := m.docker(ctx, "sandbox", "stop", sandboxName)
+	out, err := m.docker(ctx, "sandbox", "stop", sandboxName)
+	if err != nil {
+		slog.Error("sandbox stop failed", "sandbox", sandboxName, "error", err)
+	} else {
+		slog.Info("sandbox stopped", "sandbox", sandboxName, "output", truncateLog(out, 200))
+	}
 	return err
 }
 

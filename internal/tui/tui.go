@@ -619,17 +619,13 @@ func applyStatusBar(mgr *workspace.Manager) {
 	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
-// doQuitCleanup stops the project sandbox and cleans up clean worktrees on quit.
-// The sandbox stop is fired as a non-blocking background call so the user isn't
-// blocked waiting for docker.
+// doQuitCleanup pauses active workspaces and cleans up finished worktrees.
+// The project sandbox is intentionally left running — it is a lightweight
+// MicroVM that persists across agency sessions and will be reused on next
+// launch. Stopping it can leave the sandbox daemon in a broken state.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	slog.Info("quit cleanup starting", "workspaces", len(infos))
 	ctx := context.Background()
-
-	// Stop the shared project sandbox once (not per-workspace).
-	if mgr.Sandbox != nil {
-		_ = mgr.StopProjectSandbox(ctx)
-	}
 
 	for _, info := range infos {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/johnnybgoode/agency/internal/state"
 )
@@ -119,21 +120,25 @@ type sandboxListOutput struct {
 	VMs []SandboxInfo `json:"vms"`
 }
 
+// ListRetryDelay is the delay before retrying a failed `docker sandbox ls`.
+// Exported so tests can set it to zero to avoid slow retries.
+var ListRetryDelay = 2 * time.Second
+
 // FindByName returns the SandboxInfo for the sandbox with the given name, or
 // nil if no matching sandbox is found.
+//
+// The Docker sandbox daemon can transiently fail with "socket path is empty"
+// while its internal state settles after a stop. We retry once after a short
+// delay to ride out this race.
 func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, error) {
-	out, err := m.docker(ctx, "sandbox", "ls", "--json")
+	result, err := m.listSandboxes(ctx)
 	if err != nil {
-		slog.Error("sandbox ls --json failed", "error", err)
-		return nil, fmt.Errorf("listing sandboxes: %w", err)
-	}
-
-	slog.Debug("sandbox ls --json raw output", "output", out)
-
-	var result sandboxListOutput
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		slog.Error("sandbox ls --json parse failed", "error", err, "raw", truncateLog(out, 500))
-		return nil, fmt.Errorf("parsing sandbox list JSON: %w", err)
+		slog.Warn("sandbox ls --json failed, retrying", "delay", ListRetryDelay, "error", err)
+		time.Sleep(ListRetryDelay)
+		result, err = m.listSandboxes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing sandboxes: %w", err)
+		}
 	}
 
 	slog.Debug("sandbox ls parsed", "vm_count", len(result.VMs))
@@ -145,6 +150,24 @@ func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, er
 	}
 	slog.Debug("sandbox not found in ls", "wanted", name)
 	return nil, nil //nolint:nilnil // nil,nil means "not found" which is the documented API
+}
+
+// listSandboxes calls `docker sandbox ls --json` and parses the result.
+func (m *Manager) listSandboxes(ctx context.Context) (*sandboxListOutput, error) {
+	out, err := m.docker(ctx, "sandbox", "ls", "--json")
+	if err != nil {
+		slog.Error("sandbox ls --json failed", "error", err)
+		return nil, err
+	}
+
+	slog.Debug("sandbox ls --json raw output", "output", out)
+
+	var result sandboxListOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		slog.Error("sandbox ls --json parse failed", "error", err, "raw", truncateLog(out, 500))
+		return nil, fmt.Errorf("parsing sandbox list JSON: %w", err)
+	}
+	return &result, nil
 }
 
 // ExecArgs returns the argument slice needed to exec a command inside the named

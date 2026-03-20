@@ -2036,6 +2036,11 @@ func newFakeDockerManagerSandboxEnsureFails(t *testing.T) *Manager {
 // TestReconcilePaused_SandboxEnsureFails verifies that reconcilePaused calls
 // markFailed when EnsureProjectSandbox returns an error.
 func TestReconcilePaused_SandboxEnsureFails(t *testing.T) {
+	// Disable retry delay so the intentional ls failure doesn't slow tests.
+	orig := sandbox.ListRetryDelay
+	sandbox.ListRetryDelay = 0
+	t.Cleanup(func() { sandbox.ListRetryDelay = orig })
+
 	m := newFakeDockerManagerSandboxEnsureFails(t)
 	ctx := context.Background()
 

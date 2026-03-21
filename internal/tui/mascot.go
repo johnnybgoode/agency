@@ -50,17 +50,17 @@ func mascotLegs(idx int) string {
 		return " " + orangeBlock.Render("█") + " " +
 			orangeBlock.Render("▀") + "   " +
 			orangeBlock.Render("▀") + " " +
-			orangeBlock.Render("█")
+			orangeBlock.Render("█") + " "
 	case 2:
 		return " " + orangeBlock.Render("▀") + " " +
 			orangeBlock.Render("█") + "   " +
 			orangeBlock.Render("█") + " " +
-			orangeBlock.Render("▀")
+			orangeBlock.Render("▀") + " "
 	default:
 		return " " + orangeBlock.Render("█") + " " +
 			orangeBlock.Render("█") + "   " +
 			orangeBlock.Render("█") + " " +
-			orangeBlock.Render("█")
+			orangeBlock.Render("█") + " "
 	}
 }
 

@@ -70,7 +70,8 @@ Poll `tmux capture-pane -p -t "$SESSION"` up to ~5s (500ms intervals) until the 
 # Poll example:
 for i in $(seq 1 10); do
   OUTPUT=$(tmux capture-pane -p -t "$SESSION")
-  # if sidebar chrome visible, break
+  # Break as soon as the TUI chrome is visible (Agency header present, not a plain shell prompt)
+  echo "$OUTPUT" | grep -q "Agency" && break
   sleep 0.5
 done
 ```

@@ -166,7 +166,7 @@ func (m *Manager) EnsureProjectSandbox(ctx context.Context) error {
 			return errors.New("docker is not available")
 		}
 		info, err := m.Sandbox.FindByName(ctx, m.State.SandboxID)
-		if err == nil && info != nil && info.Status == "running" {
+		if err == nil && info != nil && info.IsRunning() {
 			slog.Debug("project sandbox already running", "sandbox", m.State.SandboxID)
 			return nil
 		}
@@ -250,6 +250,9 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	if err := ValidateWorkspaceID(ws.ID); err != nil {
+		return "", fmt.Errorf("buildTrapCmd: %w", err)
+	}
+	if err := state.ValidateSessionID(ws.SessionID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	agencyBin, _ := os.Executable()
@@ -629,7 +632,9 @@ func (m *Manager) reconcileRunning(
 	markFailed func(*state.Workspace, string),
 ) (shouldDelete, changed bool) {
 	// If the sandbox query succeeded and reports it's not running, mark failed.
-	if res.sandboxErr == nil && !res.sandboxRunning {
+	// Only check when a sandbox was actually assigned; SandboxID == "" means
+	// Docker wasn't used for this workspace, so a "not running" result is benign.
+	if res.sandboxErr == nil && !res.sandboxRunning && m.State.SandboxID != "" {
 		markFailed(ws, "sandbox disappeared")
 		return false, true
 	}

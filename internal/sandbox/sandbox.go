@@ -82,6 +82,35 @@ func truncateLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+// sandboxReadyTimeout is the maximum time to wait for a sandbox to become ready.
+// Exported so tests can reduce it.
+var sandboxReadyTimeout = 30 * time.Second
+
+// sandboxPollInterval is the interval between readiness polls.
+// Exported so tests can reduce it.
+var sandboxPollInterval = 500 * time.Millisecond
+
+// waitUntilRunning polls FindByName until the sandbox reports IsRunning() or the
+// deadline is reached. It uses sandboxReadyTimeout as a hard cap in addition to
+// respecting ctx cancellation.
+func (m *Manager) waitUntilRunning(ctx context.Context, name string) error {
+	deadline := time.Now().Add(sandboxReadyTimeout)
+	for {
+		info, err := m.FindByName(ctx, name)
+		if err == nil && info != nil && info.IsRunning() {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sandbox %q did not become ready within %s", name, sandboxReadyTimeout)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sandboxPollInterval):
+		}
+	}
+}
+
 // Ensure returns the name of a running sandbox, starting or creating as needed:
 //   - running  → return immediately
 //   - stopped  → start via `docker sandbox run`
@@ -96,11 +125,14 @@ func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (s
 		if info.IsRunning() {
 			return info.Name, nil
 		}
-		// Sandbox exists but is stopped — start it detached.
+		// Sandbox exists but is stopped — start it detached, then wait for readiness.
 		slog.Info("starting stopped sandbox", "name", name)
 		_, err = m.docker(ctx, "sandbox", "run", "-d", name)
 		if err != nil {
 			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
+		}
+		if err := m.waitUntilRunning(ctx, name); err != nil {
+			return "", fmt.Errorf("waiting for sandbox %q to be ready: %w", name, err)
 		}
 		return info.Name, nil
 	}

@@ -81,6 +81,9 @@ var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
 // alphanumeric or ._+- characters, for a maximum total length of 128.
 var sandboxNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+\-]{0,127}$`)
 
+// sessionIDRe matches UUID v4 format: xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx (lowercase hex).
+var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
 // ValidateWorkspaceID returns an error if id does not match the expected
 // workspace ID format (ws-<8hex>).
 func ValidateWorkspaceID(id string) error {
@@ -96,6 +99,14 @@ func ValidateWorkspaceID(id string) error {
 func ValidateSandboxName(name string) error {
 	if !sandboxNameRe.MatchString(name) {
 		return fmt.Errorf("invalid sandbox name %q: must start with alphanumeric and contain only [a-zA-Z0-9._+-], max 128 chars", name)
+	}
+	return nil
+}
+
+// ValidateSessionID returns an error if id is not a valid UUID v4 session ID.
+func ValidateSessionID(id string) error {
+	if !sessionIDRe.MatchString(id) {
+		return fmt.Errorf("invalid session ID %q: must be a UUID v4 (xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx)", id)
 	}
 	return nil
 }
@@ -117,6 +128,11 @@ func (s *State) Validate() error {
 		// Validate the workspace's own ID field matches the map key.
 		if ws.ID != id {
 			return fmt.Errorf("workspace ID mismatch: key=%q, field=%q", id, ws.ID)
+		}
+		if ws.SessionID != "" {
+			if err := ValidateSessionID(ws.SessionID); err != nil {
+				return fmt.Errorf("state file: workspace %s: %w", id, err)
+			}
 		}
 	}
 	return nil

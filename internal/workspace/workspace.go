@@ -1,4 +1,4 @@
-// Package workspace manages agent workspaces with worktrees and containers.
+// Package workspace manages agent workspaces with worktrees and sandboxes.
 package workspace
 
 import (
@@ -85,9 +85,30 @@ func generateID() string {
 	return "ws-" + hex.EncodeToString(b)
 }
 
+// generateSessionID generates a UUID v4 string using crypto/rand.
+// Format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+func generateSessionID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Sprintf("workspace: rand.Read for session ID: %v", err))
+	}
+	// Set version 4
+	b[6] = (b[6] & 0x0f) | 0x40
+	// Set variant bits
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
 // ValidateWorkspaceID returns an error if id does not match the workspace ID format.
 func ValidateWorkspaceID(id string) error {
 	return state.ValidateWorkspaceID(id)
+}
+
+// SandboxName returns the Docker sandbox name used for this project.
+// All workspaces in the project share a single sandbox.
+func (m *Manager) SandboxName() string {
+	return "agency-" + m.ProjectName
 }
 
 // validateCreate checks that name and branch are non-empty, that neither
@@ -132,83 +153,76 @@ func (m *Manager) provisionWorktree(ws *state.Workspace) error {
 	return nil
 }
 
-// provisionContainer creates and starts the Docker container for ws.
-func (m *Manager) provisionContainer(ctx context.Context, ws *state.Workspace, cfg *config.Config) error {
-	slog.Debug("provisioning container", "workspace", ws.ID)
+// EnsureProjectSandbox ensures the shared project sandbox is running.
+// If the sandbox is already tracked in state and still running, it returns
+// early. Otherwise it builds the image if needed and creates/starts the sandbox.
+func (m *Manager) EnsureProjectSandbox(ctx context.Context) error {
+	cfg := m.Cfg
+	name := m.SandboxName()
+
+	// If we already have a sandbox ID tracked, check if it's still running.
+	if m.State.SandboxID != "" {
+		if m.Sandbox == nil {
+			return errors.New("docker is not available")
+		}
+		info, err := m.Sandbox.FindByName(ctx, m.State.SandboxID)
+		if err == nil && info != nil && info.Status == "running" {
+			slog.Debug("project sandbox already running", "sandbox", m.State.SandboxID)
+			return nil
+		}
+		// Sandbox is gone or stopped — recreate it below.
+		slog.Info("project sandbox not running, recreating", "sandbox", m.State.SandboxID)
+	}
+
 	if m.Sandbox == nil {
 		return errors.New("docker is not available")
-	}
-
-	// Build non-sensitive environment variables (passed as -e).
-	var env []string
-	if v := os.Getenv("GIT_USER"); v != "" {
-		env = append(env, "GIT_USER="+v)
-	}
-	if v := os.Getenv("GIT_EMAIL"); v != "" {
-		env = append(env, "GIT_EMAIL="+v)
-	}
-
-	// Write sensitive credentials to a temp env-file (mode 0600) so they
-	// are not visible via `docker inspect`.
-	var envFilePath string
-	var sensitiveEnv []string
-	if key := cfg.Credentials.AnthropicAPIKey; key != "" {
-		sensitiveEnv = append(sensitiveEnv, "ANTHROPIC_API_KEY="+key)
-	}
-	if tok := cfg.Credentials.GithubToken; tok != "" {
-		sensitiveEnv = append(sensitiveEnv, "GITHUB_TOKEN="+tok)
-	}
-	if len(sensitiveEnv) > 0 {
-		tmpDir, err := os.MkdirTemp("", "agency-env-*")
-		if err != nil {
-			return fmt.Errorf("creating temp dir for env file: %w", err)
-		}
-		defer os.RemoveAll(tmpDir)
-		envFilePath = filepath.Join(tmpDir, "credentials")
-		content := strings.Join(sensitiveEnv, "\n") + "\n"
-		if err := os.WriteFile(envFilePath, []byte(content), 0o600); err != nil {
-			return fmt.Errorf("writing env file: %w", err)
-		}
-	}
-
-	// Determine whether the project config file should be mounted.
-	configMount := ""
-	cfgPath := config.ProjectConfigPath(m.ProjectDir)
-	if _, err := os.Stat(cfgPath); err == nil {
-		configMount = cfgPath
-	}
-
-	sharedHome := ""
-	candidate := filepath.Join(m.ProjectDir, ".agency", "home")
-	if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-		sharedHome = candidate
 	}
 
 	if err := m.Sandbox.EnsureImage(ctx, cfg.Sandbox.Image, dockerBuildContext(cfg.Sandbox.DockerfileDir)); err != nil {
 		return fmt.Errorf("ensuring sandbox image: %w", err)
 	}
 
-	containerID, err := m.Sandbox.Create(ctx, &sandbox.CreateOpts{
-		Image:           cfg.Sandbox.Image,
-		Name:            "agency-sb-" + m.ProjectName + "-" + worktree.Slugify(ws.Branch) + "-" + ws.ID,
-		WorktreeMount:   ws.WorktreePath,
-		ConfigMount:     configMount,
-		SharedHomeMount: sharedHome,
-		Env:             env,
-		EnvFile:         envFilePath,
-		Memory:          cfg.Sandbox.Memory,
-		CPUs:            cfg.Sandbox.CPUs,
-		Network:         cfg.Sandbox.Network,
-	})
+	sandboxName, err := m.Sandbox.Ensure(ctx, name, m.ProjectDir, cfg.Sandbox.Image)
 	if err != nil {
-		return fmt.Errorf("creating sandbox: %w", err)
+		return fmt.Errorf("ensuring project sandbox: %w", err)
 	}
-	ws.SandboxID = containerID
-	slog.Debug("container created", "workspace", ws.ID, "container", containerID)
 
-	if err := m.Sandbox.Start(ctx, containerID); err != nil {
-		return fmt.Errorf("starting sandbox: %w", err)
+	m.State.SandboxID = sandboxName
+	if err := m.SaveState(); err != nil {
+		return fmt.Errorf("saving sandbox state: %w", err)
 	}
+	slog.Info("project sandbox ready", "sandbox", sandboxName)
+	return nil
+}
+
+// StopProjectSandboxBackground fires the sandbox stop without waiting.
+func (m *Manager) StopProjectSandboxBackground(ctx context.Context) error {
+	if m.State.SandboxID == "" || m.Sandbox == nil {
+		return nil
+	}
+	slog.Info("stopping sandbox in background", "sandbox", m.State.SandboxID)
+	return m.Sandbox.StopBackground(ctx, m.State.SandboxID)
+}
+
+// ensureSandbox ensures the shared project sandbox exists and assigns its ID
+// to the workspace. Also generates a session UUID for the workspace if not set.
+func (m *Manager) ensureSandbox(ctx context.Context, ws *state.Workspace) error {
+	slog.Debug("ensuring project sandbox", "workspace", ws.ID)
+
+	if m.State.SandboxID == "" {
+		if err := m.EnsureProjectSandbox(ctx); err != nil {
+			return fmt.Errorf("ensuring project sandbox: %w", err)
+		}
+	}
+
+	// Reference the shared sandbox.
+	ws.SandboxID = m.State.SandboxID
+
+	// Generate a session UUID if not already set.
+	if ws.SessionID == "" {
+		ws.SessionID = generateSessionID()
+	}
+
 	return nil
 }
 
@@ -227,29 +241,36 @@ func shellEscapeDouble(s string) string {
 }
 
 // buildTrapCmd constructs the bash wrapper command for the tmux window.
-// When resume is true, RESUME is initialized to "--continue" so claude
-// picks up where it left off instead of starting fresh.
+// When resume is true, Claude starts with --resume <sessionID> to pick up
+// where it left off. Otherwise it starts with --session-id <sessionID> to
+// begin a new session that can be resumed later.
 // Returns an error if the workspace's SandboxID or ID fails validation.
 func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error) {
-	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
+	if err := sandbox.ValidateSandboxName(ws.SandboxID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	if err := ValidateWorkspaceID(ws.ID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
 	}
 	agencyBin, _ := os.Executable()
-	resumeVal := ""
+
+	// First iteration uses --session-id to start a new session with our UUID.
+	// After first exit (and on resume=true), use --resume to resume that session.
+	cmd := fmt.Sprintf("--session-id %s", ws.SessionID)
 	if resume {
-		resumeVal = "--continue"
+		cmd = fmt.Sprintf("--resume %s", ws.SessionID)
 	}
 	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
-		`bash -c 'trap "cd \"%s\" && %s gc --workspace-id %s" EXIT; trap "" INT; RESUME="%s"; while docker container inspect %s >/dev/null 2>&1; do docker exec -it %s bash -c "claude $RESUME" || true; RESUME="--continue"; sleep 1; done'`,
-		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID, shellEscapeDouble(resumeVal), ws.SandboxID, ws.SandboxID,
+		`bash -c 'clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
+		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
+		shellEscapeDouble(cmd), ws.SandboxID,
+		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,
+		ws.SessionID,
 	), nil
 }
 
 // openTmuxWindow creates a new tmux window for ws, captures its pane ID, and
-// sends the trap-loop command. If resume is true, Claude starts with --continue.
+// sends the trap-loop command. If resume is true, Claude starts with --resume.
 func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 	action := "provisioning"
 	if resume {
@@ -270,10 +291,10 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 	// The wrapper bash command:
 	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
 	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
-	//    inside the container (for cancellation) without killing the wrapper
-	//  - while loop condition: checks container existence before each exec so
-	//    the loop exits cleanly when Remove() deletes the container, preventing
-	//    "No such container" errors from flooding the workspace pane
+	//    inside the sandbox (for cancellation) without killing the wrapper
+	//  - while loop condition: checks sandbox existence before each exec so
+	//    the loop exits cleanly when the sandbox is removed, preventing
+	//    error messages from flooding the workspace pane
 	trapCmd, err := m.buildTrapCmd(ws, resume)
 	if err != nil {
 		return fmt.Errorf("%s: building trap command: %w", action, err)
@@ -285,13 +306,13 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 }
 
 // provisionTmux opens a new tmux window for ws, captures the pane ID, and
-// launches the agent inside the container.
+// launches the agent inside the sandbox.
 func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	return m.openTmuxWindow(ws, false)
 }
 
 // resumeTmux opens a new tmux window for ws and launches the agent with
-// --continue so it resumes where it left off.
+// --resume so it continues where it left off.
 func (m *Manager) resumeTmux(ws *state.Workspace) error {
 	return m.openTmuxWindow(ws, true)
 }
@@ -338,23 +359,17 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(err)
 	}
 
-	// Step 2: load workspace-local config overlay if present.
-	cfg := m.Cfg
-	if localCfg, err := config.Load(config.WorkspaceConfigPath(ws.WorktreePath)); err == nil {
-		cfg = config.Merge(m.Cfg, localCfg)
-	}
-
-	// Step 3: create and start container.
-	if err := m.provisionContainer(ctx, ws, cfg); err != nil {
+	// Step 2: ensure shared project sandbox and assign session ID.
+	if err := m.ensureSandbox(ctx, ws); err != nil {
 		return fail(err)
 	}
 
-	// Step 4: open tmux window and launch agent.
+	// Step 3: open tmux window and launch agent.
 	if err := m.provisionTmux(ws); err != nil {
 		return fail(err)
 	}
 
-	// Step 5: swap new workspace pane into the visible right slot, then mark running.
+	// Step 4: swap new workspace pane into the visible right slot, then mark running.
 	_ = m.SwapActivePane(ws.ID)
 	ws.State = state.StateRunning
 	ws.UpdatedAt = time.Now().UTC()
@@ -362,7 +377,7 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(fmt.Errorf("saving running state: %w", err))
 	}
 
-	// Step 6: focus the main window so sidebar + workspace are both visible.
+	// Step 5: focus the main window so sidebar + workspace are both visible.
 	if m.State.MainWindowID != "" {
 		_ = m.Tmux.SelectWindow(m.State.MainWindowID)
 	} else if ws.TmuxWindow != "" {
@@ -373,8 +388,9 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 	return ws, nil
 }
 
-// Remove tears down a workspace: stops/removes its container, deletes the
-// worktree, kills the tmux window, and removes the workspace from state.
+// Remove tears down a workspace: sends C-c to interrupt Claude, kills the tmux
+// window, removes the worktree, and removes the workspace from state.
+// The shared project sandbox is NOT stopped or removed.
 func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 	slog.Info("removing workspace", "workspace", workspaceID)
 	ws, ok := m.State.Workspaces[workspaceID]
@@ -388,12 +404,6 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 		_ = m.Tmux.SendKeysToPane(ws.PaneID, "C-c")
 	} else if ws.TmuxWindow != "" {
 		_ = m.Tmux.SendKeys(ws.TmuxWindow, "C-c")
-	}
-
-	// Stop and remove the sandbox container.
-	if ws.SandboxID != "" && m.Sandbox != nil {
-		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 5)
-		_ = m.Sandbox.Remove(ctx, ws.SandboxID)
 	}
 
 	// Remove the git worktree.
@@ -448,18 +458,18 @@ func (m *Manager) Remove(ctx context.Context, workspaceID string) error {
 	return nil
 }
 
-// reconcileResult holds the three parallel query results used by Reconcile.
+// reconcileResult holds the parallel query results used by Reconcile.
 type reconcileResult struct {
-	windows    []tmux.Window
-	containers []sandbox.ContainerInfo
-	worktrees  []worktree.Info
-	windowsErr error
-	contsErr   error
-	wtErr      error
+	windows        []tmux.Window
+	sandboxRunning bool
+	worktrees      []worktree.Info
+	windowsErr     error
+	sandboxErr     error
+	wtErr          error
 }
 
-// gatherReconcileResources queries tmux, Docker, and git worktrees in parallel
-// and returns the combined result.
+// gatherReconcileResources queries tmux, Docker sandbox status, and git worktrees
+// in parallel and returns the combined result.
 func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult {
 	var res reconcileResult
 	var wg sync.WaitGroup
@@ -473,8 +483,12 @@ func (m *Manager) gatherReconcileResources(ctx context.Context) reconcileResult 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if m.Sandbox != nil {
-			res.containers, res.contsErr = m.Sandbox.ListByProject(ctx, m.ContainerPrefix())
+		if m.Sandbox != nil && m.State.SandboxID != "" {
+			running, err := m.Sandbox.IsRunning(ctx, m.State.SandboxID)
+			res.sandboxRunning = running
+			res.sandboxErr = err
+		} else if m.Sandbox == nil {
+			res.sandboxErr = errors.New("docker is not available")
 		}
 	}()
 
@@ -520,21 +534,14 @@ func (m *Manager) cleanupActiveWorkspaceID() bool {
 	return changed
 }
 
-// buildLookupSets constructs boolean lookup maps for windows, container IDs, and
-// worktree paths from the reconcile result. Maps are only populated when the
-// corresponding query succeeded to avoid destructive changes on partial data.
-func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeSet map[string]bool) {
+// buildLookupSets constructs boolean lookup maps for windows and worktree paths
+// from the reconcile result. Maps are only populated when the corresponding
+// query succeeded to avoid destructive changes on partial data.
+func buildLookupSets(res *reconcileResult) (windowSet, worktreeSet map[string]bool) {
 	windowSet = make(map[string]bool, len(res.windows))
 	if res.windowsErr == nil {
 		for _, w := range res.windows {
 			windowSet[w.ID] = true
-		}
-	}
-
-	containerIDSet = make(map[string]bool, len(res.containers))
-	if res.contsErr == nil {
-		for _, c := range res.containers {
-			containerIDSet[c.ID] = true
 		}
 	}
 
@@ -544,17 +551,17 @@ func buildLookupSets(res *reconcileResult) (windowSet, containerIDSet, worktreeS
 			worktreeSet[wt.Path] = true
 		}
 	}
-	return windowSet, containerIDSet, worktreeSet
+	return windowSet, worktreeSet
 }
 
-// Reconcile queries tmux, Docker, and git worktrees in parallel then corrects
-// workspace states that have drifted from reality.
+// Reconcile queries tmux, Docker sandbox status, and git worktrees in parallel
+// then corrects workspace states that have drifted from reality.
 func (m *Manager) Reconcile(ctx context.Context) error {
 	res := m.gatherReconcileResources(ctx)
-	slog.Debug("reconcile resources gathered", "windows", len(res.windows), "containers", len(res.containers), "worktrees", len(res.worktrees))
+	slog.Debug("reconcile resources gathered", "windows", len(res.windows), "sandboxRunning", res.sandboxRunning, "worktrees", len(res.worktrees))
 
-	windowSet, containerIDSet, worktreeSet := buildLookupSets(&res)
-	toDelete, changed := m.reconcileWorkspaces(ctx, &res, windowSet, containerIDSet, worktreeSet)
+	windowSet, worktreeSet := buildLookupSets(&res)
+	toDelete, changed := m.reconcileWorkspaces(ctx, &res, windowSet, worktreeSet)
 
 	for _, id := range toDelete {
 		delete(m.State.Workspaces, id)
@@ -579,15 +586,15 @@ func (m *Manager) reconcileOneWorkspace(
 	ctx context.Context,
 	ws *state.Workspace,
 	res *reconcileResult,
-	windowSet, containerIDSet, worktreeSet map[string]bool,
+	windowSet, worktreeSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (shouldDelete, changed bool) {
 	switch ws.State {
 	case state.StateRunning:
-		return m.reconcileRunning(ws, res, windowSet, containerIDSet, markFailed)
+		return m.reconcileRunning(ws, res, windowSet, markFailed)
 
 	case state.StateProvisioning:
-		return false, m.reconcileProvisioning(ws, res, containerIDSet, markFailed)
+		return false, m.reconcileProvisioning(ws, res, markFailed)
 
 	case state.StateCreating:
 		if ws.WorktreePath == "" {
@@ -596,14 +603,14 @@ func (m *Manager) reconcileOneWorkspace(
 		}
 
 	case state.StateCompleting:
-		if res.contsErr == nil && (ws.SandboxID == "" || !containerIDSet[ws.SandboxID]) {
-			ws.State = state.StateDone
-			ws.UpdatedAt = time.Now().UTC()
-			return false, true
-		}
+		// Sandbox is shared — completing just means the workspace is done.
+		// Transition to done state.
+		ws.State = state.StateDone
+		ws.UpdatedAt = time.Now().UTC()
+		return false, true
 
 	case state.StatePaused:
-		return false, m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+		return false, m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
 
 	case state.StateDone:
 		if res.wtErr == nil && ws.WorktreePath != "" && !worktreeSet[ws.WorktreePath] {
@@ -618,20 +625,21 @@ func (m *Manager) reconcileOneWorkspace(
 func (m *Manager) reconcileRunning(
 	ws *state.Workspace,
 	res *reconcileResult,
-	windowSet, containerIDSet map[string]bool,
+	windowSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (shouldDelete, changed bool) {
-	if res.contsErr == nil && ws.SandboxID != "" && !containerIDSet[ws.SandboxID] {
+	// If the sandbox query succeeded and reports it's not running, mark failed.
+	if res.sandboxErr == nil && !res.sandboxRunning {
 		markFailed(ws, "sandbox disappeared")
 		return false, true
 	}
 	if res.windowsErr == nil && ws.TmuxWindow != "" && !windowSet[ws.TmuxWindow] {
 		slog.Warn("tmux window disappeared, recreating", "workspace", ws.ID, "old_window", ws.TmuxWindow)
 		if newWin, err := m.Tmux.NewWindow(worktree.Slugify(ws.Branch)); err == nil {
-			if validateErr := sandbox.ValidateContainerID(ws.SandboxID); validateErr != nil {
-				slog.Warn("skipping docker exec: invalid container ID", "workspace", ws.ID, "error", validateErr)
+			if validateErr := sandbox.ValidateSandboxName(ws.SandboxID); validateErr != nil {
+				slog.Warn("skipping docker sandbox exec: invalid sandbox name", "workspace", ws.ID, "error", validateErr)
 			} else {
-				_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker exec -it %s bash", ws.SandboxID))
+				_ = m.Tmux.SendKeys(newWin, fmt.Sprintf("docker sandbox exec -it -w %q %s bash", ws.WorktreePath, ws.SandboxID))
 			}
 			ws.TmuxWindow = newWin
 			// Capture new pane ID.
@@ -656,13 +664,13 @@ func (m *Manager) reconcileRunning(
 func (m *Manager) reconcileProvisioning(
 	ws *state.Workspace,
 	res *reconcileResult,
-	containerIDSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (changed bool) {
-	if res.contsErr != nil {
+	// If sandbox query had an error, we can't make progress.
+	if res.sandboxErr != nil {
 		return false
 	}
-	if ws.SandboxID != "" && containerIDSet[ws.SandboxID] {
+	if res.sandboxRunning {
 		ws.State = state.StateRunning
 		ws.UpdatedAt = time.Now().UTC()
 		return true
@@ -672,14 +680,14 @@ func (m *Manager) reconcileProvisioning(
 }
 
 // reconcilePaused handles reconcile logic for a workspace in StatePaused.
-// It attempts to restart the workspace by restarting an existing stopped
-// container, or by re-provisioning a fresh one when the container has been
-// destroyed. Returns true if the workspace state changed.
+// It attempts to resume the workspace by ensuring the project sandbox is
+// running and attaching a new tmux window.
+// Returns true if the workspace state changed.
 func (m *Manager) reconcilePaused(
 	ctx context.Context,
 	ws *state.Workspace,
 	res *reconcileResult,
-	containerIDSet, worktreeSet map[string]bool,
+	worktreeSet map[string]bool,
 	markFailed func(*state.Workspace, string),
 ) (changed bool) {
 	// If the worktree is gone, the workspace cannot be resumed.
@@ -689,34 +697,28 @@ func (m *Manager) reconcilePaused(
 	}
 
 	// If Docker is unavailable, do nothing — we cannot make progress.
-	if res.contsErr != nil || m.Sandbox == nil {
+	if res.sandboxErr != nil || m.Sandbox == nil {
 		return false
 	}
 
-	if containerIDSet[ws.SandboxID] {
-		// Container exists but is stopped — restart it and attach a new window.
-		if err := m.Sandbox.Start(ctx, ws.SandboxID); err != nil {
-			markFailed(ws, fmt.Sprintf("restarting container: %v", err))
-			return true
-		}
-		if err := m.resumeTmux(ws); err != nil {
-			markFailed(ws, fmt.Sprintf("resuming tmux: %v", err))
-			return true
-		}
-	} else {
-		// Container is gone — re-provision from the worktree.
-		cfg := m.Cfg
-		if localCfg, err := config.Load(config.WorkspaceConfigPath(ws.WorktreePath)); err == nil {
-			cfg = config.Merge(m.Cfg, localCfg)
-		}
-		if err := m.provisionContainer(ctx, ws, cfg); err != nil {
-			markFailed(ws, fmt.Sprintf("re-provisioning container: %v", err))
-			return true
-		}
-		if err := m.resumeTmux(ws); err != nil {
-			markFailed(ws, fmt.Sprintf("resuming tmux after re-provision: %v", err))
-			return true
-		}
+	// Ensure the shared project sandbox is running.
+	if err := m.EnsureProjectSandbox(ctx); err != nil {
+		markFailed(ws, fmt.Sprintf("ensuring project sandbox: %v", err))
+		return true
+	}
+
+	// Make sure this workspace references the sandbox.
+	ws.SandboxID = m.State.SandboxID
+
+	// Ensure session ID is set for resuming.
+	if ws.SessionID == "" {
+		ws.SessionID = generateSessionID()
+	}
+
+	// Reattach via tmux using --resume.
+	if err := m.resumeTmux(ws); err != nil {
+		markFailed(ws, fmt.Sprintf("resuming tmux: %v", err))
+		return true
 	}
 
 	ws.State = state.StateRunning
@@ -727,7 +729,7 @@ func (m *Manager) reconcilePaused(
 // reconcileWorkspaces processes all workspaces and handles state transitions based
 // on the current tmux, docker, and worktree state. Returns workspaces to delete
 // and whether any changes were made.
-func (m *Manager) reconcileWorkspaces(ctx context.Context, res *reconcileResult, windowSet, containerIDSet, worktreeSet map[string]bool) ([]string, bool) {
+func (m *Manager) reconcileWorkspaces(ctx context.Context, res *reconcileResult, windowSet, worktreeSet map[string]bool) ([]string, bool) {
 	markFailed := func(ws *state.Workspace, reason string) {
 		fromState := string(ws.State)
 		ws.FailedFrom = &fromState
@@ -740,7 +742,7 @@ func (m *Manager) reconcileWorkspaces(ctx context.Context, res *reconcileResult,
 	var toDelete []string
 
 	for id, ws := range m.State.Workspaces {
-		del, chg := m.reconcileOneWorkspace(ctx, ws, res, windowSet, containerIDSet, worktreeSet, markFailed)
+		del, chg := m.reconcileOneWorkspace(ctx, ws, res, windowSet, worktreeSet, markFailed)
 		if chg {
 			changed = true
 		}
@@ -750,14 +752,6 @@ func (m *Manager) reconcileWorkspaces(ctx context.Context, res *reconcileResult,
 	}
 
 	return toDelete, changed
-}
-
-// ContainerPrefix returns the Docker container name prefix used to scope
-// sandbox operations to this project. It ends with "-" so that Docker's
-// substring --filter does not accidentally match containers belonging to a
-// project whose name starts with the same characters.
-func (m *Manager) ContainerPrefix() string {
-	return "agency-sb-" + m.ProjectName + "-"
 }
 
 // SidebarWidthPercent returns the configured sidebar width percentage.
@@ -1012,7 +1006,7 @@ type QuitInfo struct {
 }
 
 // isActiveState reports whether a workspace state is considered "active" for
-// quit purposes (i.e. has a running or provisioning container that needs stopping).
+// quit purposes (i.e. has a running or provisioning sandbox session that needs stopping).
 func isActiveState(s state.WorkspaceState) bool {
 	switch s {
 	case state.StateCreating, state.StateProvisioning, state.StateRunning, state.StatePaused:
@@ -1058,25 +1052,19 @@ func (m *Manager) AssessQuitStatuses(ctx context.Context) ([]QuitInfo, error) {
 	return infos, firstErr
 }
 
-// StopWorkspace stops the sandbox container and transitions ws to StatePaused.
-// No-op if no container is running. Does not remove the worktree or state.
+// StopWorkspace transitions ws to StatePaused. The shared project sandbox is
+// NOT stopped — it is shared by all workspaces. Does not remove the worktree
+// or state entry.
 func (m *Manager) StopWorkspace(ctx context.Context, ws *state.Workspace) error {
 	slog.Info("stopping workspace", "workspace", ws.ID)
-	if ws.SandboxID != "" && m.Sandbox != nil {
-		_ = m.Sandbox.Stop(ctx, ws.SandboxID, 10)
-	}
 	ws.State = state.StatePaused
 	ws.UpdatedAt = time.Now().UTC()
 	return m.SaveState()
 }
 
-// StopWorkspaceBackground fires a non-blocking docker stop and immediately
-// transitions ws to StatePaused. The docker daemon handles the actual shutdown
-// independently; the agency process need not wait for it.
+// StopWorkspaceBackground immediately transitions ws to StatePaused without
+// stopping the shared project sandbox (which remains running for other workspaces).
 func (m *Manager) StopWorkspaceBackground(ctx context.Context, ws *state.Workspace) error {
-	if ws.SandboxID != "" && m.Sandbox != nil {
-		_ = m.Sandbox.StopBackground(ctx, ws.SandboxID, 10)
-	}
 	ws.State = state.StatePaused
 	ws.UpdatedAt = time.Now().UTC()
 	return m.SaveState()

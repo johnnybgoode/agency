@@ -252,7 +252,7 @@ func TestReconcile_KeepsActiveWorkspaceIDWhenRunning(t *testing.T) {
 	m := newTestManager(t)
 	ctx := context.Background()
 
-	// A running workspace with a SandboxID and TmuxWindow both empty so the
+	// A running workspace with empty SandboxID and TmuxWindow so the
 	// reconcileWorkspaces logic does not transition it (it only checks IDs that
 	// are non-empty against the live sets, which are empty due to failed
 	// external queries).
@@ -347,6 +347,61 @@ func TestRemove_PersistsStateAfterDeletion(t *testing.T) {
 	}
 }
 
+// TestRemove_DoesNotStopSandbox verifies that Remove does NOT stop or remove
+// the shared project sandbox when removing a workspace.
+func TestRemove_DoesNotStopSandbox(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`exit 0` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	s.SandboxID = "agency-testproject"
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	ws := &state.Workspace{
+		ID:        "ws-b0000002",
+		Name:      "Remove Test",
+		Branch:    "feat/remove",
+		State:     state.StateRunning,
+		SandboxID: "agency-testproject",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.Remove(context.Background(), ws.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	// Verify docker stop/rm were NOT called.
+	data, _ := os.ReadFile(argsFile)
+	log := string(data)
+	if strings.Contains(log, "sandbox stop") || strings.Contains(log, "sandbox rm") {
+		t.Errorf("Remove should not stop/remove shared sandbox; docker calls: %s", log)
+	}
+}
+
 // ----- SaveState: round-trips through disk -----
 
 func TestSaveState_RoundTrip(t *testing.T) {
@@ -414,6 +469,36 @@ func TestGenerateID_Unique(t *testing.T) {
 	}
 }
 
+// ----- generateSessionID: format check -----
+
+func TestGenerateSessionID_Format(t *testing.T) {
+	id := generateSessionID()
+	// UUID v4 format: xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx
+	// Length: 8-4-4-4-12 + 4 dashes = 36
+	if len(id) != 36 {
+		t.Errorf("generateSessionID length: got %d, want 36; id=%q", len(id), id)
+	}
+	parts := strings.Split(id, "-")
+	if len(parts) != 5 {
+		t.Errorf("generateSessionID: expected 5 dash-separated parts, got %d; id=%q", len(parts), id)
+	}
+	// Check version bit (4).
+	if len(parts) >= 3 && (parts[2][0] != '4') {
+		t.Errorf("generateSessionID: version nibble should be '4', got %q; id=%q", string(parts[2][0]), id)
+	}
+}
+
+func TestGenerateSessionID_Unique(t *testing.T) {
+	seen := make(map[string]bool, 100)
+	for i := 0; i < 100; i++ {
+		id := generateSessionID()
+		if seen[id] {
+			t.Errorf("generateSessionID produced duplicate: %q", id)
+		}
+		seen[id] = true
+	}
+}
+
 // ----- cleanup: no leftover temp files -----
 
 func TestNewTestManager_TempDirCleaned(t *testing.T) {
@@ -430,14 +515,12 @@ func TestNewTestManager_TempDirCleaned(t *testing.T) {
 	}
 }
 
-// ----- provisionTmux: trapCmd must not use "while true" -----
+// ----- provisionTmux: trapCmd must use docker sandbox ls to check existence -----
 
-// TestProvisionTmux_TrapCmdChecksContainerExistence verifies that the shell
-// command sent to the workspace's tmux window uses a container-existence check
-// in the loop condition rather than "while true". This prevents the loop from
-// printing "No such container" errors after the container has been removed by
-// Remove() — the loop exits as soon as the container disappears.
-func TestProvisionTmux_TrapCmdChecksContainerExistence(t *testing.T) {
+// TestProvisionTmux_TrapCmdChecksSandboxExistence verifies that the shell
+// command sent to the workspace's tmux window uses a sandbox-existence check
+// in the loop condition (docker sandbox ls -q | grep) rather than "while true".
+func TestProvisionTmux_TrapCmdChecksSandboxExistence(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
 
@@ -473,7 +556,8 @@ func TestProvisionTmux_TrapCmdChecksContainerExistence(t *testing.T) {
 		ID:        "ws-ac1d0001",
 		Name:      "Test",
 		Branch:    "feat/test",
-		SandboxID: "abc123def456",
+		SandboxID: "agency-testproject",
+		SessionID: "12345678-1234-4234-8234-123456789abc",
 		State:     state.StateProvisioning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -491,19 +575,17 @@ func TestProvisionTmux_TrapCmdChecksContainerExistence(t *testing.T) {
 
 	// The loop must NOT use "while true" — that keeps running after removal.
 	if strings.Contains(captured, "while true") {
-		t.Errorf("trapCmd uses 'while true'; it must check container existence instead to avoid 'No such container' errors on removal")
+		t.Errorf("trapCmd uses 'while true'; it must check sandbox existence instead")
 	}
-	// The loop must check container existence so it exits when removed.
-	if !strings.Contains(captured, "docker container inspect") && !strings.Contains(captured, "docker inspect") {
-		t.Errorf("trapCmd does not contain a container-existence check; got: %s", captured)
+	// The loop must check sandbox existence via docker sandbox ls -q | grep.
+	if !strings.Contains(captured, "docker sandbox ls -q | grep -qx") {
+		t.Errorf("trapCmd does not contain 'docker sandbox ls -q | grep -qx'; got: %s", captured)
 	}
 }
 
-// TestProvisionTmux_TrapCmdUsesContinueOnRestart verifies that the trapCmd
-// loop uses --continue for all restarts after the first Claude invocation.
-// This ensures that when Claude exits (e.g. after agent installation) it
-// restarts with conversation context preserved.
-func TestProvisionTmux_TrapCmdUsesContinueOnRestart(t *testing.T) {
+// TestProvisionTmux_TrapCmdUsesSessionID verifies that the trapCmd
+// uses --session-id <UUID> for the first run and --resume <UUID> for restarts.
+func TestProvisionTmux_TrapCmdUsesSessionID(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
 
@@ -534,11 +616,13 @@ func TestProvisionTmux_TrapCmdUsesContinueOnRestart(t *testing.T) {
 		t.Fatalf("SaveState: %v", err)
 	}
 
+	sessionID := "12345678-1234-4234-8234-123456789abc"
 	ws := &state.Workspace{
 		ID:        "ws-c0de0001",
 		Name:      "Test",
 		Branch:    "feat/test",
-		SandboxID: "abc123def456",
+		SandboxID: "agency-testproject",
+		SessionID: sessionID,
 		State:     state.StateProvisioning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -554,15 +638,17 @@ func TestProvisionTmux_TrapCmdUsesContinueOnRestart(t *testing.T) {
 	}
 	captured := string(data)
 
-	// The trapCmd must use RESUME="" initially and RESUME="--continue" after first run.
-	if !strings.Contains(captured, `RESUME=""`) {
-		t.Errorf("trapCmd does not initialize RESUME as empty; got: %s", captured)
+	// The trapCmd must use --session-id <UUID> for first run.
+	if !strings.Contains(captured, "--session-id "+sessionID) {
+		t.Errorf("trapCmd does not contain '--session-id %s'; got: %s", sessionID, captured)
 	}
-	if !strings.Contains(captured, `RESUME="--continue"`) {
-		t.Errorf("trapCmd does not set RESUME to --continue after first run; got: %s", captured)
+	// The trapCmd must use --resume <UUID> for subsequent runs.
+	if !strings.Contains(captured, "--resume "+sessionID) {
+		t.Errorf("trapCmd does not contain '--resume %s'; got: %s", sessionID, captured)
 	}
-	if !strings.Contains(captured, `claude $RESUME`) {
-		t.Errorf("trapCmd does not use $RESUME variable when invoking claude; got: %s", captured)
+	// Must use docker sandbox exec.
+	if !strings.Contains(captured, "docker sandbox exec") {
+		t.Errorf("trapCmd does not contain 'docker sandbox exec'; got: %s", captured)
 	}
 }
 
@@ -926,35 +1012,25 @@ func TestSwapBackToShell_NoopWhenNotActive(t *testing.T) {
 	}
 }
 
-// ----- ContainerPrefix -----
+// ----- SandboxName -----
 
-// TestContainerPrefix_EndsWithDash verifies that the container filter prefix
-// ends with "-" to prevent Docker's substring --filter from matching containers
-// belonging to other projects whose names start with the same characters.
-func TestContainerPrefix_EndsWithDash(t *testing.T) {
+// TestSandboxName_Format verifies that SandboxName returns "agency-<projectName>".
+func TestSandboxName_Format(t *testing.T) {
 	m := newTestManager(t)
-	prefix := m.ContainerPrefix()
-	if !strings.HasSuffix(prefix, "-") {
-		t.Errorf("ContainerPrefix() = %q: must end with '-' for project isolation", prefix)
+	name := m.SandboxName()
+	want := "agency-testproject"
+	if name != want {
+		t.Errorf("SandboxName() = %q, want %q", name, want)
 	}
 }
 
-// TestContainerPrefix_DoesNotMatchSimilarProjectName verifies that the prefix
-// will not match a container belonging to a differently-named project.
-func TestContainerPrefix_DoesNotMatchSimilarProjectName(t *testing.T) {
+// TestSandboxName_IsValidSandboxName verifies that SandboxName returns a name
+// that passes ValidateSandboxName.
+func TestSandboxName_IsValidSandboxName(t *testing.T) {
 	m := newTestManager(t)
-	prefix := m.ContainerPrefix()
-
-	// A container from project "testprojectextended" must NOT contain our prefix.
-	other := "agency-sb-testprojectextended-feat-ws-12345678"
-	if strings.Contains(other, prefix) {
-		t.Errorf("prefix %q incorrectly matches container from another project: %q", prefix, other)
-	}
-
-	// Our own containers must match.
-	own := "agency-sb-testproject-feat-ws-12345678"
-	if !strings.Contains(own, prefix) {
-		t.Errorf("prefix %q should match own container %q", prefix, own)
+	name := m.SandboxName()
+	if err := sandbox.ValidateSandboxName(name); err != nil {
+		t.Errorf("SandboxName() = %q is not a valid sandbox name: %v", name, err)
 	}
 }
 
@@ -1124,7 +1200,7 @@ func TestStopWorkspace_TransitionsToPaused(t *testing.T) {
 		State:     state.StateRunning,
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
-		// SandboxID empty — sandbox nil anyway, so stop is skipped.
+		// SandboxID empty — sandbox nil anyway.
 	}
 	addWorkspace(m, ws)
 
@@ -1164,6 +1240,116 @@ func TestStopWorkspace_PersistsState(t *testing.T) {
 	}
 	if got.State != state.StatePaused {
 		t.Errorf("persisted state: got %q, want %q", got.State, state.StatePaused)
+	}
+}
+
+// TestStopWorkspace_DoesNotStopSandbox verifies that StopWorkspace does NOT
+// stop the shared project sandbox.
+func TestStopWorkspace_DoesNotStopSandbox(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`exit 0` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	s.SandboxID = "agency-testproject"
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	ws := &state.Workspace{
+		ID:        "ws-ee000003",
+		Name:      "Stop No Docker",
+		Branch:    "feat/stop-no-docker",
+		State:     state.StateRunning,
+		SandboxID: "agency-testproject",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.StopWorkspace(context.Background(), ws); err != nil {
+		t.Fatalf("StopWorkspace: %v", err)
+	}
+
+	// Verify docker sandbox stop was NOT called.
+	data, _ := os.ReadFile(argsFile)
+	if strings.Contains(string(data), "sandbox stop") {
+		t.Errorf("StopWorkspace should not call 'docker sandbox stop' on shared sandbox; got: %s", string(data))
+	}
+}
+
+// TestStopWorkspaceBackground_DoesNotStopSandbox verifies that StopWorkspaceBackground
+// also does NOT stop the shared project sandbox.
+func TestStopWorkspaceBackground_DoesNotStopSandbox(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`exit 0` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	stateDir := t.TempDir()
+	s := state.Default("testproject", stateDir+"/.bare")
+	s.SandboxID = "agency-testproject"
+	m := &Manager{
+		StatePath:   filepath.Join(stateDir, "state.json"),
+		ProjectDir:  stateDir,
+		ProjectName: "testproject",
+		State:       s,
+		Tmux:        tmux.New("agency-testproject"),
+		Sandbox:     &sandbox.Manager{},
+		Cfg:         config.DefaultConfig(),
+	}
+	if err := m.SaveState(); err != nil {
+		t.Fatalf("SaveState: %v", err)
+	}
+
+	ws := &state.Workspace{
+		ID:        "ws-ee000004",
+		Name:      "StopBg No Docker",
+		Branch:    "feat/stopbg-no-docker",
+		State:     state.StateRunning,
+		SandboxID: "agency-testproject",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	addWorkspace(m, ws)
+
+	if err := m.StopWorkspaceBackground(context.Background(), ws); err != nil {
+		t.Fatalf("StopWorkspaceBackground: %v", err)
+	}
+
+	data, _ := os.ReadFile(argsFile)
+	if strings.Contains(string(data), "sandbox stop") {
+		t.Errorf("StopWorkspaceBackground should not call 'docker sandbox stop'; got: %s", string(data))
+	}
+	if ws.State != state.StatePaused {
+		t.Errorf("workspace state after StopWorkspaceBackground: got %q, want StatePaused", ws.State)
 	}
 }
 
@@ -1541,27 +1727,28 @@ func TestSidebarColumns(t *testing.T) {
 // buildTrapCmd
 // ---------------------------------------------------------------------------
 
-// TestBuildTrapCmd_ResumeFlag verifies that buildTrapCmd sets RESUME="" when
-// resume=false and RESUME="--continue" when resume=true, and that both outputs
-// include the workspace ID and sandbox ID.
+// TestBuildTrapCmd_ResumeFlag verifies that buildTrapCmd uses --session-id when
+// resume=false and --resume when resume=true, and that both outputs include the
+// workspace ID, sandbox ID, and session ID.
 func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
+	sessionID := "12345678-1234-4234-8234-123456789abc"
 	tests := []struct {
-		name            string
-		resume          bool
-		wantResumeVal   string
-		wantNoResumeVal string
+		name         string
+		resume       bool
+		wantContains string
+		wantAbsent   string
 	}{
 		{
-			name:            "resume=false sets empty RESUME",
-			resume:          false,
-			wantResumeVal:   `RESUME=""`,
-			wantNoResumeVal: `RESUME="--continue"`,
+			name:         "resume=false uses --session-id",
+			resume:       false,
+			wantContains: "--session-id " + sessionID,
+			wantAbsent:   "",
 		},
 		{
-			name:            "resume=true sets --continue RESUME",
-			resume:          true,
-			wantResumeVal:   `RESUME="--continue"`,
-			wantNoResumeVal: `RESUME=""`,
+			name:         "resume=true uses --resume",
+			resume:       true,
+			wantContains: "--resume " + sessionID,
+			wantAbsent:   "--session-id",
 		},
 	}
 
@@ -1572,7 +1759,8 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 				ID:        "ws-ab12cd34",
 				Name:      "Trap Test",
 				Branch:    "feat/trap",
-				SandboxID: "abc123def456",
+				SandboxID: "agency-testproject",
+				SessionID: sessionID,
 				State:     state.StatePaused,
 				CreatedAt: time.Now().UTC(),
 				UpdatedAt: time.Now().UTC(),
@@ -1584,17 +1772,11 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 				t.Fatalf("buildTrapCmd(resume=%v): unexpected error: %v", tt.resume, err)
 			}
 
-			if !strings.Contains(cmd, tt.wantResumeVal) {
-				t.Errorf("buildTrapCmd(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantResumeVal, cmd)
+			if !strings.Contains(cmd, tt.wantContains) {
+				t.Errorf("buildTrapCmd(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantContains, cmd)
 			}
-			// The opposite value must not appear as the initial assignment.
-			// Note: "--continue" does appear later in the loop body (RESUME="--continue"),
-			// so we only check for the specific initial RESUME assignment token.
-			if tt.resume {
-				// When resume=true, RESUME="" must not appear at all.
-				if strings.Contains(cmd, `RESUME=""`) {
-					t.Errorf("buildTrapCmd(resume=true): output contains RESUME=\"\" but should not\ngot: %s", cmd)
-				}
+			if tt.wantAbsent != "" && strings.Contains(cmd, tt.wantAbsent) {
+				t.Errorf("buildTrapCmd(resume=%v): output should not contain %q\ngot: %s", tt.resume, tt.wantAbsent, cmd)
 			}
 			// Both workspace ID and sandbox ID must appear.
 			if !strings.Contains(cmd, ws.ID) {
@@ -1602,6 +1784,13 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 			}
 			if !strings.Contains(cmd, ws.SandboxID) {
 				t.Errorf("buildTrapCmd: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
+			}
+			// Must use docker sandbox ls -q | grep to check existence, and docker sandbox exec.
+			if !strings.Contains(cmd, "docker sandbox ls -q | grep -qx") {
+				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox ls -q | grep -qx'\ngot: %s", cmd)
+			}
+			if !strings.Contains(cmd, "docker sandbox exec") {
+				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox exec'\ngot: %s", cmd)
 			}
 		})
 	}
@@ -1638,7 +1827,7 @@ func TestReconcilePaused_WorktreeGone(t *testing.T) {
 		ID:           "ws-aa000001",
 		Name:         "Paused",
 		Branch:       "feat/paused",
-		SandboxID:    "container001",
+		SandboxID:    "agency-testproject",
 		WorktreePath: "/nonexistent/path/testproject-feat-paused",
 		State:        state.StatePaused,
 		CreatedAt:    time.Now().UTC(),
@@ -1651,10 +1840,9 @@ func TestReconcilePaused_WorktreeGone(t *testing.T) {
 	// worktreeSet does NOT contain the workspace's path; wtErr is nil so the
 	// absence is authoritative.
 	worktreeSet := map[string]bool{}
-	containerIDSet := map[string]bool{"container001": true}
-	res := &reconcileResult{wtErr: nil, contsErr: nil}
+	res := &reconcileResult{wtErr: nil, sandboxErr: nil, sandboxRunning: false}
 
-	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+	changed := m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
 
 	if !changed {
 		t.Error("reconcilePaused: expected changed=true when worktree is gone")
@@ -1681,7 +1869,7 @@ func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
 		ID:           "ws-aa000002",
 		Name:         "Paused No Docker",
 		Branch:       "feat/no-docker",
-		SandboxID:    "container002",
+		SandboxID:    "agency-testproject",
 		WorktreePath: wtPath,
 		State:        state.StatePaused,
 		CreatedAt:    time.Now().UTC(),
@@ -1692,10 +1880,9 @@ func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
 	markFailed, called, _ := newMarkFailedCapture()
 
 	worktreeSet := map[string]bool{wtPath: true}
-	containerIDSet := map[string]bool{"container002": true}
-	res := &reconcileResult{wtErr: nil, contsErr: nil}
+	res := &reconcileResult{wtErr: nil, sandboxErr: errors.New("docker is not available")}
 
-	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+	changed := m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
 
 	if changed {
 		t.Error("reconcilePaused: expected changed=false when Sandbox is nil")
@@ -1708,19 +1895,19 @@ func TestReconcilePaused_DockerUnavailable_NilSandbox(t *testing.T) {
 	}
 }
 
-// TestReconcilePaused_DockerUnavailable_ContsErr verifies that reconcilePaused
-// makes no change when the container listing returned an error.
-func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
+// TestReconcilePaused_DockerUnavailable_SandboxErr verifies that reconcilePaused
+// makes no change when the sandbox query returned an error.
+func TestReconcilePaused_DockerUnavailable_SandboxErr(t *testing.T) {
 	m := newTestManager(t)
-	m.Sandbox = &sandbox.Manager{} // non-nil but contsErr causes early return before any Docker call
+	m.Sandbox = &sandbox.Manager{} // non-nil but sandboxErr causes early return
 	ctx := context.Background()
 
 	wtPath := t.TempDir()
 	ws := &state.Workspace{
 		ID:           "ws-aa000003",
-		Name:         "Paused Conts Err",
-		Branch:       "feat/conts-err",
-		SandboxID:    "container003",
+		Name:         "Paused Sandbox Err",
+		Branch:       "feat/sandbox-err",
+		SandboxID:    "agency-testproject",
 		WorktreePath: wtPath,
 		State:        state.StatePaused,
 		CreatedAt:    time.Now().UTC(),
@@ -1731,119 +1918,38 @@ func TestReconcilePaused_DockerUnavailable_ContsErr(t *testing.T) {
 	markFailed, called, _ := newMarkFailedCapture()
 
 	worktreeSet := map[string]bool{wtPath: true}
-	containerIDSet := map[string]bool{} // would be empty anyway — contsErr set
 	res := &reconcileResult{
-		wtErr:    nil,
-		contsErr: errors.New("docker daemon unreachable"),
+		wtErr:      nil,
+		sandboxErr: errors.New("docker daemon unreachable"),
 	}
 
-	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
+	changed := m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
 
 	if changed {
-		t.Error("reconcilePaused: expected changed=false when contsErr is set")
+		t.Error("reconcilePaused: expected changed=false when sandboxErr is set")
 	}
 	if called() {
-		t.Error("reconcilePaused: markFailed should not be called when contsErr is set")
+		t.Error("reconcilePaused: markFailed should not be called when sandboxErr is set")
 	}
 	if ws.State != state.StatePaused {
 		t.Errorf("reconcilePaused: workspace state should remain StatePaused; got %q", ws.State)
 	}
 }
 
-// TestReconcilePaused_ContainerExists_StartFails verifies that reconcilePaused
-// calls markFailed mentioning the container restart when Sandbox.Start fails.
-// Uses a fake docker binary where "start" exits non-zero so the test is
-// independent of the host Docker daemon.
-func TestReconcilePaused_ContainerExists_StartFails(t *testing.T) {
-	m := newFakeDockerManagerStartFails(t)
-	ctx := context.Background()
-
-	wtPath := t.TempDir()
-	ws := &state.Workspace{
-		ID:           "ws-aa000004",
-		Name:         "Paused Restart",
-		Branch:       "feat/restart",
-		SandboxID:    "containerexists99",
-		WorktreePath: wtPath,
-		State:        state.StatePaused,
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
-	}
-	addWorkspace(m, ws)
-
-	markFailed, called, reason := newMarkFailedCapture()
-
-	// containerIDSet contains the sandbox ID so the "container exists" branch runs.
-	worktreeSet := map[string]bool{wtPath: true}
-	containerIDSet := map[string]bool{"containerexists99": true}
-	res := &reconcileResult{wtErr: nil, contsErr: nil}
-
-	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
-
-	if !changed {
-		t.Error("reconcilePaused: expected changed=true after Start failure")
-	}
-	if !called() {
-		t.Error("reconcilePaused: markFailed should be called when Start fails")
-	}
-	if !strings.Contains(reason(), "restarting container") {
-		t.Errorf("reconcilePaused: markFailed reason should mention 'restarting container'; got %q", reason())
-	}
-}
-
-// TestReconcilePaused_ContainerDestroyed_WorktreeExists verifies that
-// reconcilePaused attempts re-provisioning when the container is gone but the
-// worktree still exists. Uses newFakeDockerManager so provisionContainer
-// succeeds; resumeTmux then fails deterministically (no tmux in tests).
-func TestReconcilePaused_ContainerDestroyed_WorktreeExists(t *testing.T) {
-	m, _ := newFakeDockerManager(t)
-	ctx := context.Background()
-
-	wtPath := t.TempDir()
-	ws := &state.Workspace{
-		ID:           "ws-aa000005",
-		Name:         "Paused Reprovision",
-		Branch:       "feat/reprovision",
-		SandboxID:    "containerold123",
-		WorktreePath: wtPath,
-		State:        state.StatePaused,
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
-	}
-	addWorkspace(m, ws)
-
-	markFailed, called, reason := newMarkFailedCapture()
-
-	// containerIDSet does NOT contain the sandbox ID — container was destroyed.
-	worktreeSet := map[string]bool{wtPath: true}
-	containerIDSet := map[string]bool{} // sandbox ID absent
-	res := &reconcileResult{wtErr: nil, contsErr: nil}
-
-	changed := m.reconcilePaused(ctx, ws, res, containerIDSet, worktreeSet, markFailed)
-
-	if !changed {
-		t.Error("reconcilePaused: expected changed=true")
-	}
-	if !called() {
-		t.Error("reconcilePaused: markFailed should be called")
-	}
-	// provisionContainer succeeds (fake docker); resumeTmux fails (no tmux).
-	if !strings.Contains(reason(), "resuming tmux after re-provision") {
-		t.Errorf("reconcilePaused: markFailed reason should mention 'resuming tmux after re-provision'; got %q", reason())
-	}
-}
-
-// ----- provisionContainer: SharedHomeMount -----
-
 // newFakeDockerManager creates a Manager with a fake docker binary and returns
 // the Manager and the path to the docker args-log file. The fake docker script
-// handles image inspect (exit 0), create (echoes "sha256:fakeid"), and start
-// (exit 0).
+// handles sandbox commands.
 func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 	t.Helper()
 	dir := t.TempDir()
 	argsFile = filepath.Join(dir, "calls.txt")
 
+	// Fake docker that handles sandbox subcommands:
+	// - "image inspect" → exit 0 (image exists)
+	// - "sandbox version" → exit 0
+	// - "sandbox ls --json" → returns sandbox list JSON
+	// - "sandbox create" → exit 0, echoes name
+	// - "sandbox exec" → exit 0
 	script := "#!/bin/sh\n" +
 		`echo "$@" >> ` + argsFile + "\n" +
 		`subcmd="$1"` + "\n" +
@@ -1853,8 +1959,14 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 		`    case "$1" in` + "\n" +
 		`      inspect) exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
-		`  create) echo "sha256:fakeid"; exit 0;;` + "\n" +
-		`  start)  exit 0;;` + "\n" +
+		`  sandbox)` + "\n" +
+		`    case "$1" in` + "\n" +
+		`      version) exit 0;;` + "\n" +
+		`      ls) echo "{\"vms\":[{\"name\":\"agency-testproject\",\"status\":\"running\",\"socket_path\":\"/tmp/agency-testproject.sock\"}]}";;` + "\n" +
+		`      create) echo "agency-testproject"; exit 0;;` + "\n" +
+		`      run)    exit 0;;` + "\n" +
+		`      exec) exit 0;;` + "\n" +
+		`    esac;;` + "\n" +
 		`esac` + "\n"
 
 	scriptPath := filepath.Join(dir, "docker")
@@ -1866,6 +1978,7 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 
 	stateDir := t.TempDir()
 	s := state.Default("testproject", stateDir+"/.bare")
+	s.SandboxID = "agency-testproject"
 	mgr := &Manager{
 		StatePath:   filepath.Join(stateDir, "state.json"),
 		ProjectDir:  stateDir,
@@ -1881,17 +1994,18 @@ func newFakeDockerManager(t *testing.T) (m *Manager, argsFile string) {
 	return mgr, argsFile
 }
 
-// newFakeDockerManagerStartFails is like newFakeDockerManager but the fake
-// docker binary exits non-zero for the "start" subcommand, so Sandbox.Start
-// always returns an error.
-func newFakeDockerManagerStartFails(t *testing.T) *Manager {
+// newFakeDockerManagerSandboxEnsureFails is like newFakeDockerManager but
+// "sandbox ls" returns an error so EnsureProjectSandbox fails.
+func newFakeDockerManagerSandboxEnsureFails(t *testing.T) *Manager {
 	t.Helper()
 	dir := t.TempDir()
 
 	script := "#!/bin/sh\n" +
 		`subcmd="$1"` + "\n" +
+		`shift` + "\n" +
 		`case "$subcmd" in` + "\n" +
-		`  start) echo "fake: start failed" >&2; exit 1;;` + "\n" +
+		`  sandbox)` + "\n" +
+		`    echo "fake: sandbox error" >&2; exit 1;;` + "\n" +
 		`esac` + "\n" +
 		`exit 0` + "\n"
 
@@ -1914,83 +2028,97 @@ func newFakeDockerManagerStartFails(t *testing.T) *Manager {
 		Cfg:         config.DefaultConfig(),
 	}
 	if err := mgr.SaveState(); err != nil {
-		t.Fatalf("newFakeDockerManagerStartFails: SaveState: %v", err)
+		t.Fatalf("newFakeDockerManagerSandboxEnsureFails: SaveState: %v", err)
 	}
 	return mgr
 }
 
-// readDockerArgsLog reads the full raw content of the docker args log file.
-func readDockerArgsLog(t *testing.T, argsFile string) string {
-	t.Helper()
-	data, err := os.ReadFile(argsFile)
-	if err != nil {
-		return ""
-	}
-	return string(data)
-}
+// TestReconcilePaused_SandboxEnsureFails verifies that reconcilePaused calls
+// markFailed when EnsureProjectSandbox returns an error.
+func TestReconcilePaused_SandboxEnsureFails(t *testing.T) {
+	// Disable retry delay so the intentional ls failure doesn't slow tests.
+	orig := sandbox.ListRetryDelay
+	sandbox.ListRetryDelay = 0
+	t.Cleanup(func() { sandbox.ListRetryDelay = orig })
 
-// TestProvisionContainer_PassesSharedHomeMountWhenDirExists verifies that
-// provisionContainer passes the -v .../.agency/home:/home/agent/.shared-base:ro
-// argument to docker create when the .agency/home directory exists.
-func TestProvisionContainer_PassesSharedHomeMountWhenDirExists(t *testing.T) {
-	m, argsFile := newFakeDockerManager(t)
+	m := newFakeDockerManagerSandboxEnsureFails(t)
+	ctx := context.Background()
 
-	// Create the .agency/home directory inside the project dir.
-	homeDir := filepath.Join(m.ProjectDir, ".agency", "home")
-	if err := os.MkdirAll(homeDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll .agency/home: %v", err)
-	}
-
+	wtPath := t.TempDir()
 	ws := &state.Workspace{
-		ID:           "ws-ab000001",
-		Name:         "SharedHome",
-		Branch:       "feat/shared-home",
-		WorktreePath: m.ProjectDir,
-		State:        state.StateProvisioning,
+		ID:           "ws-aa000004",
+		Name:         "Paused Ensure Fail",
+		Branch:       "feat/ensure-fail",
+		SandboxID:    "agency-testproject",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
 		CreatedAt:    time.Now().UTC(),
 		UpdatedAt:    time.Now().UTC(),
 	}
+	addWorkspace(m, ws)
 
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Image = "agency:latest"
+	markFailed, called, reason := newMarkFailedCapture()
 
-	if err := m.provisionContainer(context.Background(), ws, cfg); err != nil {
-		t.Fatalf("provisionContainer returned unexpected error: %v", err)
+	worktreeSet := map[string]bool{wtPath: true}
+	// sandboxErr nil means Docker responded (even if sandbox is down).
+	res := &reconcileResult{wtErr: nil, sandboxErr: nil, sandboxRunning: false}
+
+	changed := m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
+
+	if !changed {
+		t.Error("reconcilePaused: expected changed=true after EnsureProjectSandbox failure")
 	}
-
-	log := readDockerArgsLog(t, argsFile)
-	want := "-v " + homeDir + ":/home/agent/.shared-base:ro"
-	if !strings.Contains(log, want) {
-		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	if !called() {
+		t.Error("reconcilePaused: markFailed should be called when EnsureProjectSandbox fails")
+	}
+	if !strings.Contains(reason(), "ensuring project sandbox") {
+		t.Errorf("reconcilePaused: markFailed reason should mention 'ensuring project sandbox'; got %q", reason())
 	}
 }
 
-// TestProvisionContainer_OmitsSharedHomeMountWhenDirAbsent verifies that
-// provisionContainer does NOT pass .shared-base to docker create when the
-// .agency/home directory does not exist.
-func TestProvisionContainer_OmitsSharedHomeMountWhenDirAbsent(t *testing.T) {
-	m, argsFile := newFakeDockerManager(t)
-	// Do NOT create .agency/home — it should be absent.
+// TestReconcilePaused_SandboxRunning_ResumesTmux verifies that reconcilePaused
+// attempts to resume the workspace via tmux when the sandbox is running.
+// resumeTmux will fail (no real tmux), which is acceptable for this test.
+func TestReconcilePaused_SandboxRunning_ResumesTmux(t *testing.T) {
+	m, _ := newFakeDockerManager(t)
+	ctx := context.Background()
 
+	wtPath := t.TempDir()
 	ws := &state.Workspace{
-		ID:           "ws-ab000002",
-		Name:         "NoSharedHome",
-		Branch:       "feat/no-shared-home",
-		WorktreePath: m.ProjectDir,
-		State:        state.StateProvisioning,
+		ID:           "ws-aa000005",
+		Name:         "Paused Resume",
+		Branch:       "feat/resume",
+		SandboxID:    "agency-testproject",
+		SessionID:    "12345678-1234-4234-8234-123456789abc",
+		WorktreePath: wtPath,
+		State:        state.StatePaused,
 		CreatedAt:    time.Now().UTC(),
 		UpdatedAt:    time.Now().UTC(),
 	}
+	addWorkspace(m, ws)
 
-	cfg := config.DefaultConfig()
-	cfg.Sandbox.Image = "agency:latest"
+	markFailed, called, reason := newMarkFailedCapture()
 
-	if err := m.provisionContainer(context.Background(), ws, cfg); err != nil {
-		t.Fatalf("provisionContainer returned unexpected error: %v", err)
+	worktreeSet := map[string]bool{wtPath: true}
+	// sandboxErr nil, sandboxRunning true — sandbox is healthy.
+	res := &reconcileResult{wtErr: nil, sandboxErr: nil, sandboxRunning: true}
+
+	changed := m.reconcilePaused(ctx, ws, res, worktreeSet, markFailed)
+
+	// Either the tmux resume succeeded (changed=true, state=running)
+	// or it failed (changed=true, markFailed called with "resuming tmux").
+	if !changed {
+		t.Error("reconcilePaused: expected changed=true")
 	}
-
-	log := readDockerArgsLog(t, argsFile)
-	if strings.Contains(log, "shared-base") {
-		t.Errorf("expected docker args NOT to contain 'shared-base', but got:\n%s", log)
+	if called() {
+		// resumeTmux failed — that's fine in tests, verify the reason.
+		if !strings.Contains(reason(), "resuming tmux") {
+			t.Errorf("reconcilePaused: markFailed reason should mention 'resuming tmux'; got %q", reason())
+		}
+	} else {
+		// resumeTmux succeeded.
+		if ws.State != state.StateRunning {
+			t.Errorf("reconcilePaused: expected StateRunning when resume succeeds; got %q", ws.State)
+		}
 	}
 }

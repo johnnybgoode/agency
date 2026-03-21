@@ -97,7 +97,7 @@ type listModel struct {
 	shouldKillSession bool
 	lastActiveID      string                          // tracks active workspace ID to detect changes
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
-	installerCmd      func(containerID string) string // defaults to installerCmdFor; override in tests
+	installerCmd      func(sandboxName string) string // defaults to installerCmdFor; override in tests
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
 }
 
@@ -254,11 +254,11 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 }
 
 // installerCmdFor returns the shell command string used to run the agent
-// installer inside the container identified by containerID.
+// installer inside the sandbox identified by sandboxName.
 // Single quotes around the bash -c argument prevent the host shell from
-// expanding ~ before the command reaches the container.
-func installerCmdFor(containerID string) string {
-	return fmt.Sprintf("docker exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", containerID)
+// expanding ~ before the command reaches the sandbox.
+func installerCmdFor(sandboxName string) string {
+	return fmt.Sprintf("docker sandbox exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", sandboxName)
 }
 
 // isAtPrompt reports whether the pane content looks like Claude Code is sitting
@@ -346,10 +346,10 @@ func (m listModel) installAgentsCmd(ws *state.Workspace) tea.Cmd {
 	const popupHeight = 30
 	popup := m.popup
 	sleepFn := m.sleepFn
-	if err := sandbox.ValidateContainerID(ws.SandboxID); err != nil {
-		slog.Error("refusing to run installer: invalid container ID", "sandbox_id", ws.SandboxID, "error", err)
+	if err := sandbox.ValidateSandboxName(ws.SandboxID); err != nil {
+		slog.Error("refusing to run installer: invalid sandbox name", "sandbox_id", ws.SandboxID, "error", err)
 		return func() tea.Msg {
-			return reconcileDoneMsg{err: fmt.Errorf("invalid container ID: %w", err)}
+			return reconcileDoneMsg{err: fmt.Errorf("invalid sandbox name: %w", err)}
 		}
 	}
 	installerCmd := m.installerCmd(ws.SandboxID)

@@ -24,7 +24,8 @@ func TestRead_RejectsInvalidWorkspaceID(t *testing.T) {
 func TestRead_RejectsInvalidSandboxID(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "state.json")
-	data := `{"version":1,"workspaces":{"ws-aabbccdd":{"id":"ws-aabbccdd","sandbox_id":"INVALID; rm -rf /"}}}`
+	// v2 state with an invalid project-level sandbox_id should be rejected.
+	data := `{"version":2,"sandbox_id":"INVALID; rm -rf /","workspaces":{"ws-aabbccdd":{"id":"ws-aabbccdd","sandbox_id":""}}}`
 	os.WriteFile(path, []byte(data), 0o600)
 	_, err := Read(path)
 	if err == nil {

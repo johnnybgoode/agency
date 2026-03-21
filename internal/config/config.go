@@ -12,11 +12,10 @@ import (
 
 // Config holds all configuration for the agency tool.
 type Config struct {
-	Agent       AgentConfig       `toml:"agent"`
-	Sandbox     SandboxConfig     `toml:"sandbox"`
-	Credentials CredentialsConfig `toml:"credentials"`
-	Worktree    WorktreeConfig    `toml:"worktree"`
-	TUI         TUIConfig         `toml:"tui"`
+	Agent    AgentConfig    `toml:"agent"`
+	Sandbox  SandboxConfig  `toml:"sandbox"`
+	Worktree WorktreeConfig `toml:"worktree"`
+	TUI      TUIConfig      `toml:"tui"`
 }
 
 // AgentConfig holds agent-specific configuration.
@@ -29,18 +28,8 @@ type AgentConfig struct {
 
 // SandboxConfig holds sandbox-specific configuration.
 type SandboxConfig struct {
-	Type          string `toml:"type"`
-	Image         string `toml:"image"`
-	Memory        string `toml:"memory"`
-	CPUs          int    `toml:"cpus"`
-	Network       string `toml:"network"`
-	DockerfileDir string `toml:"dockerfile_dir"`
-}
-
-// CredentialsConfig holds sensitive credential configuration.
-type CredentialsConfig struct {
-	AnthropicAPIKey string `toml:"anthropic_api_key"`
-	GithubToken     string `toml:"github_token"`
+	Image         string `toml:"image"`          // image used as sandbox template (default "agency:latest")
+	DockerfileDir string `toml:"dockerfile_dir"` // optional custom Dockerfile location
 }
 
 // WorktreeConfig holds git worktree configuration.
@@ -72,10 +61,7 @@ func DefaultConfig() *Config {
 			Default: "claude",
 		},
 		Sandbox: SandboxConfig{
-			Type:   "docker",
-			Image:  "agency:latest",
-			Memory: "4g",
-			CPUs:   2,
+			Image: "agency:latest",
 		},
 		Worktree: WorktreeConfig{
 			BranchPrefix: "",
@@ -118,10 +104,7 @@ func EnforceGlobalConfigPerms(path string) error {
 }
 
 // Load reads configuration from the given paths in order, merging each into
-// the defaults. Paths that do not exist are silently skipped. Credential
-// fields in any path after the first trigger a warning to stderr. Config files
-// with insecure permissions (group- or other-readable) will have their
-// credential fields zeroed out and an error logged — fail-closed behavior.
+// the defaults. Paths that do not exist are silently skipped.
 func Load(paths ...string) (*Config, error) {
 	slog.Debug("loading config", "paths", paths)
 	base := DefaultConfig()
@@ -147,43 +130,7 @@ func Load(paths ...string) (*Config, error) {
 			return nil, fmt.Errorf("parsing config %s: %w", path, err)
 		}
 
-		// Check file permissions. Refuse to load credentials from files that
-		// are readable by group or other (fail-closed).
-		hasCredentials := override.Credentials.AnthropicAPIKey != "" || override.Credentials.GithubToken != ""
-		if hasCredentials {
-			if info, err := os.Stat(path); err == nil {
-				perm := info.Mode().Perm()
-				if perm&0o077 != 0 {
-					slog.Error("refusing to load credentials from file with insecure permissions",
-						"path", path, "permissions", fmt.Sprintf("0o%o", perm))
-					// Zero out credentials — fail closed.
-					override.Credentials = CredentialsConfig{}
-				}
-			}
-		}
-
-		if i != 0 {
-			// Re-check hasCredentials after the potential zeroing above.
-			if override.Credentials.AnthropicAPIKey != "" || override.Credentials.GithubToken != "" {
-				slog.Warn("credentials in non-global config", "path", path)
-			}
-		}
-
 		base = Merge(base, &override)
-	}
-
-	// Fall back to host environment variables for unset credentials.
-	if base.Credentials.AnthropicAPIKey == "" {
-		base.Credentials.AnthropicAPIKey = os.Getenv("ANTHROPIC_API_KEY")
-		if base.Credentials.AnthropicAPIKey != "" {
-			slog.Debug("credential from env", "key", "ANTHROPIC_API_KEY")
-		}
-	}
-	if base.Credentials.GithubToken == "" {
-		base.Credentials.GithubToken = os.Getenv("GITHUB_TOKEN")
-		if base.Credentials.GithubToken != "" {
-			slog.Debug("credential from env", "key", "GITHUB_TOKEN")
-		}
 	}
 
 	return base, nil

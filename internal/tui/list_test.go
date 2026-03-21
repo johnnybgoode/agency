@@ -554,16 +554,16 @@ func TestCursorStaysAfterManualMove_OnSubsequentTick(t *testing.T) {
 
 // TestInstallAgentsCmd_RejectsInvalidContainerID verifies that installAgentsCmd
 // refuses to build a shell command when the workspace SandboxID is not a valid
-// Docker container hash. Security regression test for audit finding #1.
+// Docker sandbox name. Security regression test for audit finding #1.
 func TestInstallAgentsCmd_RejectsInvalidContainerID(t *testing.T) {
 	maliciousIDs := []string{
 		"$(rm -rf /)",
 		"; cat /etc/passwd",
 		"abc123 && echo pwned",
 		"abc|cat /etc/shadow",
-		"not-a-hex-id",
+		"invalid name with spaces",
 		"",
-		"ABCDEF123456", // uppercase not valid
+		"has/slash", // slashes not valid
 	}
 
 	for _, badID := range maliciousIDs {
@@ -572,9 +572,9 @@ func TestInstallAgentsCmd_RejectsInvalidContainerID(t *testing.T) {
 			m.sleepFn = func(time.Duration) {}
 
 			called := false
-			m.installerCmd = func(containerID string) string {
+			m.installerCmd = func(sandboxName string) string {
 				called = true
-				return "docker exec -it " + containerID + " bash"
+				return "docker sandbox exec -it " + sandboxName + " bash"
 			}
 
 			ws := &state.Workspace{
@@ -730,13 +730,13 @@ func TestHandleNormalKeyClearsStatusMsg(t *testing.T) {
 
 // TestInstallerCmdFor verifies that the installer command wraps the script path
 // in a bash -c '...' invocation with single quotes so that ~ is NOT expanded by
-// the host shell before reaching the container.
+// the host shell before reaching the sandbox.
 // Without this, tmux runs the command via /bin/sh which expands ~ to the host
-// home directory — a path that doesn't exist inside the container — causing the
+// home directory — a path that doesn't exist inside the sandbox — causing the
 // popup to exit immediately.
 func TestInstallerCmdFor(t *testing.T) {
 	got := installerCmdFor("abc123")
-	const wantPrefix = "docker exec -it abc123 "
+	const wantPrefix = "docker sandbox exec -it abc123 "
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Errorf("installerCmdFor = %q, want prefix %q", got, wantPrefix)
 	}
@@ -745,7 +745,7 @@ func TestInstallerCmdFor(t *testing.T) {
 	if !strings.Contains(got, wantSubstr) {
 		t.Errorf("installerCmdFor = %q\nwant to contain %q\n(tilde must be inside single quotes to avoid host shell expansion)", got, wantSubstr)
 	}
-	// Must NOT have a bare tilde directly after 'docker exec ... bash '.
+	// Must NOT have a bare tilde directly after 'docker sandbox exec ... bash '.
 	after := strings.TrimPrefix(got, wantPrefix)
 	if strings.HasPrefix(after, "bash ~/") {
 		t.Errorf("installerCmdFor has bare tilde that would be host-expanded: %q", got)

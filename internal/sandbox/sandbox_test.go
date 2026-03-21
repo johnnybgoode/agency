@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newFakeDocker writes a shell script that records its arguments and returns
@@ -31,8 +32,23 @@ func newFakeDocker(t *testing.T, imageExists bool) (mgr *Manager, argsLogFile st
 		`      inspect) exit ` + imageInspectExit + `;;` + "\n" +
 		`    esac;;` + "\n" +
 		`  build) exit 0;;` + "\n" +
-		`  create) echo "sha256:fakecontainerid"; exit 0;;` + "\n" +
-		`  start)  exit 0;;` + "\n" +
+		`  sandbox)` + "\n" +
+		`    case "$1" in` + "\n" +
+		`      version) exit 0;;` + "\n" +
+		`      ls)      echo '{"vms":[]}'; exit 0;;` + "\n" +
+		`      create)` + "\n" +
+		`        # extract --name value: find index of --name then print next arg` + "\n" +
+		`        name=""` + "\n" +
+		`        prev=""` + "\n" +
+		`        for arg in "$@"; do` + "\n" +
+		`          if [ "$prev" = "--name" ]; then name="$arg"; fi` + "\n" +
+		`          prev="$arg"` + "\n" +
+		`        done` + "\n" +
+		`        echo "$name"; exit 0;;` + "\n" +
+		`      run)     exit 0;;` + "\n" +
+		`      stop)    exit 0;;` + "\n" +
+		`      rm)      exit 0;;` + "\n" +
+		`    esac;;` + "\n" +
 		`esac` + "\n"
 
 	scriptPath := filepath.Join(dir, "docker")
@@ -64,6 +80,16 @@ func readCalls(t *testing.T, argsFile string) []string {
 		}
 	}
 	return cmds
+}
+
+// readArgsLog reads the full raw content of the docker args log file.
+func readArgsLog(t *testing.T, argsFile string) string {
+	t.Helper()
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func TestImageExists_ReturnsFalseWhenNotFound(t *testing.T) {
@@ -141,66 +167,104 @@ func TestEnsureImage_ReturnsErrorWhenMissingAndNoFS(t *testing.T) {
 	}
 }
 
-// readArgsLog reads the full raw content of the docker args log file.
-func readArgsLog(t *testing.T, argsFile string) string {
+func TestFindByName_ReturnsNilWhenNotFound(t *testing.T) {
+	m, _ := newFakeDocker(t, true)
+
+	info, err := m.FindByName(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("FindByName returned unexpected error: %v", err)
+	}
+	if info != nil {
+		t.Errorf("FindByName should return nil when sandbox is not found, got: %+v", info)
+	}
+}
+
+func TestFindByName_ReturnsSandboxWhenFound(t *testing.T) {
 	t.Helper()
-	data, err := os.ReadFile(argsFile)
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "calls.txt")
+
+	// Build a fake docker that returns a non-empty sandbox list.
+	script := "#!/bin/sh\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
+		`subcmd="$1"; shift` + "\n" +
+		`case "$subcmd" in` + "\n" +
+		`  sandbox)` + "\n" +
+		`    case "$1" in` + "\n" +
+		`      version) exit 0;;` + "\n" +
+		`      ls) echo '{"vms":[{"name":"my-sandbox","status":"running","socket_path":"/tmp/my-sandbox.sock"}]}'; exit 0;;` + "\n" +
+		`    esac;;` + "\n" +
+		`esac` + "\n"
+
+	scriptPath := filepath.Join(dir, "docker")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	m := &Manager{}
+	info, err := m.FindByName(context.Background(), "my-sandbox")
 	if err != nil {
-		return ""
+		t.Fatalf("FindByName returned unexpected error: %v", err)
 	}
-	return string(data)
-}
-
-func TestCopyFrom_CallsDockerCpWithCorrectArgs(t *testing.T) {
-	m, argsFile := newFakeDocker(t, true)
-
-	err := m.CopyFrom(context.Background(), "abc123", "/home/agent/.", "/tmp/dest")
-	if err != nil {
-		t.Fatalf("CopyFrom returned unexpected error: %v", err)
+	if info == nil {
+		t.Fatal("FindByName should return a SandboxInfo when sandbox exists, got nil")
 	}
-
-	log := readArgsLog(t, argsFile)
-	want := "cp abc123:/home/agent/. /tmp/dest"
-	if !strings.Contains(log, want) {
-		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	if info.Name != "my-sandbox" {
+		t.Errorf("FindByName returned wrong name: got %q, want %q", info.Name, "my-sandbox")
 	}
-}
-
-func TestCreate_SharedHomeMount_AddsReadOnlyVolumeArg(t *testing.T) {
-	m, argsFile := newFakeDocker(t, true)
-
-	_, err := m.Create(context.Background(), &CreateOpts{
-		Image:           "agency:latest",
-		Name:            "test",
-		WorktreeMount:   "/app",
-		SharedHomeMount: "/host/shared",
-	})
-	if err != nil {
-		t.Fatalf("Create returned unexpected error: %v", err)
-	}
-
-	log := readArgsLog(t, argsFile)
-	want := "-v /host/shared:/home/agent/.shared-base:ro"
-	if !strings.Contains(log, want) {
-		t.Errorf("expected docker args to contain %q, but got:\n%s", want, log)
+	if info.Status != "running" {
+		t.Errorf("FindByName returned wrong status: got %q, want %q", info.Status, "running")
 	}
 }
 
-func TestCreate_SharedHomeMount_OmittedWhenEmpty(t *testing.T) {
+func TestEnsure_CreatesNewSandbox(t *testing.T) {
 	m, argsFile := newFakeDocker(t, true)
 
-	_, err := m.Create(context.Background(), &CreateOpts{
-		Image:           "agency:latest",
-		Name:            "test",
-		WorktreeMount:   "/app",
-		SharedHomeMount: "",
-	})
+	name, err := m.Ensure(context.Background(), "my-sandbox", "/projects/foo", "agency:latest")
 	if err != nil {
-		t.Fatalf("Create returned unexpected error: %v", err)
+		t.Fatalf("Ensure returned unexpected error: %v", err)
+	}
+	if name != "my-sandbox" {
+		t.Errorf("Ensure returned wrong name: got %q, want %q", name, "my-sandbox")
 	}
 
 	log := readArgsLog(t, argsFile)
-	if strings.Contains(log, "shared-base") {
-		t.Errorf("expected docker args NOT to contain 'shared-base', but got:\n%s", log)
+	if !strings.Contains(log, "sandbox create") {
+		t.Errorf("expected 'sandbox create' in docker args, got:\n%s", log)
+	}
+	if !strings.Contains(log, "--name my-sandbox") {
+		t.Errorf("expected '--name my-sandbox' in docker args, got:\n%s", log)
+	}
+}
+
+func TestStopBackground_CallsSandboxStop(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+
+	err := m.StopBackground(context.Background(), "my-sandbox")
+	if err != nil {
+		t.Fatalf("StopBackground returned unexpected error: %v", err)
+	}
+
+	// StopBackground fires the process without waiting; give it a moment to write the log.
+	time.Sleep(100 * time.Millisecond)
+
+	log := readArgsLog(t, argsFile)
+	if !strings.Contains(log, "sandbox stop my-sandbox") {
+		t.Errorf("expected 'sandbox stop my-sandbox' in docker args, got:\n%s", log)
+	}
+}
+
+func TestRemove_CallsSandboxRm(t *testing.T) {
+	m, argsFile := newFakeDocker(t, true)
+
+	err := m.Remove(context.Background(), "my-sandbox")
+	if err != nil {
+		t.Fatalf("Remove returned unexpected error: %v", err)
+	}
+
+	log := readArgsLog(t, argsFile)
+	if !strings.Contains(log, "sandbox rm my-sandbox") {
+		t.Errorf("expected 'sandbox rm my-sandbox' in docker args, got:\n%s", log)
 	}
 }

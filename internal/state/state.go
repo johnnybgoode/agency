@@ -34,8 +34,9 @@ type Workspace struct {
 	Branch       string         `json:"branch"`
 	WorktreePath string         `json:"worktree_path"`
 	SandboxID    string         `json:"sandbox_id"`
-	TmuxWindow   string         `json:"tmux_window"` // window ID (e.g. "@3")
-	PaneID       string         `json:"pane_id"`     // pane ID within that window (e.g. "%5")
+	SessionID    string         `json:"session_id,omitempty"` // Claude session UUID for --resume
+	TmuxWindow   string         `json:"tmux_window"`          // window ID (e.g. "@3")
+	PaneID       string         `json:"pane_id"`              // pane ID within that window (e.g. "%5")
 	CreatedAt    time.Time      `json:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at"`
 	PauseMode    *string        `json:"pause_mode"`
@@ -67,6 +68,7 @@ type State struct {
 	// is compared against the nonce in the lock file to detect PID reuse: if
 	// they differ the lock belongs to a different process instance (recycled PID).
 	LockNonce        string                `json:"lock_nonce,omitempty"`
+	SandboxID        string                `json:"sandbox_id,omitempty"` // Docker sandbox name (project-level)
 	UpdatedAt        time.Time             `json:"updated_at"`
 	SessionStartedAt *time.Time            `json:"session_started_at,omitempty"`
 	Workspaces       map[string]*Workspace `json:"workspaces"`
@@ -75,8 +77,9 @@ type State struct {
 // workspaceIDRe matches ws-<8 hex chars>.
 var workspaceIDRe = regexp.MustCompile(`^ws-[a-f0-9]{8}$`)
 
-// containerIDRe matches 12-64 hex chars (Docker container IDs).
-var containerIDRe = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
+// sandboxNameRe matches Docker sandbox names: starts with alphanumeric, followed by up to 127
+// alphanumeric or ._+- characters, for a maximum total length of 128.
+var sandboxNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._+\-]{0,127}$`)
 
 // ValidateWorkspaceID returns an error if id does not match the expected
 // workspace ID format (ws-<8hex>).
@@ -87,10 +90,12 @@ func ValidateWorkspaceID(id string) error {
 	return nil
 }
 
-// ValidateContainerID returns an error if id is not a valid Docker container ID.
-func ValidateContainerID(id string) error {
-	if !containerIDRe.MatchString(id) {
-		return fmt.Errorf("invalid container ID %q: must match [a-f0-9]{12,64}", id)
+// ValidateSandboxName returns an error if name is not a valid Docker sandbox name.
+// Valid names start with an alphanumeric character and contain only alphanumeric
+// characters or ._+- characters, with a maximum length of 128.
+func ValidateSandboxName(name string) error {
+	if !sandboxNameRe.MatchString(name) {
+		return fmt.Errorf("invalid sandbox name %q: must start with alphanumeric and contain only [a-zA-Z0-9._+-], max 128 chars", name)
 	}
 	return nil
 }
@@ -99,6 +104,11 @@ func ValidateContainerID(id string) error {
 // conform to expected formats. This prevents command injection via
 // tampered state files.
 func (s *State) Validate() error {
+	if s.SandboxID != "" {
+		if err := ValidateSandboxName(s.SandboxID); err != nil {
+			return fmt.Errorf("state file: %w", err)
+		}
+	}
 	for id, ws := range s.Workspaces {
 		// Validate the map key matches expected workspace ID format.
 		if err := ValidateWorkspaceID(id); err != nil {
@@ -108,12 +118,6 @@ func (s *State) Validate() error {
 		if ws.ID != id {
 			return fmt.Errorf("workspace ID mismatch: key=%q, field=%q", id, ws.ID)
 		}
-		// Validate sandbox ID when present.
-		if ws.SandboxID != "" {
-			if err := ValidateContainerID(ws.SandboxID); err != nil {
-				return fmt.Errorf("state file, workspace %s: %w", id, err)
-			}
-		}
 	}
 	return nil
 }
@@ -121,7 +125,7 @@ func (s *State) Validate() error {
 // Default returns a new State with sensible defaults for the given project.
 func Default(project, barePath string) *State {
 	return &State{
-		Version:     1,
+		Version:     2,
 		Project:     project,
 		BarePath:    barePath,
 		TmuxSession: "agency-" + project,
@@ -141,6 +145,17 @@ func Read(path string) (*State, error) {
 	}
 	if s.Workspaces == nil {
 		s.Workspaces = make(map[string]*Workspace)
+	}
+	// Migrate v1 → v2: clear per-workspace SandboxIDs (they were Docker
+	// container IDs, not sandbox names) and leave the project-level SandboxID
+	// empty so the caller can provision a fresh sandbox.
+	if s.Version < 2 {
+		for _, ws := range s.Workspaces {
+			ws.SandboxID = ""
+			ws.SessionID = ""
+		}
+		s.SandboxID = ""
+		s.Version = 2
 	}
 	if err := s.Validate(); err != nil {
 		return nil, fmt.Errorf("validating state file %s: %w", path, err)

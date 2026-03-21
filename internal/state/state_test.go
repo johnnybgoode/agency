@@ -24,8 +24,8 @@ func TestDefault(t *testing.T) {
 	if len(s.Workspaces) != 0 {
 		t.Errorf("Workspaces should be empty, got %d entries", len(s.Workspaces))
 	}
-	if s.Version != 1 {
-		t.Errorf("Version = %d, want 1", s.Version)
+	if s.Version != 2 {
+		t.Errorf("Version = %d, want 2", s.Version)
 	}
 	if s.TmuxSession != "agency-myproject" {
 		t.Errorf("TmuxSession = %q, want %q", s.TmuxSession, "agency-myproject")
@@ -61,6 +61,9 @@ func TestReadWrite(t *testing.T) {
 	}
 	if got.PID != original.PID {
 		t.Errorf("PID = %d, want %d", got.PID, original.PID)
+	}
+	if got.Version != 2 {
+		t.Errorf("Version = %d, want 2", got.Version)
 	}
 	if len(got.Workspaces) != 1 {
 		t.Fatalf("Workspaces len = %d, want 1", len(got.Workspaces))
@@ -103,7 +106,7 @@ func TestReadInitializesNilWorkspaces(t *testing.T) {
 	path := filepath.Join(dir, "state.json")
 
 	// Write JSON without a "workspaces" key to simulate missing workspaces field.
-	raw := `{"version":1,"project":"p","bare_path":"/bare","tmux_session":"agency-p","pid":0,"updated_at":"2024-01-01T00:00:00Z"}`
+	raw := `{"version":2,"project":"p","bare_path":"/bare","tmux_session":"agency-p","pid":0,"updated_at":"2024-01-01T00:00:00Z"}`
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
@@ -260,25 +263,94 @@ func TestValidateWorkspaceID(t *testing.T) {
 	}
 }
 
-func TestValidateContainerID(t *testing.T) {
+func TestValidateSandboxName(t *testing.T) {
+	long129 := strings.Repeat("a", 129)
 	tests := []struct {
-		id      string
+		name    string
 		wantErr bool
 	}{
-		{"abcdef012345", false}, // 12 hex chars — min valid
-		{"abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", false}, // 64 hex chars — max valid
-		{"abc", true},          // too short
-		{"ABCDEF012345", true}, // uppercase not allowed
-		{"abcdef01234g", true}, // non-hex char
+		{"agency-myproject", false},
+		{"my.sandbox", false},
+		{"test+sandbox", false},
+		{"a", false}, // single char
 		{"", true},
-		{"abcdef01234", true}, // 11 chars, below minimum
+		{".starts-with-dot", true},
+		{"-starts-with-dash", true},
+		{long129, true}, // exceeds 128 chars
+		{"has spaces", true},
+		{"has;semicolon", true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.id, func(t *testing.T) {
-			err := ValidateContainerID(tt.id)
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateSandboxName(tt.name)
 			if (err != nil) != tt.wantErr {
-				t.Errorf("ValidateContainerID(%q) error = %v, wantErr %v", tt.id, err, tt.wantErr)
+				t.Errorf("ValidateSandboxName(%q) error = %v, wantErr %v", tt.name, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestMigrateV1ToV2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+
+	// Craft a v1 state JSON with per-workspace hex container IDs.
+	raw := `{
+		"version": 1,
+		"project": "myproject",
+		"bare_path": "/bare",
+		"tmux_session": "agency-myproject",
+		"pid": 0,
+		"updated_at": "2024-01-01T00:00:00Z",
+		"workspaces": {
+			"ws-aabb1122": {
+				"id": "ws-aabb1122",
+				"name": "",
+				"state": "running",
+				"branch": "feat/one",
+				"worktree_path": "",
+				"sandbox_id": "abcdef012345abcdef012345abcdef01",
+				"tmux_window": "",
+				"pane_id": "",
+				"created_at": "2024-01-01T00:00:00Z",
+				"updated_at": "2024-01-01T00:00:00Z"
+			},
+			"ws-ccdd3344": {
+				"id": "ws-ccdd3344",
+				"name": "",
+				"state": "paused",
+				"branch": "feat/two",
+				"worktree_path": "",
+				"sandbox_id": "deadbeefcafe1234deadbeefcafe1234",
+				"tmux_window": "",
+				"pane_id": "",
+				"created_at": "2024-01-01T00:00:00Z",
+				"updated_at": "2024-01-01T00:00:00Z"
+			}
+		}
+	}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	s, err := Read(path)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+
+	if s.Version != 2 {
+		t.Errorf("Version = %d, want 2", s.Version)
+	}
+	if s.SandboxID != "" {
+		t.Errorf("project-level SandboxID = %q, want empty", s.SandboxID)
+	}
+
+	for id, ws := range s.Workspaces {
+		if ws.SandboxID != "" {
+			t.Errorf("workspace %s SandboxID = %q, want empty after migration", id, ws.SandboxID)
+		}
+		if ws.SessionID != "" {
+			t.Errorf("workspace %s SessionID = %q, want empty after migration", id, ws.SessionID)
+		}
 	}
 }

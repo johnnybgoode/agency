@@ -263,16 +263,11 @@ var gcCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			ctx := context.Background()
 			ws, ok := mgr.State.Workspaces[workspaceID]
 			if !ok {
 				return nil // already cleaned up; exit quietly
 			}
 			dirty, _ := worktree.IsDirty(ws.WorktreePath)
-			if ws.SandboxID != "" && mgr.Sandbox != nil {
-				_ = mgr.Sandbox.Stop(ctx, ws.SandboxID, 10)
-				_ = mgr.Sandbox.Remove(ctx, ws.SandboxID)
-			}
 			if !dirty {
 				if ws.WorktreePath != "" {
 					_ = worktree.Remove(mgr.State.BarePath, ws.WorktreePath)
@@ -298,30 +293,8 @@ var gcCmd = &cobra.Command{
 		// Find orphan worktrees (excludes the main development worktree).
 		orphanWorktrees, _ := mgr.FindOrphanWorktrees()
 
-		// Collect known sandbox IDs from state.
-		knownSandboxIDs := make(map[string]bool)
-		for _, ws := range mgr.State.Workspaces {
-			if ws.SandboxID != "" {
-				knownSandboxIDs[ws.SandboxID] = true
-			}
-		}
-
-		// Find orphan containers.
-		var orphanContainers []string // container IDs
-		var orphanContainerNames []string
-		if mgr.Sandbox != nil {
-			if containers, err := mgr.Sandbox.ListByProject(ctx, mgr.ContainerPrefix()); err == nil {
-				for _, c := range containers {
-					if !knownSandboxIDs[c.ID] {
-						orphanContainers = append(orphanContainers, c.ID)
-						orphanContainerNames = append(orphanContainerNames, c.Name)
-					}
-				}
-			}
-		}
-
-		total := len(orphanWorktrees) + len(orphanContainers)
-		slog.Info("gc scan complete", "orphan_worktrees", len(orphanWorktrees), "orphan_containers", len(orphanContainers))
+		total := len(orphanWorktrees)
+		slog.Info("gc scan complete", "orphan_worktrees", len(orphanWorktrees))
 
 		if total == 0 {
 			fmt.Println("No orphans found.")
@@ -330,9 +303,6 @@ var gcCmd = &cobra.Command{
 			fmt.Println(strings.Repeat("-", 60))
 			for _, wt := range orphanWorktrees {
 				fmt.Printf("%-6s  %-10s  %s\n", "orphan", "worktree", wt.Path)
-			}
-			for i, name := range orphanContainerNames {
-				fmt.Printf("%-6s  %-10s  %s (%s)\n", "orphan", "container", name, orphanContainers[i])
 			}
 		}
 
@@ -363,18 +333,6 @@ var gcCmd = &cobra.Command{
 				fmt.Fprintf(os.Stderr, "warning: removing worktree %s: %v\n", wt.Path, err)
 			} else {
 				fmt.Printf("Removed worktree %s\n", wt.Path)
-			}
-		}
-
-		// Remove orphan containers.
-		for i, cid := range orphanContainers {
-			if mgr.Sandbox != nil {
-				if err := mgr.Sandbox.Remove(ctx, cid); err != nil {
-					slog.Warn("gc: failed to remove container", "name", orphanContainerNames[i], "error", err)
-					fmt.Fprintf(os.Stderr, "warning: removing container %s: %v\n", orphanContainerNames[i], err)
-				} else {
-					fmt.Printf("Removed container %s\n", orphanContainerNames[i])
-				}
 			}
 		}
 

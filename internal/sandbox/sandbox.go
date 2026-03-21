@@ -1,9 +1,9 @@
-// Package sandbox manages Docker containers for isolated agent sessions.
+// Package sandbox manages Docker sandboxes (MicroVMs) for isolated agent sessions.
 package sandbox
 
 import (
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -11,90 +11,66 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/johnnybgoode/agency/internal/state"
 )
 
-// ValidateContainerID returns an error if id is not a valid Docker container ID.
-// A valid container ID consists of 12 to 64 lowercase hexadecimal characters.
-func ValidateContainerID(id string) error {
-	return state.ValidateContainerID(id)
+// ValidateSandboxName returns an error if name is not a valid Docker sandbox name.
+func ValidateSandboxName(name string) error {
+	return state.ValidateSandboxName(name)
 }
 
-// CreateOpts holds all options required to create a sandbox container.
-type CreateOpts struct {
-	Image           string
-	Name            string
-	WorktreeMount   string   // host path mounted to /app inside the container
-	ConfigMount     string   // host path mounted to /etc/agency/config.toml (read-only)
-	SharedHomeMount string   // host path mounted read-only at /home/agent/.shared-base
-	Env             []string // non-sensitive environment variables in KEY=VALUE form
-	EnvFile         string   // path to a file containing sensitive KEY=VALUE pairs (passed via --env-file)
-	CapDrop         []string
-	CapAdd          []string
-	Memory          string // e.g. "4g" — passed as --memory to docker create
-	CPUs            int    // e.g. 2 — passed as --cpus to docker create
-	Network         string // e.g. "none", "bridge" — passed as --network to docker create
+// SandboxInfo is a summary of a Docker sandbox (MicroVM).
+//
+//nolint:revive // SandboxInfo is intentional: avoids ambiguity when imported as sandbox.SandboxInfo.
+type SandboxInfo struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`      // "running", "stopped" — note: status alone is unreliable
+	SocketPath string `json:"socket_path"` // non-empty only when the VM is actually running
 }
 
-// ContainerInfo is a summary of a running or stopped container.
-type ContainerInfo struct {
-	ID    string
-	Name  string
-	State string
+// IsRunning reports whether this sandbox's VM is actually running.
+// The status field can report "running" even when the VM is gone;
+// the presence of a socket_path is the reliable indicator.
+func (s *SandboxInfo) IsRunning() bool {
+	return s.SocketPath != ""
 }
 
-// Manager shells out to the docker CLI to manage sandbox containers.
+// Manager shells out to the docker CLI to manage Docker sandboxes.
 type Manager struct{}
 
-// New verifies that docker is installed and returns a Manager ready for use.
-// The daemon health check is intentionally skipped at construction time so
-// startup is fast; any daemon-reachability error surfaces on the first real
-// operation (Create, Start, etc.).
+// New verifies that docker is installed and that sandbox support is available,
+// then returns a Manager ready for use.
 func New() (*Manager, error) {
 	path, err := exec.LookPath("docker")
 	if err != nil {
-		return nil, errors.New("docker is not installed")
+		return nil, fmt.Errorf("docker is not installed")
 	}
 	slog.Debug("docker binary found", "path", path)
-	return &Manager{}, nil
-}
 
-// redactArgs returns a copy of args with sensitive -e KEY=VALUE pairs redacted.
-// The value portion is replaced with KEY=REDACTED for any key containing
-// API_KEY, TOKEN, or SECRET (case-insensitive).
-func redactArgs(args []string) []string {
-	result := make([]string, len(args))
-	copy(result, args)
-	for i, arg := range result {
-		if i > 0 && result[i-1] == "-e" {
-			if idx := strings.Index(arg, "="); idx >= 0 {
-				key := arg[:idx]
-				upper := strings.ToUpper(key)
-				if strings.Contains(upper, "API_KEY") || strings.Contains(upper, "TOKEN") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") {
-					result[i] = key + "=REDACTED"
-				}
-			}
-		}
+	cmd := exec.Command("docker", "sandbox", "version")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("docker sandbox support not available: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
-	return result
+	return &Manager{}, nil
 }
 
 // docker is a shared helper that runs a docker sub-command and returns the
 // trimmed stdout. Any non-zero exit is returned as an error together with the
 // combined output so callers have full context.
 func (m *Manager) docker(ctx context.Context, args ...string) (string, error) {
-	slog.Debug("docker exec", "args", redactArgs(args))
+	slog.Debug("docker exec", "args", args)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if err != nil {
-		slog.Error("docker command failed", "args", redactArgs(args), "error", err, "output", truncateLog(result, 200))
-		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(redactArgs(args), " "), err, truncateLog(result, 200))
+		slog.Error("docker command failed", "args", args, "error", err, "output", truncateLog(result, 200))
+		return "", fmt.Errorf("docker %s: %w\n%s", strings.Join(args, " "), err, truncateLog(result, 200))
 	}
-	slog.Debug("docker exec done", "args", redactArgs(args), "output_len", len(result))
+	slog.Debug("docker exec done", "args", args, "output_len", len(result))
 	return result, nil
 }
 
@@ -106,119 +82,117 @@ func truncateLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// defaultCapDrop is applied when CreateOpts.CapDrop is nil or empty.
-var defaultCapDrop = []string{"ALL"}
-
-// defaultCapAdd is applied when CreateOpts.CapAdd is nil or empty.
-var defaultCapAdd = []string{
-	"CHOWN",
-	"SETUID",
-	"SETGID",
-	"DAC_OVERRIDE",
-	"FOWNER",
-}
-
-// Create runs `docker create` with the provided options and returns the
-// container ID assigned by the daemon.
-func (m *Manager) Create(ctx context.Context, opts *CreateOpts) (string, error) {
-	slog.Info("creating container", "name", opts.Name, "image", opts.Image)
-	capDrop := opts.CapDrop
-	if len(capDrop) == 0 {
-		capDrop = defaultCapDrop
-	}
-	capAdd := opts.CapAdd
-	if len(capAdd) == 0 {
-		capAdd = defaultCapAdd
-	}
-
-	args := []string{"create"}
-
-	args = append(args, "--name", opts.Name, "--tty", "--interactive", "--workdir", "/app", "--security-opt", "no-new-privileges:true")
-
-	for _, cap := range capDrop {
-		args = append(args, "--cap-drop", cap)
-	}
-	for _, cap := range capAdd {
-		args = append(args, "--cap-add", cap)
-	}
-
-	args = append(args, "-v", opts.WorktreeMount+":/app:rw")
-
-	if opts.ConfigMount != "" {
-		args = append(args, "-v", opts.ConfigMount+":/etc/agency/config.toml:ro")
-	}
-	if opts.SharedHomeMount != "" {
-		args = append(args, "-v", opts.SharedHomeMount+":/home/agent/.shared-base:ro")
-	}
-
-	if opts.Memory != "" {
-		args = append(args, "--memory", opts.Memory)
-	}
-	if opts.CPUs > 0 {
-		args = append(args, "--cpus", strconv.Itoa(opts.CPUs))
-	}
-	if opts.Network != "" {
-		args = append(args, "--network", opts.Network)
-	}
-
-	if opts.EnvFile != "" {
-		args = append(args, "--env-file", opts.EnvFile)
-	}
-	for _, env := range opts.Env {
-		args = append(args, "-e", env)
-	}
-
-	// No CMD override — let the image default (sleep infinity) keep the
-	// container alive so docker exec can launch interactive claude sessions.
-	args = append(args, opts.Image)
-
-	// Use stdout-only output for docker create to avoid stderr warnings
-	// polluting the container ID.
-	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.Output()
+// Ensure returns the name of a running sandbox, starting or creating as needed:
+//   - running  → return immediately
+//   - stopped  → start via `docker sandbox run`
+//   - absent   → create via `docker sandbox create`
+func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (string, error) {
+	info, err := m.FindByName(ctx, name)
 	if err != nil {
-		// Include stderr in the error for diagnostics.
-		return "", fmt.Errorf("docker create: %w", err)
+		return "", fmt.Errorf("finding sandbox %q: %w", name, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+
+	if info != nil {
+		if info.IsRunning() {
+			return info.Name, nil
+		}
+		// Sandbox exists but is stopped — start it detached.
+		slog.Info("starting stopped sandbox", "name", name)
+		_, err = m.docker(ctx, "sandbox", "run", "-d", name)
+		if err != nil {
+			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
+		}
+		return info.Name, nil
+	}
+
+	slog.Info("creating sandbox", "name", name, "image", image, "projectDir", projectDir)
+	_, err = m.docker(ctx, "sandbox", "create", "--name", name, "-t", image, "claude", projectDir)
+	if err != nil {
+		return "", fmt.Errorf("creating sandbox %q: %w", name, err)
+	}
+	return name, nil
 }
 
-// Start starts a previously created (stopped) container.
-func (m *Manager) Start(ctx context.Context, containerID string) error {
-	slog.Info("starting container", "container", containerID)
-	_, err := m.docker(ctx, "start", containerID)
-	return err
+// sandboxListOutput is the JSON structure returned by `docker sandbox ls --json`.
+type sandboxListOutput struct {
+	VMs []SandboxInfo `json:"vms"`
 }
 
-// Stop stops a running container, waiting up to timeoutSecs before killing it.
-func (m *Manager) Stop(ctx context.Context, containerID string, timeoutSecs int) error {
-	slog.Info("stopping container", "container", containerID, "timeout", timeoutSecs)
-	_, err := m.docker(ctx, "stop", "-t", fmt.Sprintf("%d", timeoutSecs), containerID)
-	return err
+// ListRetryDelay is the delay before retrying a failed `docker sandbox ls`.
+// Exported so tests can set it to zero to avoid slow retries.
+var ListRetryDelay = 2 * time.Second
+
+// FindByName returns the SandboxInfo for the sandbox with the given name, or
+// nil if no matching sandbox is found.
+//
+// The Docker sandbox daemon can transiently fail with "socket path is empty"
+// while its internal state settles after a stop. We retry once after a short
+// delay to ride out this race.
+func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, error) {
+	result, err := m.listSandboxes(ctx)
+	if err != nil {
+		slog.Warn("sandbox ls failed, retrying", "delay", ListRetryDelay, "error", err)
+		time.Sleep(ListRetryDelay)
+		result, err = m.listSandboxes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing sandboxes: %w", err)
+		}
+	}
+
+	for i, vm := range result.VMs {
+		if vm.Name == name {
+			return &result.VMs[i], nil
+		}
+	}
+	return nil, nil //nolint:nilnil // nil,nil means "not found" which is the documented API
 }
 
-// StopBackground fires `docker stop` without waiting for it to complete.
-// The docker daemon processes the stop independently; this returns as soon
-// as the docker CLI child process has been launched.
-func (m *Manager) StopBackground(ctx context.Context, containerID string, timeoutSecs int) error {
-	cmd := exec.CommandContext(ctx, "docker", "stop", "-t", fmt.Sprintf("%d", timeoutSecs), containerID) //nolint:gosec // containerID is an internal docker container ID, not user input
+// listSandboxes calls `docker sandbox ls --json` and parses the result.
+func (m *Manager) listSandboxes(ctx context.Context) (*sandboxListOutput, error) {
+	out, err := m.docker(ctx, "sandbox", "ls", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var result sandboxListOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return nil, fmt.Errorf("parsing sandbox list JSON: %w\n%s", err, truncateLog(out, 500))
+	}
+	return &result, nil
+}
+
+// ExecArgs returns the argument slice needed to exec a command inside the named
+// sandbox. It does NOT run the command — the caller is responsible for execution.
+func ExecArgs(sandboxName string, args []string) []string {
+	out := make([]string, 0, 4+len(args))
+	out = append(out, "docker", "sandbox", "exec", "-it", sandboxName)
+	out = append(out, args...)
+	return out
+}
+
+// StopBackground fires `docker sandbox stop` without waiting for it to complete.
+// The child process is started in its own process group (Setpgid) so it
+// survives the parent's exit — important because KillSession terminates the
+// sidebar process immediately after this call.
+func (m *Manager) StopBackground(ctx context.Context, sandboxName string) error {
+	cmd := exec.Command("docker", "sandbox", "stop", sandboxName)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return cmd.Start()
 }
 
-// Remove force-removes a container (equivalent to `docker rm -f`).
-func (m *Manager) Remove(ctx context.Context, containerID string) error {
-	slog.Info("removing container", "container", containerID)
-	_, err := m.docker(ctx, "rm", "-f", containerID)
+// Remove removes a sandbox.
+func (m *Manager) Remove(ctx context.Context, sandboxName string) error {
+	slog.Info("removing sandbox", "sandbox", sandboxName)
+	_, err := m.docker(ctx, "sandbox", "rm", sandboxName)
 	return err
 }
 
-// IsRunning reports whether the container is in the running state.
-func (m *Manager) IsRunning(ctx context.Context, containerID string) (bool, error) {
-	out, err := m.docker(ctx, "inspect", "-f", "{{.State.Running}}", containerID)
+// IsRunning reports whether the sandbox is in the running state.
+func (m *Manager) IsRunning(ctx context.Context, sandboxName string) (bool, error) {
+	info, err := m.FindByName(ctx, sandboxName)
 	if err != nil {
 		return false, err
 	}
-	return out == "true", nil
+	return info != nil && info.IsRunning(), nil
 }
 
 // ImageExists reports whether the named image is present in the local Docker
@@ -307,43 +281,4 @@ func extractFS(destDir string, src fs.FS) error {
 		_, err = io.Copy(out, f)
 		return err
 	})
-}
-
-// CopyFrom copies srcPath from inside the container to destPath on the host.
-// Works on both running and stopped containers.
-func (m *Manager) CopyFrom(ctx context.Context, containerID, srcPath, destPath string) error {
-	_, err := m.docker(ctx, "cp", containerID+":"+srcPath, destPath)
-	return err
-}
-
-// ListByProject returns all containers (running or stopped) whose names begin
-// with prefix. It uses the docker --filter flag for server-side filtering.
-func (m *Manager) ListByProject(ctx context.Context, prefix string) ([]ContainerInfo, error) {
-	out, err := m.docker(ctx,
-		"ps", "-a",
-		"--filter", "name="+prefix,
-		"--format", "{{.ID}}\t{{.Names}}\t{{.State}}",
-	)
-	if err != nil {
-		return nil, err
-	}
-
-	slog.Debug("listing containers by project", "prefix", prefix)
-	var containers []ContainerInfo
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 3)
-		if len(parts) != 3 {
-			continue
-		}
-		containers = append(containers, ContainerInfo{
-			ID:    parts[0],
-			Name:  parts[1],
-			State: parts[2],
-		})
-	}
-	return containers, nil
 }

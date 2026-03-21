@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -24,70 +23,90 @@ var (
 	loadingText = lipgloss.NewStyle().Foreground(claudeOrange).Bold(true)
 )
 
-// mascotFrame returns the static Claude mascot rendered with half-block
-// characters. The bounce animation is handled by renderMascot via vertical offset.
-func mascotFrame() string {
-	// Row 0-1:  ▄█████▄   (▄ = edge half-block, █ = full orange)
-	row1 := orangeBlock.Render("▄") +
-		orangeBlock.Render("█████") +
-		orangeBlock.Render("▄")
-
-	// Row 2-3:  ██▄██▄█   (▄ at eye positions = dark top, orange bottom)
-	row2 := orangeBlock.Render("██") +
-		halfBlockEye.Render("▄") +
+// mascotBody returns the top 3 rows shared by all animation frames.
+func mascotBody() [3]string {
+	return [3]string{
+		// Row 1:  █████████  (head top)
+		" " + orangeBlock.Render("█████████") + " ",
+		// Row 2: ██▄█████▄██ (face with eyes)
 		orangeBlock.Render("██") +
-		halfBlockEye.Render("▄") +
-		orangeBlock.Render("█")
-
-	// Row 4-5:   █   █    (legs)
-	row3 := " " + orangeBlock.Render("█") +
-		"   " +
-		orangeBlock.Render("█")
-
-	return fmt.Sprintf("%s\n%s\n%s", row1, row2, row3)
+			halfBlockEye.Render("▄") +
+			orangeBlock.Render("█████") +
+			halfBlockEye.Render("▄") +
+			orangeBlock.Render("██"),
+		// Row 3:  █████████  (body)
+		" " + orangeBlock.Render("█████████") + " ",
+	}
 }
 
-// renderMascot returns the styled, centered mascot above a fixed-position
-// "Creating workspace…" label. The mascot bounces (vertical offset alternates
-// per frame) while the label stays pinned at the bottom of the popup.
+// mascotLegs returns the legs row for the given animation frame index (0-2).
 //
-// Layout (height = 9 lines, fitting in an 11-line popup with border):
+//	0: █ █   █ █   (standing)
+//	1: █ ▀   ▀ █   (feet out)
+//	2: ▀ █   █ ▀   (feet swapped)
+func mascotLegs(idx int) string {
+	switch idx {
+	case 1:
+		return " " + orangeBlock.Render("█") + " " +
+			orangeBlock.Render("▀") + "   " +
+			orangeBlock.Render("▀") + " " +
+			orangeBlock.Render("█")
+	case 2:
+		return " " + orangeBlock.Render("▀") + " " +
+			orangeBlock.Render("█") + "   " +
+			orangeBlock.Render("█") + " " +
+			orangeBlock.Render("▀")
+	default:
+		return " " + orangeBlock.Render("█") + " " +
+			orangeBlock.Render("█") + "   " +
+			orangeBlock.Render("█") + " " +
+			orangeBlock.Render("█")
+	}
+}
+
+// mascotFrameIndex maps the animation tick counter to a frame index (0-2).
+// Cycle: 0 → 1 → 2 → 1 → 2 → … (frame 0 only on first tick).
+func mascotFrameIndex(tick int) int {
+	if tick == 0 {
+		return 0
+	}
+	if tick%2 == 1 {
+		return 1
+	}
+	return 2
+}
+
+// renderMascot returns the styled, centered mascot with a fixed
+// "Creating workspace…" label below. The legs animate through a
+// walk cycle while the body and label stay in place.
 //
-//	Line 0:  blank (bounce padding) or mascot row 1
-//	Line 1:  mascot row 1 or 2
-//	Line 2:  mascot row 2 or 3
-//	Line 3:  mascot row 3 or blank
-//	Line 4:  blank (bounce padding) or blank
-//	...
-//	Line 7:  "Creating workspace…"
-//	Line 8:  blank (bottom padding)
+// Layout (height = 8 lines, fitting in an 11-line popup with border):
+//
+//	Line 0:  blank (top padding)
+//	Line 1:  mascot row 1 (head)
+//	Line 2:  mascot row 2 (face)
+//	Line 3:  mascot row 3 (body)
+//	Line 4:  mascot row 4 (legs — animated)
+//	Line 5:  blank (spacer)
+//	Line 6:  "Creating workspace…"
+//	Line 7:  blank (bottom padding)
 func renderMascot(frame, width int) string {
-	mascot := mascotFrame()
-	mascotLines := strings.Split(mascot, "\n")
+	body := mascotBody()
+	idx := mascotFrameIndex(frame)
+	legs := mascotLegs(idx)
 
 	label := loadingText.Render("Creating workspace…")
 
-	// Total content height: 9 lines.
-	// Mascot occupies lines 0-4 (3 mascot rows + 2 for bounce padding).
-	// Lines 5-6 are spacers, line 7 is the label, line 8 is bottom padding.
-	const totalHeight = 9
-
-	lines := make([]string, totalHeight)
-
-	// Bounce: baseline at row 1, bounce down to row 2 on odd frames.
-	// Row 0 is always blank to avoid clipping the popup top border.
-	offset := 1
-	if frame%2 == 1 {
-		offset = 2
+	lines := []string{
+		"",      // top padding
+		body[0], // head
+		body[1], // face
+		body[2], // body
+		legs,    // legs (animated)
+		"",      // spacer
+		label,   // label
+		"",      // bottom padding
 	}
-
-	// Place mascot rows.
-	for i, ml := range mascotLines {
-		lines[offset+i] = ml
-	}
-
-	// Fixed label near the bottom (line 7), with 1 line of padding below (line 8).
-	lines[totalHeight-2] = label
 
 	// Center each line horizontally.
 	var centered []string

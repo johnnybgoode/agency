@@ -101,6 +101,12 @@ Rather than driving the create popup (which requires an attached client), write 
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
 STATE_FILE="$PROJECT_ROOT/.agency/state.json"
 
+# Wait for agency to write its initial state.json (deleted in Step 3)
+for i in $(seq 1 10); do
+  [ -f "$STATE_FILE" ] && break
+  sleep 0.5
+done
+
 # Read current state, add a stub workspace
 python3 -c "
 import json, sys

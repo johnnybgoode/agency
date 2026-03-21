@@ -112,10 +112,7 @@ Please switch to Claude Desktop, share your terminal window showing the agency T
 
 Relay Claude Desktop's response back to me as a message. I'll record it and continue. To skip this checkpoint, type `skip` or `s`.
 
-Once you relay the response (or skip), append it to the findings file under the Scenario 2 heading:
-```
-**Visual (Claude Desktop):** <relayed findings>
-```
+When the user relays the response (or types `skip` or `s`), store the findings in memory — they will be written to the findings file as part of Step 7.
 
 ---
 
@@ -127,6 +124,12 @@ Rather than driving the create popup (which requires an attached client), write 
 # Write a stub workspace into state.json
 PROJECT_ROOT=$(git rev-parse --show-toplevel)
 STATE_FILE="$PROJECT_ROOT/.agency/state.json"
+
+# Wait for agency to write its initial state.json (deleted in Step 3)
+for i in $(seq 1 10); do
+  [ -f "$STATE_FILE" ] && break
+  sleep 0.5
+done
 
 # Read current state, add a stub workspace
 python3 -c "
@@ -174,10 +177,7 @@ Please switch to Claude Desktop, share your terminal window showing the agency T
 
 Relay Claude Desktop's response back to me as a message. I'll record it and continue. To skip this checkpoint, type `skip` or `s`.
 
-Once you relay the response (or skip), append it to the findings file under the Scenario 3 heading:
-```
-**Visual (Claude Desktop):** <relayed findings>
-```
+When the user relays the response (or types `skip` or `s`), store the findings in memory — they will be written to the findings file as part of Step 7.
 
 ---
 

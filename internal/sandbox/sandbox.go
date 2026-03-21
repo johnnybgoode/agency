@@ -227,6 +227,25 @@ func (m *Manager) IsRunning(ctx context.Context, sandboxName string) (bool, erro
 	return info != nil && info.IsRunning(), nil
 }
 
+// WaitForReady polls until the sandbox VM accepts exec commands or the context
+// is canceled. This bridges the gap between sandbox "running" status and actual
+// readiness — the VM needs time to boot before it can exec processes.
+func (m *Manager) WaitForReady(ctx context.Context, sandboxName string) error {
+	for {
+		execCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := exec.CommandContext(execCtx, "docker", "sandbox", "exec", sandboxName, "true").Run()
+		cancel()
+		if err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 // ImageExists reports whether the named image is present in the local Docker
 // image store. A non-zero exit from `docker image inspect` is treated as "not
 // found" rather than an error so callers can distinguish missing-image from

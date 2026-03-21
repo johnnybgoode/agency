@@ -47,6 +47,9 @@ type reconcileDoneMsg struct {
 	err error
 }
 
+// sandboxWarmMsg is sent when the optimistic sandbox warm-up completes.
+type sandboxWarmMsg struct{ err error }
+
 // syncDoneMsg is emitted after an async SyncHome call completes.
 type syncDoneMsg struct {
 	workspaceName string
@@ -195,6 +198,13 @@ func (m listModel) Init() tea.Cmd {
 		tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 			return tickMsg{}
 		}),
+		func() tea.Msg {
+			if mgr.Sandbox == nil {
+				return sandboxWarmMsg{}
+			}
+			err := mgr.EnsureProjectSandbox(context.Background())
+			return sandboxWarmMsg{err: err}
+		},
 	)
 }
 
@@ -235,7 +245,7 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) newWorkspaceCmd() tea.Cmd {
 	const popupWidth = 60
-	const popupHeight = 10
+	const popupHeight = 11
 	xPos := 0
 	if len(m.workspaces) == 0 && m.width > m.sidebarWidth() {
 		rightStart := m.sidebarWidth()
@@ -595,6 +605,13 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.confirmQuit()
 		}
 		// Popup was canceled — resume normal operation.
+
+	case sandboxWarmMsg:
+		if msg.err != nil {
+			slog.Warn("sandbox warm-up failed", "error", msg.err)
+		} else {
+			slog.Info("sandbox warm-up complete")
+		}
 
 	case reconcileDoneMsg:
 		m.workspaces = m.manager.List()

@@ -515,16 +515,16 @@ func TestNewTestManager_TempDirCleaned(t *testing.T) {
 	}
 }
 
-// ----- provisionTmux: trapCmd must use docker sandbox ls to check existence -----
+// ----- provisionTmux: trapScript must use docker sandbox ls to check existence -----
 
-// TestProvisionTmux_TrapCmdChecksSandboxExistence verifies that the shell
+// TestProvisionTmux_TrapScriptChecksSandboxExistence verifies that the shell
 // command sent to the workspace's tmux window uses a sandbox-existence check
 // in the loop condition (docker sandbox ls -q | grep) rather than "while true".
-func TestProvisionTmux_TrapCmdChecksSandboxExistence(t *testing.T) {
+func TestProvisionTmux_TrapScriptChecksSandboxExistence(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
 
-	// Capture full send-keys arguments. new-window returns "@88", list-panes returns "%5".
+	// Capture tmux arguments. new-window returns "@88", list-panes returns "%5".
 	script := "#!/bin/sh\n" +
 		`echo "$@" >> ` + argsFile + "\n" +
 		`case "$1" in` + "\n" +
@@ -583,9 +583,9 @@ func TestProvisionTmux_TrapCmdChecksSandboxExistence(t *testing.T) {
 	}
 }
 
-// TestProvisionTmux_TrapCmdUsesSessionID verifies that the trapCmd
+// TestProvisionTmux_TrapScriptUsesSessionID verifies that the trapScript
 // uses --session-id <UUID> for the first run and --resume <UUID> for restarts.
-func TestProvisionTmux_TrapCmdUsesSessionID(t *testing.T) {
+func TestProvisionTmux_TrapScriptUsesSessionID(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
 
@@ -1724,13 +1724,13 @@ func TestSidebarColumns(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// buildTrapCmd
+// buildTrapScript
 // ---------------------------------------------------------------------------
 
-// TestBuildTrapCmd_ResumeFlag verifies that buildTrapCmd uses --session-id when
+// TestBuildTrapScript_ResumeFlag verifies that buildTrapScript uses --session-id when
 // resume=false and --resume when resume=true, and that both outputs include the
 // workspace ID, sandbox ID, and session ID.
-func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
+func TestBuildTrapScript_ResumeFlag(t *testing.T) {
 	sessionID := "12345678-1234-4234-8234-123456789abc"
 	tests := []struct {
 		name         string
@@ -1767,30 +1767,30 @@ func TestBuildTrapCmd_ResumeFlag(t *testing.T) {
 			}
 			addWorkspace(m, ws)
 
-			cmd, err := m.buildTrapCmd(ws, tt.resume)
+			cmd, err := m.buildTrapScript(ws, tt.resume)
 			if err != nil {
-				t.Fatalf("buildTrapCmd(resume=%v): unexpected error: %v", tt.resume, err)
+				t.Fatalf("buildTrapScript(resume=%v): unexpected error: %v", tt.resume, err)
 			}
 
 			if !strings.Contains(cmd, tt.wantContains) {
-				t.Errorf("buildTrapCmd(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantContains, cmd)
+				t.Errorf("buildTrapScript(resume=%v): output does not contain %q\ngot: %s", tt.resume, tt.wantContains, cmd)
 			}
 			if tt.wantAbsent != "" && strings.Contains(cmd, tt.wantAbsent) {
-				t.Errorf("buildTrapCmd(resume=%v): output should not contain %q\ngot: %s", tt.resume, tt.wantAbsent, cmd)
+				t.Errorf("buildTrapScript(resume=%v): output should not contain %q\ngot: %s", tt.resume, tt.wantAbsent, cmd)
 			}
 			// Both workspace ID and sandbox ID must appear.
 			if !strings.Contains(cmd, ws.ID) {
-				t.Errorf("buildTrapCmd: output does not contain workspace ID %q\ngot: %s", ws.ID, cmd)
+				t.Errorf("buildTrapScript: output does not contain workspace ID %q\ngot: %s", ws.ID, cmd)
 			}
 			if !strings.Contains(cmd, ws.SandboxID) {
-				t.Errorf("buildTrapCmd: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
+				t.Errorf("buildTrapScript: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
 			}
 			// Must use docker sandbox ls -q | grep to check existence, and docker sandbox exec.
 			if !strings.Contains(cmd, "docker sandbox ls -q | grep -qx") {
-				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox ls -q | grep -qx'\ngot: %s", cmd)
+				t.Errorf("buildTrapScript: output does not contain 'docker sandbox ls -q | grep -qx'\ngot: %s", cmd)
 			}
 			if !strings.Contains(cmd, "docker sandbox exec") {
-				t.Errorf("buildTrapCmd: output does not contain 'docker sandbox exec'\ngot: %s", cmd)
+				t.Errorf("buildTrapScript: output does not contain 'docker sandbox exec'\ngot: %s", cmd)
 			}
 		})
 	}

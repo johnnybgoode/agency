@@ -91,12 +91,16 @@ func RunQuitPopup() error {
 	return os.WriteFile(resultPath, data, 0o600)
 }
 
+// spinnerTickMsg drives the mascot bounce animation in the create popup.
+type spinnerTickMsg struct{}
+
 // popupWrapper is a thin bubbletea model that wraps the create form for popup mode.
 type popupWrapper struct {
-	form createModel
-	mgr  *workspace.Manager
-	done bool
-	err  error
+	form  createModel
+	mgr   *workspace.Manager
+	done  bool
+	err   error
+	frame int // animation frame counter for mascot bounce
 }
 
 func (pw popupWrapper) Init() tea.Cmd { //nolint:gocritic // bubbletea model must use value receivers
@@ -104,11 +108,17 @@ func (pw popupWrapper) Init() tea.Cmd { //nolint:gocritic // bubbletea model mus
 }
 
 func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocritic // bubbletea model must use value receivers
-	// Once Create is in flight, only handle its completion.
+	// Once Create is in flight, handle completion and animation ticks.
 	if pw.done {
-		if m, ok := msg.(popupDoneMsg); ok {
+		switch m := msg.(type) {
+		case popupDoneMsg:
 			pw.err = m.err
 			return pw, tea.Quit
+		case spinnerTickMsg:
+			pw.frame++
+			return pw, tea.Tick(172*time.Millisecond, func(t time.Time) tea.Msg {
+				return spinnerTickMsg{}
+			})
 		}
 		return pw, nil
 	}
@@ -125,10 +135,28 @@ func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocri
 		branch := pw.form.Branch()
 		mgr := pw.mgr
 		pw.done = true
-		return pw, func() tea.Msg {
-			_, err := mgr.Create(context.Background(), name, branch)
-			return popupDoneMsg{err: err}
-		}
+		return pw, tea.Batch(
+			func() tea.Msg {
+				ws, err := mgr.Create(context.Background(), name, branch)
+				if err != nil {
+					return popupDoneMsg{err: err}
+				}
+				// Keep the popup (and mascot animation) visible until the
+				// sandbox VM is actually ready for exec. Without this the
+				// popup closes immediately while the pane sits dark.
+				if mgr.Sandbox != nil && ws.SandboxID != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+					defer cancel()
+					if waitErr := mgr.Sandbox.WaitForReady(ctx, ws.SandboxID); waitErr != nil {
+						slog.Warn("sandbox readiness wait failed", "error", waitErr)
+					}
+				}
+				return popupDoneMsg{err: nil}
+			},
+			tea.Tick(172*time.Millisecond, func(t time.Time) tea.Msg {
+				return spinnerTickMsg{}
+			}),
+		)
 	}
 
 	return pw, cmd
@@ -139,7 +167,7 @@ func (pw popupWrapper) View() string { //nolint:gocritic // bubbletea model must
 		if pw.err != nil {
 			return errorStyle.Render("Error: "+pw.err.Error()) + "\n"
 		}
-		return "Creating workspace…\n"
+		return renderMascot(pw.frame, 60)
 	}
 	return pw.form.View()
 }

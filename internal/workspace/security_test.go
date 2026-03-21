@@ -7,64 +7,64 @@ import (
 	"github.com/johnnybgoode/agency/internal/state"
 )
 
-// --- Issue 1 & 7: buildTrapCmd validates sandbox name and workspace ID ---
+// --- Issue 1 & 7: buildTrapScript validates sandbox name and workspace ID ---
 
-func TestBuildTrapCmd_RejectsInvalidSandboxName(t *testing.T) {
+func TestBuildTrapScript_RejectsInvalidSandboxName(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		SandboxID: "invalid name with spaces",
 		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
-	_, err := mgr.buildTrapCmd(ws, false)
+	_, err := mgr.buildTrapScript(ws, false)
 	if err == nil {
-		t.Error("buildTrapCmd should return error for invalid sandbox name")
+		t.Error("buildTrapScript should return error for invalid sandbox name")
 	}
 }
 
-func TestBuildTrapCmd_RejectsShellInjectionContainerID(t *testing.T) {
+func TestBuildTrapScript_RejectsShellInjectionContainerID(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		SandboxID: "abc123def456; rm -rf /",
 		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
-	_, err := mgr.buildTrapCmd(ws, false)
+	_, err := mgr.buildTrapScript(ws, false)
 	if err == nil {
-		t.Error("buildTrapCmd should reject sandbox name containing shell metacharacters")
+		t.Error("buildTrapScript should reject sandbox name containing shell metacharacters")
 	}
 }
 
-func TestBuildTrapCmd_RejectsInvalidWorkspaceID(t *testing.T) {
+func TestBuildTrapScript_RejectsInvalidWorkspaceID(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "not-a-valid-ws-id",
 		SandboxID: "agency-testproject", // valid sandbox name
 		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
-	_, err := mgr.buildTrapCmd(ws, false)
+	_, err := mgr.buildTrapScript(ws, false)
 	if err == nil {
-		t.Error("buildTrapCmd should return error for invalid workspace ID format")
+		t.Error("buildTrapScript should return error for invalid workspace ID format")
 	}
 }
 
-func TestBuildTrapCmd_AcceptsValidIDs(t *testing.T) {
+func TestBuildTrapScript_AcceptsValidIDs(t *testing.T) {
 	mgr := newTestManager(t)
 	ws := &state.Workspace{
 		ID:        "ws-aabbccdd",
 		SandboxID: "agency-testproject", // valid sandbox name
 		SessionID: "12345678-1234-4234-8234-123456789abc",
 	}
-	cmd, err := mgr.buildTrapCmd(ws, false)
+	cmd, err := mgr.buildTrapScript(ws, false)
 	if err != nil {
-		t.Fatalf("buildTrapCmd returned unexpected error: %v", err)
+		t.Fatalf("buildTrapScript returned unexpected error: %v", err)
 	}
 	if cmd == "" {
-		t.Error("buildTrapCmd returned empty command string")
+		t.Error("buildTrapScript returned empty command string")
 	}
 }
 
-// --- Issue 6: shellEscapeDouble and buildTrapCmd use POSIX-safe quoting ---
+// --- Issue 6: shellEscapeDouble and buildTrapScript use POSIX-safe quoting ---
 
 func TestShellEscapeDouble(t *testing.T) {
 	cases := []struct {
@@ -118,7 +118,7 @@ func TestShellEscapeDouble(t *testing.T) {
 	}
 }
 
-func TestBuildTrapCmd_ProjectDirSpecialChars(t *testing.T) {
+func TestBuildTrapScript_ProjectDirSpecialChars(t *testing.T) {
 	cases := []struct {
 		name       string
 		projectDir string
@@ -151,16 +151,16 @@ func TestBuildTrapCmd_ProjectDirSpecialChars(t *testing.T) {
 				SandboxID: "agency-testproject",
 				SessionID: "12345678-1234-4234-8234-123456789abc",
 			}
-			cmd, err := mgr.buildTrapCmd(ws, false)
+			cmd, err := mgr.buildTrapScript(ws, false)
 			if err != nil {
-				t.Fatalf("buildTrapCmd returned unexpected error: %v", err)
+				t.Fatalf("buildTrapScript returned unexpected error: %v", err)
 			}
 
 			// The escaped project dir must appear literally in the command
 			// and must not contain any unescaped $ or backtick sequences.
 			escaped := shellEscapeDouble(tc.projectDir)
 			if !strings.Contains(cmd, escaped) {
-				t.Errorf("buildTrapCmd output does not contain escaped dir %q\nfull cmd: %s", escaped, cmd)
+				t.Errorf("buildTrapScript output does not contain escaped dir %q\nfull cmd: %s", escaped, cmd)
 			}
 		})
 	}

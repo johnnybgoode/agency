@@ -240,17 +240,17 @@ func shellEscapeDouble(s string) string {
 	return r.Replace(s)
 }
 
-// buildTrapCmd constructs the bash wrapper command for the tmux window.
+// buildTrapScript constructs the bash script for the tmux window.
 // When resume is true, Claude starts with --resume <sessionID> to pick up
 // where it left off. Otherwise it starts with --session-id <sessionID> to
 // begin a new session that can be resumed later.
 // Returns an error if the workspace's SandboxID or ID fails validation.
-func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error) {
+func (m *Manager) buildTrapScript(ws *state.Workspace, resume bool) (string, error) {
 	if err := sandbox.ValidateSandboxName(ws.SandboxID); err != nil {
-		return "", fmt.Errorf("buildTrapCmd: %w", err)
+		return "", fmt.Errorf("buildTrapScript: %w", err)
 	}
 	if err := ValidateWorkspaceID(ws.ID); err != nil {
-		return "", fmt.Errorf("buildTrapCmd: %w", err)
+		return "", fmt.Errorf("buildTrapScript: %w", err)
 	}
 	if err := state.ValidateSessionID(ws.SessionID); err != nil {
 		return "", fmt.Errorf("buildTrapCmd: %w", err)
@@ -263,17 +263,23 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 	if resume {
 		cmd = fmt.Sprintf("--resume %s", ws.SessionID)
 	}
-	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
-		`bash -c 'clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
+	return fmt.Sprintf(
+		`clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; `+
+			// Wait silently for the sandbox to be ready for exec (VM may still be booting).
+			`while docker sandbox ls -q | grep -qx %s; do docker sandbox exec %s true >/dev/null 2>&1 && break; sleep 1; done; `+
+			// Main loop: exec Claude inside the sandbox, restarting on crash.
+			`CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done`,
 		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
+		ws.SandboxID, ws.SandboxID,
 		shellEscapeDouble(cmd), ws.SandboxID,
 		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,
 		ws.SessionID,
 	), nil
 }
 
-// openTmuxWindow creates a new tmux window for ws, captures its pane ID, and
-// sends the trap-loop command. If resume is true, Claude starts with --resume.
+// openTmuxWindow creates a new tmux window for ws whose pane process IS the
+// trap-loop script (no intermediate shell, no prompt flash).
+// If resume is true, Claude starts with --resume.
 func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 	action := "provisioning"
 	if resume {
@@ -281,7 +287,12 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 	}
 	slog.Debug(action+" tmux window", "workspace", ws.ID, "name", ws.DisplayName())
 
-	windowID, err := m.Tmux.NewWindow(ws.Name)
+	script, err := m.buildTrapScript(ws, resume)
+	if err != nil {
+		return fmt.Errorf("%s: building trap script: %w", action, err)
+	}
+
+	windowID, err := m.Tmux.NewWindowWithCommand(ws.Name, script)
 	if err != nil {
 		return fmt.Errorf("%s: creating tmux window: %w", action, err)
 	}
@@ -289,21 +300,6 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 
 	if panes, err := m.Tmux.GetWindowPanes(windowID); err == nil && len(panes) > 0 {
 		ws.PaneID = panes[0]
-	}
-
-	// The wrapper bash command:
-	//  - EXIT trap: runs gc for cleanup when the window is killed (sidebar 'd')
-	//  - trap '' INT: ignores SIGINT so ctrl-c passes through the TTY to Claude
-	//    inside the sandbox (for cancellation) without killing the wrapper
-	//  - while loop condition: checks sandbox existence before each exec so
-	//    the loop exits cleanly when the sandbox is removed, preventing
-	//    error messages from flooding the workspace pane
-	trapCmd, err := m.buildTrapCmd(ws, resume)
-	if err != nil {
-		return fmt.Errorf("%s: building trap command: %w", action, err)
-	}
-	if err := m.Tmux.SendKeys(windowID, trapCmd); err != nil {
-		return fmt.Errorf("%s: sending keys to tmux window: %w", action, err)
 	}
 	return nil
 }

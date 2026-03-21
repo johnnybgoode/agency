@@ -87,6 +87,13 @@ func (c *Client) NewWindow(name string) (string, error) {
 	return c.run("new-window", "-t", c.SessionName, "-n", name, "-P", "-F", "#{window_id}")
 }
 
+// NewWindowWithCommand creates a new window whose pane runs the given command
+// directly (no intermediate shell). The command is executed via bash -c.
+func (c *Client) NewWindowWithCommand(name, script string) (string, error) {
+	return c.run("new-window", "-t", c.SessionName, "-n", name,
+		"-P", "-F", "#{window_id}", "bash", "-c", script)
+}
+
 // KillWindow closes the window identified by windowID.
 func (c *Client) KillWindow(windowID string) error {
 	_, err := c.run("kill-window", "-t", c.SessionName+":"+windowID)

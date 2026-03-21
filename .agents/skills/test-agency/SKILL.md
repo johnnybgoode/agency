@@ -99,10 +99,18 @@ import json, sys
 with open('$STATE_FILE') as f:
     s = json.load(f)
 s['workspaces'] = {
-  'ws-test0001': {
-    'id': 'ws-test0001',
-    'name': 'test-workspace',
+  'ws-ab123456': {
+    'id': 'ws-ab123456',
+    'name': 'test-workspace-a',
     'branch': 'main',
+    'state': 'running',
+    'createdAt': '2026-01-01T00:00:00Z',
+    'updatedAt': '2026-01-01T00:00:00Z'
+  },
+  'ws-cd789012': {
+    'id': 'ws-cd789012',
+    'name': 'test-workspace-b',
+    'branch': 'feat/test',
     'state': 'running',
     'createdAt': '2026-01-01T00:00:00Z',
     'updatedAt': '2026-01-01T00:00:00Z'
@@ -119,7 +127,7 @@ sleep 1.5
 tmux capture-pane -p -t "$SESSION"
 ```
 
-**What to check:** The workspace `test-workspace` appears in the sidebar list. The TUI has transitioned from zero state (welcome panel) to showing the workspace list.
+**What to check:** Both `test-workspace-a` and `test-workspace-b` appear in the sidebar list. The TUI has transitioned from zero state (welcome panel) to showing the workspace list.
 
 **Note:** The create workspace popup flow (triggered by `n`) requires an attached tmux client and cannot be driven from a detached test session. This scenario tests the equivalent result: the sidebar correctly reflects a new workspace in state.
 
@@ -148,25 +156,23 @@ tmux capture-pane -p -t "$SESSION"
 
 ### Scenario 6: Quit Flow
 
+The quit confirmation popup uses `tmux display-popup`, which requires an attached client. To test quit in a detached session, pre-seed the result file that the sidebar reads after the popup closes:
+
+```bash
+# Pre-seed quit-result.json so the sidebar reads "confirmed" immediately after popup is requested
+echo '{"confirmed":true}' > "$PROJECT_ROOT/.agency/quit-result.json"
+```
+
+Then send `q`:
+
 ```bash
 tmux send-keys -t "$SESSION" "q"
-sleep 0.5
+sleep 1.5
 ```
 
 Capture pane.
 
-**What to check:** The quit confirmation popup is visible.
-
-```bash
-tmux send-keys -t "$SESSION" "n"
-sleep 0.3
-tmux send-keys -t "$SESSION" "q"
-sleep 0.3
-tmux send-keys -t "$SESSION" "y"
-sleep 1.0
-```
-
-**What to check:** The session exits cleanly (the pane shows a shell prompt or is no longer running agency).
+**What to check:** Agency exits cleanly — the pane shows a shell prompt or is no longer running. The sidebar reads `quit-result.json`, finds `confirmed: true`, and proceeds with cleanup without waiting for the popup.
 
 ## Step 5: Branch-Specific Scenarios
 

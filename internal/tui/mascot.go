@@ -74,10 +74,11 @@ func renderMascot(frame, width int) string {
 
 	lines := make([]string, totalHeight)
 
-	// Bounce: on odd frames, shift mascot down by 1.
+	// Bounce: baseline at row 1, bounce down to row 2 on odd frames.
+	// Row 0 is always blank to avoid clipping the popup top border.
 	offset := 1
-	if frame%2 == 0 {
-		offset = 0
+	if frame%2 == 1 {
+		offset = 2
 	}
 
 	// Place mascot rows.

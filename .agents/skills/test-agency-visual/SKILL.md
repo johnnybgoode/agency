@@ -92,12 +92,9 @@ done
 
 Please switch to Claude Desktop, share your terminal window showing the agency TUI, and ask Claude Desktop: *"Describe what you see and flag any visual or layout issues."*
 
-Relay Claude Desktop's response back to me as a message. I'll record it and continue. If you'd like to skip this checkpoint, type `skip`.
+Relay Claude Desktop's response back to me as a message. I'll record it and continue. To skip this checkpoint, type `skip` or `s`.
 
-Once you relay the response (or skip), append it to the findings file under the Scenario 1 heading:
-```
-**Visual (Claude Desktop):** <relayed findings>
-```
+When the user relays the response (or types `skip` or `s`), store the findings in memory — they will be written to the findings file as part of Step 7.
 
 ---
 
@@ -113,7 +110,7 @@ Without creating any workspaces, capture the pane.
 
 Please switch to Claude Desktop, share your terminal window showing the agency TUI, and ask Claude Desktop: *"Describe what you see and flag any visual or layout issues."*
 
-Relay Claude Desktop's response back to me as a message. I'll record it and continue. If you'd like to skip this checkpoint, type `skip`.
+Relay Claude Desktop's response back to me as a message. I'll record it and continue. To skip this checkpoint, type `skip` or `s`.
 
 Once you relay the response (or skip), append it to the findings file under the Scenario 2 heading:
 ```
@@ -173,9 +170,9 @@ tmux capture-pane -p -t "$SESSION"
 
 **Visual checkpoint — Pre-seed Workspace State**
 
-Please switch to Claude Desktop, share your terminal window showing the agency TUI, and ask Claude Desktop: *"Describe what you see and flag any visual or layout issues."*
+Please switch to Claude Desktop, share your terminal window showing the agency TUI, and ask Claude Desktop: *"Describe what you see and flag any visual or layout issues. Check that both workspace names appear in the sidebar list and the layout looks correct."*
 
-Relay Claude Desktop's response back to me as a message. I'll record it and continue. If you'd like to skip this checkpoint, type `skip`.
+Relay Claude Desktop's response back to me as a message. I'll record it and continue. To skip this checkpoint, type `skip` or `s`.
 
 Once you relay the response (or skip), append it to the findings file under the Scenario 3 heading:
 ```
@@ -250,9 +247,9 @@ The binary at `/tmp/agency-test` is left in place.
 
 ## Step 7: Write Findings File
 
-Resolve `$FINDINGS` to its actual path (e.g., `.claude/test-findings/main-abc1234.md`) before writing — the Write tool does not interpolate shell variables.
+Visual findings collected during checkpoints have been held in memory — include them here. Resolve `$FINDINGS` to its actual path (e.g., `.claude/test-findings/main-abc1234.md`) before writing — the Write tool does not interpolate shell variables.
 
-Write to `$FINDINGS` (overwrite if exists):
+Write the complete findings file to `$FINDINGS` (overwrite if exists) in a single Write tool call, incorporating all scenario results and visual checkpoint findings:
 
 ```markdown
 # Agency Test Findings

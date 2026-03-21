@@ -50,10 +50,18 @@ Create the directory: `mkdir -p .claude/test-findings/`
 
 ## Step 3: Spawn Test Session
 
+Remove any existing state file first to guarantee a clean zero-state for Scenario 2:
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+rm -f "$PROJECT_ROOT/.agency/state.json"
+```
+
+Then spawn the session:
+
 ```bash
 TIMESTAMP=$(date +%s)
 SESSION="agency-test-${TIMESTAMP}"
-PROJECT_ROOT=$(git rev-parse --show-toplevel)
 tmux new-session -d -s "$SESSION" -x 220 -y 50 -c "$PROJECT_ROOT"
 tmux send-keys -t "$SESSION" "/tmp/agency-test" Enter
 ```
@@ -133,26 +141,33 @@ tmux capture-pane -p -t "$SESSION"
 
 ### Scenario 4: Navigation
 
+Cursor selection is conveyed by terminal color only — use `capture-pane -e` to include ANSI escape sequences:
+
 ```bash
 tmux send-keys -t "$SESSION" "j"
 sleep 0.3
-tmux capture-pane -p -t "$SESSION"
+tmux capture-pane -p -e -t "$SESSION"
 tmux send-keys -t "$SESSION" "k"
 sleep 0.3
-tmux capture-pane -p -t "$SESSION"
+tmux capture-pane -p -e -t "$SESSION"
 ```
 
-**What to check:** The cursor position indicator changes in the sidebar list in response to `j`/`k` keypresses.
+**What to check:** The ANSI escape sequences in the capture change between the two captures, indicating the highlighted row shifted. Look for reverse-video or color-code differences on the workspace list lines.
 
 ### Scenario 5: Workspace Switch
 
 ```bash
 tmux send-keys -t "$SESSION" "Enter"
 sleep 0.5
-tmux capture-pane -p -t "$SESSION"
 ```
 
-**What to check:** The active workspace indicator in the sidebar updates to reflect the selected workspace.
+Read `.agency/state.json` to verify the active workspace changed:
+
+```bash
+cat "$PROJECT_ROOT/.agency/state.json" | python3 -c "import json,sys; s=json.load(sys.stdin); print('activeWorkspaceID:', s.get('activeWorkspaceID', '(none)'))"
+```
+
+**What to check:** `activeWorkspaceID` is set to the ID of the workspace that was selected (e.g. `ws-ab123456`). The stub workspaces have no real tmux windows so no visual pane change will occur — checking `state.json` is the reliable verification path.
 
 ### Scenario 6: Quit Flow
 

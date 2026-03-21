@@ -14,7 +14,7 @@ This section outlines fundamental requirements of the system that are essential 
 
  - TUI: a Go TUI (bubbletea) that wraps tmux. The TUI runs as a persistent sidebar in the left pane of the main tmux window. The right pane shows the active workspace's Claude Code session. Workspace panes are swapped in/out of the right slot via `swap-pane`. Detach/reattach is handled natively by tmux.
  - CLI: cli to invoke the TUI in a given project. Provides flags/options for project-level configuration
- - Sandboxes: each workspace takes place in a Docker container managed via Docker Desktop. On macOS, Docker Desktop's Linux VM provides sufficient host OS isolation — container code cannot reach the macOS host without a hypervisor exploit. Workspaces have r/w access to their worktree. Project and global config files are mounted read-only into the sandbox (e.g. at `/etc/agency/config.toml`). Credentials are injected via environment variables (never mounted as files). 1:1 relationship between workspaces and sandboxes.
+ - Sandboxes: all workspaces in a project share a single Docker MicroVM sandbox (`docker sandbox`). The sandbox provides OS-level isolation from the host via a lightweight VM. Workspaces are isolated within the sandbox by worktree path and Claude session ID. The sandbox is created lazily on first workspace creation and stopped on quit. Credentials are handled by Docker Desktop's credential proxy.
  - Worktrees: each workspace operates on an independent branch and copy of the codebase. 1:1 relationship between workspaces and worktrees
  - Agent communication: (future) agents will be able to create epics, issues, plans, and tasks to track their work via beads. Beads would live in the project repo and be available per-worktree via git. Task updates would propagate at commit-level latency (not real-time). Agent-to-agent communication is deferred to a future version.
  - Agent and project settings: Three-tier settings cascade (global → project → workspace-local) using TOML config files. Users can manage settings (environment vars, credentials, sandbox settings, ...) and agent defaults (permissions, mcp, subagents, ...) per-project. Agent settings may also be managed locally per-workspace (e.g. adding an MCP, enabling a subagent) without affecting other workspaces.
@@ -49,7 +49,7 @@ This section outlines fundamental requirements of the system that are essential 
                                                         │
                     ┌───────────────────────────────────▼────────────────────────────────────┐
                     │                                                                        │
-                    │                  Sandbox Layer (Docker Container)│
+                    │                  Sandbox Layer (Docker MicroVM Sandbox)│
                     │                                                                        │
                     └────────────────┬───────────────────┬───────────────────┬───────────────┘
                                      │                   │                   │
@@ -88,19 +88,17 @@ Security is a first principle; sandboxed workspace runtimes are essential. Sandb
 
 **Sandbox Requirements**
 
- - v1 uses standard Docker containers via Docker Desktop. On macOS, Docker Desktop's Linux VM provides sufficient host OS isolation. Per-workspace microVM isolation (gVisor on Linux, Apple Containers on macOS 26+) is deferred to a future version via a pluggable provider interface.
- - Each workspace gets its own container by default, i.e. only the workspace worktree is mounted.
- - Sandbox network access is governed by Docker network policies. No custom network filtering layer is needed. The network policy can be configured per project.
- - The sandbox image is configurable via `sandbox.image` (default provided by the tool, overridable per-project). Example: `sandbox.image = "agency:latest"`.
+ - Uses Docker MicroVM sandboxes (`docker sandbox`) via Docker Desktop. The sandbox provides hypervisor-level isolation via a lightweight VM.
+ - One sandbox per project — all workspaces share the same MicroVM. Workspaces are isolated by worktree path and Claude session ID.
+ - Sandbox network access is governed by Docker sandbox network policies. No custom network filtering layer is needed.
+ - The sandbox template image is configurable via `sandbox.image` (default `agency:latest`, overridable per-project).
+ - Credentials are handled by Docker Desktop's credential proxy — no credential management in Agency.
 
-**Volume Mounts**
+**Mounts**
 
-Each sandbox has the following mounts:
+The project directory is mounted into the sandbox at creation time. Each workspace's worktree is a subdirectory of the project, accessed via `docker sandbox exec -w <worktreePath>`. Mounts are immutable after sandbox creation — if the project directory moves, the sandbox must be recreated.
 
- - **Worktree** (r/w): the workspace's worktree directory, mounted at the sandbox working directory.
- - **Config files** (r/o): project and global config TOML files are mounted read-only into the sandbox (e.g. at `/etc/agency/config.toml`) so the agent can read settings.
- - **Agent home** (r/o + writable overlay): a shared named volume created and populated on first `agency init` (installs agent tools, configures claude, etc.). Mounted read-only at `/home/agent`. Each sandbox gets a writable overlay (via Docker tmpfs or similar) for workspace-specific state.
- - **Credentials**: injected via environment variables passed to `docker run`. Never mounted as files.
+See [docs/sandbox.md](sandbox.md) for full implementation details.
 
 
 ### Worktrees
@@ -217,10 +215,11 @@ The orchestrator persists workspace state to `<project-root>/.agency/state.json`
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "project": "my-project",
   "bare_path": "/home/user/my-project/.bare",
   "tmux_session": "agency-my-project",
+  "sandbox_id": "agency-my-project",
   "pid": 48231,
   "updated_at": "2026-03-11T19:45:00Z",
   "workspaces": {
@@ -229,7 +228,8 @@ The orchestrator persists workspace state to `<project-root>/.agency/state.json`
       "state": "running",
       "branch": "agent/fix-login-bug",
       "worktree_path": "/home/user/my-project/my-project-fix-login-bug",
-      "sandbox_id": "agency-sb-my-project-fix-login-bug",
+      "sandbox_id": "agency-my-project",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
       "tmux_window": "@5",
       "created_at": "2026-03-11T19:00:00Z",
       "updated_at": "2026-03-11T19:45:00Z",
@@ -245,22 +245,21 @@ The orchestrator persists workspace state to `<project-root>/.agency/state.json`
 
 On TUI startup (fresh or reattach), three systems are queried in parallel:
  1. `tmux list-windows -t <tmux-session>` — which windows exist
- 2. `docker ps --filter name=<prefix>` — which sandboxes are running
+ 2. `docker sandbox ls --json` — whether the project sandbox is running
  3. `git -C .bare worktree list` — which worktrees exist
 
 Each workspace is reconciled:
 
 | State file says | Reality | Action |
 |---|---|---|
-| `running` | sandbox + window exist | Reattach, no action |
-| `running` | sandbox exists, window gone | Recreate tmux window, attach to sandbox |
-| `running` | sandbox gone | → `failed` |
-| `provisioning` | sandbox exists | Check agent; running → `running`, else → `failed` |
-| `provisioning` | sandbox gone | → `failed` |
-| `paused` (soft) | sandbox exists | Verify, stay paused |
-| `paused` (hard) | sandbox gone | Verify worktree, stay paused |
+| `running` | sandbox running + window exist | Reattach, no action |
+| `running` | sandbox running, window gone | Recreate tmux window, resume session |
+| `running` | sandbox down | → `failed` (all workspaces fail) |
+| `provisioning` | sandbox running | Advance to `running` |
+| `provisioning` | sandbox down | → `failed` |
+| `paused` | sandbox running | Ensure sandbox, resume via tmux |
+| `paused` | sandbox down | Ensure sandbox (start/create), resume |
 | `done` | worktree gone | Remove workspace entry |
-| No entry | sandbox with project prefix | Orphan — offer to adopt or destroy |
 | No entry | worktree matching pattern | Orphan — offer to adopt or remove |
 
 #### Persistence
@@ -302,14 +301,7 @@ default = "claude"
 permissions = "auto-accept"
 
 [sandbox]
-type = "docker"
 image = "agency:latest"
-memory = "4g"
-cpus = 2
-
-[credentials]
-anthropic_api_key = "sk-..."
-github_token = "ghp_..."
 ```
 
 ```toml
@@ -333,22 +325,17 @@ auto_push = true
 mcp_servers = ["+notion"]  # "+" prefix = append to project list
 ```
 
-#### Credential Injection
+#### Credentials
 
- - Resolution order: workspace-local → project → global → host environment variable.
- - Injection: environment variables passed via `-e` flags to `docker run`. Credentials never touch the worktree filesystem.
- - Security: global config file gets `0600` permissions. If credentials found in project config, the tool warns (risk of git commit).
+Credentials are handled by Docker Desktop's credential proxy — Agency does not manage credentials directly. Docker Desktop automatically proxies authentication to the host.
 
 #### Scope Rules
 
 | Setting | Scope | Notes |
 |---------|-------|-------|
-| `sandbox.type` | Project | Same provider across all workspaces |
-| `sandbox.image` | Project | Same base image across all workspaces |
-| `sandbox.memory/cpus` | Project, overridable per-workspace | Resource needs may vary |
+| `sandbox.image` | Project | Same template image across all workspaces |
 | `agent.model` | Project, overridable per-workspace | |
 | `agent.mcp_servers` | Project, appendable per-workspace | Use `+` prefix to append |
-| `credentials.*` | Global, overridable at project | Rarely per-workspace |
 | `worktree.branch_prefix` | Project | Naming is project-wide |
 
 #### Merge Semantics
@@ -377,7 +364,7 @@ The tool is implemented in Go. Key dependencies:
    - Web UI
    - Complete subcommand interface for CLI (mirrors tmux menu/keyboard shortcut functionality)
    - Headless/scripted workspace creation (non-interactive task assignment)
-   - Pluggable sandbox provider interface; additional providers: gVisor (Linux), Apple Containers (macOS 26+, per-container VM isolation), microVMs
+   - Pluggable sandbox provider interface; additional providers: gVisor (Linux), Apple Containers (macOS 26+)
    - Real-time agent-to-agent communication
    - Cost tracking / token usage monitoring
    - Log persistence via `tmux pipe-pane`
@@ -386,7 +373,8 @@ The tool is implemented in Go. Key dependencies:
    - Agility (enables rapid coding via concurrent agentic coding)
  3. Known limitations (v1)
    - Git submodules: known issues with worktrees (shared `.git/modules`). Unsupported/best-effort in v1.
-   - Network access: sandbox network access is controlled by [Docker Sandbox network policies][1] in v1.
+   - Network access: sandbox network access is controlled by Docker sandbox network policies.
+   - Docker sandbox CLI is experimental (v0.12.0) — subcommands and JSON output may change.
    - Beads (agent task tracking) not yet implemented.
  4. Complete architecture diagram
 
@@ -419,7 +407,7 @@ The tool is implemented in Go. Key dependencies:
                                                                          │
                                        ┌─────────────────────────────────▼──────────────────────────────────────┐
                                        │                                                                        │
-                                       │                  Sandbox Layer (Docker Container)                      │
+                                       │                  Sandbox Layer (Docker MicroVM Sandbox)                      │
                                        │                                                                        │
                                        └────────────────┬───────────────────┬───────────────────┬───────────────┘
                                                         │                   │                   │

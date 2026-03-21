@@ -192,9 +192,9 @@ The binary path is resolved via `os.Executable()` at startup. The popup shows th
 
 On submit, `mgr.Create(ctx, name, branch)` runs:
 1. Creates a git worktree at `<projectDir>/<projectName>-<slug>[-<4hex>]`
-2. Starts a Docker container with the worktree mounted
+2. Ensures the project sandbox exists (creates or starts if needed)
 3. Creates a tmux window named after the branch slug
-4. Sends `docker exec -it <containerID> bash -c claude` to start Claude Code
+4. Sends the trap loop command which runs `docker sandbox exec -it -w <worktreePath> <sandboxName> claude --session-id <uuid>`
 5. Swaps the workspace pane into the main window's right side
 
 ### `agency new` CLI path
@@ -227,10 +227,10 @@ Focus moves to the right pane so the user can interact with Claude Code directly
 1. Press `d` → sidebar enters confirm mode. Help area changes to ` del <name> [y/n]`.
 2. Press `y` → `mgr.Remove()` is called asynchronously:
    - Sends Ctrl+C to the pane
-   - Stops and removes the Docker container
    - Removes the git worktree
    - Purges the workspace from state
    - Kills the tmux window
+   - (The sandbox is shared — it is not stopped or removed)
 3. Press `n` or `Esc` → confirm is cancelled.
 
 If the deleted workspace was active, the sidebar switches to the last active workspace.
@@ -296,12 +296,13 @@ Pressing `q` or `Ctrl+C` triggers the quit flow:
    - `IsDirty`: has uncommitted changes or unpushed branches
 2. **If active workspaces exist**: modal confirm "Quit? N active [y/N]"
 3. **For each active + dirty workspace**: individual confirm "Kill <name> [y/N]"
-4. **Cleanup**:
-   - Stop all containers (background, don't wait)
+4. **Cleanup** (strict ordering to prevent sandbox daemon corruption):
+   - Kill all workspace tmux windows (stops trap loops immediately)
    - Remove worktrees for clean (non-dirty) workspaces
-   - Kill tmux windows for cleaned workspaces
    - Purge cleaned workspaces from state
-5. Save state, kill tmux session, exit
+   - Save state
+   - Stop the project sandbox in background (detached process, fire-and-forget)
+   - Kill tmux session (terminates the sidebar — must be last)
 
 Skipped (non-dirty) workspaces are cleaned up. Dirty workspaces that the user declined to kill are left intact.
 
@@ -313,13 +314,13 @@ Pressing `r` triggers a reconcile. Reconcile also runs automatically at startup.
 
 Three systems are queried in parallel:
 1. `tmux list-windows` — which windows exist
-2. `docker ps -a --filter name=<prefix>` — which containers exist
+2. `docker sandbox ls --json` — whether the project sandbox is running
 3. `git worktree list` — which worktrees exist
 
 Each workspace is reconciled per its state:
-- `running` + container gone → `failed`
+- `running` + sandbox down → `failed` (all workspaces fail simultaneously)
 - `running` + window gone → recreate tmux window, update pane ID
-- `provisioning` + container gone → `failed`
+- `provisioning` + sandbox down → `failed`
 - `done` + worktree gone → remove workspace entry
 - Stale `ActiveWorkspaceID` references are cleared
 
@@ -335,7 +336,7 @@ Relevant config fields:
 |-------|---------|-------------|
 | `tui.sidebar_width` | `24` | Width of the sidebar pane in columns |
 | `worktree.branch_prefix` | `""` | Prefix for auto-generated branch names |
-| `sandbox.image` | `"agency:latest"` | Docker image for agent containers |
+| `sandbox.image` | `"agency:latest"` | Docker image used as sandbox template |
 
 ---
 
@@ -363,7 +364,7 @@ Relevant fields in `.agency/state.json`:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "project": "my-project",
   "bare_path": "/path/to/.bare",
   "tmux_session": "agency-my-project",
@@ -371,6 +372,7 @@ Relevant fields in `.agency/state.json`:
   "workspace_pane_id": "%5",
   "active_workspace_id": "ws-c4640571",
   "last_active_workspace_id": "ws-a1b2c3d4",
+  "sandbox_id": "agency-my-project",
   "pid": 12345,
   "session_started_at": "...",
   "workspaces": {
@@ -380,7 +382,8 @@ Relevant fields in `.agency/state.json`:
       "state": "running",
       "branch": "agent/fix-auth",
       "worktree_path": "/path/to/my-project-fix-auth",
-      "sandbox_id": "b9d7b8ca75fd...",
+      "sandbox_id": "agency-my-project",
+      "session_id": "550e8400-e29b-41d4-a716-446655440000",
       "tmux_window": "@7",
       "pane_id": "%8",
       "created_at": "...",
@@ -403,4 +406,6 @@ Relevant fields in `.agency/state.json`:
 
 - **Multiple projects.** Each project gets its own tmux session (`agency-<projectName>`).
 
-- **Container startup.** If a container exits unexpectedly, the workspace transitions to `failed` on the next reconcile.
+- **Sandbox failure.** If the project sandbox crashes, all workspaces transition to `failed` on the next reconcile (shared sandbox model).
+
+- **Docker sandbox CLI.** The `docker sandbox` CLI is experimental (v0.12.0). Subcommands and JSON output format may change between versions.

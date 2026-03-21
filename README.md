@@ -1,6 +1,6 @@
 # Agency
 
-A tmux-based dashboard for managing parallel coding agents. Each workspace gets its own git worktree, Docker container, and tmux window — fully isolated, running concurrently.
+A tmux-based dashboard for managing parallel coding agents. Each workspace gets its own git worktree and tmux window, sharing a Docker MicroVM sandbox per project.
 
 ```
 ───── Agency ────────╮ ╭─── Claude Code ──────────────────────────────────╮
@@ -52,7 +52,7 @@ agency init --remote git@github.com:you/your-project.git
 agency
 ```
 
-This opens a tmux session with the sidebar TUI on the left. Press `n` to create your first workspace — each one gets an isolated branch, container, and Claude Code instance.
+This opens a tmux session with the sidebar TUI on the left. Press `n` to create your first workspace — each one gets an isolated branch and Claude Code instance running in a shared Docker sandbox.
 
 ## How It Works
 
@@ -71,7 +71,7 @@ my-project/                      # project root
 └── my-project-add-payments/     # worktree: agent/add-payments
 ```
 
-Each workspace creates: git worktree → Docker container → tmux window → Claude Code agent. Workspaces are fully isolated — one agent can't affect another.
+Each workspace creates: git worktree → tmux window → Claude Code agent (inside the project's shared Docker sandbox). Workspaces are isolated by worktree and Claude session ID.
 
 ## Key Bindings
 
@@ -94,7 +94,7 @@ agency new [name] [branch]               # create workspace (non-interactive)
 agency new --popup                       # create workspace (popup form)
 agency workspace list                    # list all workspaces
 agency workspace rm <workspace-id>       # remove a workspace
-agency gc [--force]                      # garbage collect orphan worktrees/containers
+agency gc [--force]                      # garbage collect orphan worktrees
 agency version                           # print version
 ```
 
@@ -118,12 +118,6 @@ model = "opus"
 
 [sandbox]
 image = "agency:latest"
-memory = "4g"
-cpus = 2
-
-[credentials]
-anthropic_api_key = ""    # or set ANTHROPIC_API_KEY env var
-github_token = ""         # or set GITHUB_TOKEN env var
 
 [worktree]
 branch_prefix = "agent/"
@@ -133,11 +127,11 @@ auto_push = true
 sidebar_width = 24
 ```
 
-Lower tiers override higher. Lists use `+` prefix to append (e.g. `mcp_servers = ["+notion"]`). Credentials fall back to environment variables.
+Lower tiers override higher. Lists use `+` prefix to append (e.g. `mcp_servers = ["+notion"]`). Credentials are handled by Docker Desktop's credential proxy.
 
 ## Architecture
 
-See [docs/ARCHITECTURE-NEXT.md](docs/ARCHITECTURE-NEXT.md) for the full architecture spec.
+See [docs/ARCHITECTURE-NEXT.md](docs/ARCHITECTURE-NEXT.md) for the full architecture spec and [docs/sandbox.md](docs/sandbox.md) for sandbox implementation details.
 
 ```
 ┌─────────────────────────────────────┐
@@ -162,10 +156,10 @@ CREATING → PROVISIONING → RUNNING → COMPLETING → DONE
 ```
 
 - **creating**: worktree being created
-- **provisioning**: container starting, agent launching
+- **provisioning**: sandbox starting, agent launching
 - **running**: agent active, user can interact via tmux
-- **paused**: agent stopped (soft: SIGSTOP, hard: container stopped)
-- **done**: container destroyed, worktree kept for review
+- **paused**: agent stopped, sandbox may still be running (shared resource)
+- **done**: worktree kept for review
 - **failed**: error occurred, needs cleanup or retry
 
 ## License

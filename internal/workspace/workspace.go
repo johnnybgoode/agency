@@ -263,9 +263,14 @@ func (m *Manager) buildTrapScript(ws *state.Workspace, resume bool) (string, err
 	if resume {
 		cmd = fmt.Sprintf("--resume %s", ws.SessionID)
 	}
-	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
-		`clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done`,
+	return fmt.Sprintf(
+		`clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; `+
+			// Wait silently for the sandbox to be ready for exec (VM may still be booting).
+			`while docker sandbox ls -q | grep -qx %s; do docker sandbox exec %s true >/dev/null 2>&1 && break; sleep 1; done; `+
+			// Main loop: exec Claude inside the sandbox, restarting on crash.
+			`CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done`,
 		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
+		ws.SandboxID, ws.SandboxID,
 		shellEscapeDouble(cmd), ws.SandboxID,
 		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,
 		ws.SessionID,

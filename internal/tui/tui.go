@@ -137,8 +137,21 @@ func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocri
 		pw.done = true
 		return pw, tea.Batch(
 			func() tea.Msg {
-				_, err := mgr.Create(context.Background(), name, branch)
-				return popupDoneMsg{err: err}
+				ws, err := mgr.Create(context.Background(), name, branch)
+				if err != nil {
+					return popupDoneMsg{err: err}
+				}
+				// Keep the popup (and mascot animation) visible until the
+				// sandbox VM is actually ready for exec. Without this the
+				// popup closes immediately while the pane sits dark.
+				if mgr.Sandbox != nil && ws.SandboxID != "" {
+					ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+					defer cancel()
+					if waitErr := mgr.Sandbox.WaitForReady(ctx, ws.SandboxID); waitErr != nil {
+						slog.Warn("sandbox readiness wait failed", "error", waitErr)
+					}
+				}
+				return popupDoneMsg{err: nil}
 			},
 			tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}

@@ -195,13 +195,13 @@ func (m *Manager) EnsureProjectSandbox(ctx context.Context) error {
 	return nil
 }
 
-// StopProjectSandbox stops the shared project sandbox.
-// Called on quit. Does not remove the sandbox.
-func (m *Manager) StopProjectSandbox(ctx context.Context) error {
+// StopProjectSandboxBackground fires the sandbox stop without waiting.
+func (m *Manager) StopProjectSandboxBackground(ctx context.Context) error {
 	if m.State.SandboxID == "" || m.Sandbox == nil {
 		return nil
 	}
-	return m.Sandbox.Stop(ctx, m.State.SandboxID)
+	slog.Info("stopping sandbox in background", "sandbox", m.State.SandboxID)
+	return m.Sandbox.StopBackground(ctx, m.State.SandboxID)
 }
 
 // ensureSandbox ensures the shared project sandbox exists and assigns its ID
@@ -261,7 +261,7 @@ func (m *Manager) buildTrapCmd(ws *state.Workspace, resume bool) (string, error)
 		cmd = fmt.Sprintf("--resume %s", ws.SessionID)
 	}
 	return fmt.Sprintf( //nolint:gocritic // %q would add Go-style quoting; shell double-quotes are intentional here
-		`bash -c 'trap "cd \"%s\" && %s gc --workspace-id %s" EXIT; trap "" INT; CMD="%s"; while docker sandbox inspect %s >/dev/null 2>&1; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
+		`bash -c 'clear; trap "cd \"%s\" && %s gc --workspace-id %s >/dev/null 2>&1" EXIT; CMD="%s"; while docker sandbox ls -q | grep -qx %s; do docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done'`,
 		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
 		shellEscapeDouble(cmd), ws.SandboxID,
 		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,

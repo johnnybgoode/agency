@@ -371,6 +371,8 @@ func runSidebar(projectDir string) error {
 		// Clear SessionStartedAt so next launch gets a fresh session log.
 		mgr.State.SessionStartedAt = nil
 		_ = mgr.SaveState()
+		// Kill the tmux session last — the sidebar runs inside it, so
+		// this terminates our own process.
 		_ = mgr.Tmux.KillSession()
 	}
 
@@ -619,31 +621,40 @@ func applyStatusBar(mgr *workspace.Manager) {
 	_ = mgr.Tmux.SetOption("status-right", right)
 }
 
-// doQuitCleanup stops the project sandbox and cleans up clean worktrees on quit.
-// The sandbox stop is fired as a non-blocking background call so the user isn't
-// blocked waiting for docker.
+// doQuitCleanup kills workspace tmux windows (stopping trap loops),
+// cleans up worktrees, then stops the sandbox in the background.
+// Must be called before KillSession — the sidebar runs inside tmux.
 func doQuitCleanup(mgr *workspace.Manager, infos []workspace.QuitInfo) {
 	slog.Info("quit cleanup starting", "workspaces", len(infos))
 	ctx := context.Background()
 
-	// Stop the shared project sandbox once (not per-workspace).
-	if mgr.Sandbox != nil {
-		_ = mgr.StopProjectSandbox(ctx)
+	// Phase 1: Kill all workspace tmux windows so their trap loops
+	// stop immediately and cannot race against sandbox stop.
+	for _, info := range infos {
+		if info.WS.TmuxWindow != "" {
+			slog.Info("killing workspace window", "workspace", info.WS.ID, "window", info.WS.TmuxWindow)
+			_ = mgr.Tmux.KillWindow(info.WS.TmuxWindow)
+		}
 	}
 
+	// Phase 2: Update state and clean up worktrees (no trap loops running).
 	for _, info := range infos {
 		slog.Info("quit cleanup workspace", "workspace", info.WS.ID, "active", info.IsActive, "dirty", info.IsDirty)
-		// info.WS points into mgr.State.Workspaces (via List()), so
-		// mutating it here updates the authoritative state before SaveState.
 		if info.IsActive {
 			info.WS.State = state.StatePaused
 			info.WS.UpdatedAt = time.Now().UTC()
 		}
 
 		if !info.IsDirty {
-			// CLEAN: remove worktree, kill tmux window, purge state.
 			_ = mgr.CleanupDoneWorkspace(ctx, info.WS)
 		}
 	}
 	_ = mgr.SaveState()
+
+	// Phase 3: Stop the sandbox last, after all other cleanup is done
+	// and no trap loops can interfere. Fire-and-forget so the user
+	// isn't blocked waiting for the VM to shut down.
+	if mgr.Sandbox != nil {
+		_ = mgr.StopProjectSandboxBackground(ctx)
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newFakeDocker writes a shell script that records its arguments and returns
@@ -44,9 +45,9 @@ func newFakeDocker(t *testing.T, imageExists bool) (mgr *Manager, argsLogFile st
 		`          prev="$arg"` + "\n" +
 		`        done` + "\n" +
 		`        echo "$name"; exit 0;;` + "\n" +
+		`      run)     exit 0;;` + "\n" +
 		`      stop)    exit 0;;` + "\n" +
 		`      rm)      exit 0;;` + "\n" +
-		`      inspect) echo '{"name":"test","status":"running"}'; exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
 		`esac` + "\n"
 
@@ -191,7 +192,7 @@ func TestFindByName_ReturnsSandboxWhenFound(t *testing.T) {
 		`  sandbox)` + "\n" +
 		`    case "$1" in` + "\n" +
 		`      version) exit 0;;` + "\n" +
-		`      ls) echo '{"vms":[{"name":"my-sandbox","status":"running"}]}'; exit 0;;` + "\n" +
+		`      ls) echo '{"vms":[{"name":"my-sandbox","status":"running","socket_path":"/tmp/my-sandbox.sock"}]}'; exit 0;;` + "\n" +
 		`    esac;;` + "\n" +
 		`esac` + "\n"
 
@@ -237,13 +238,16 @@ func TestEnsure_CreatesNewSandbox(t *testing.T) {
 	}
 }
 
-func TestStop_CallsSandboxStop(t *testing.T) {
+func TestStopBackground_CallsSandboxStop(t *testing.T) {
 	m, argsFile := newFakeDocker(t, true)
 
-	err := m.Stop(context.Background(), "my-sandbox")
+	err := m.StopBackground(context.Background(), "my-sandbox")
 	if err != nil {
-		t.Fatalf("Stop returned unexpected error: %v", err)
+		t.Fatalf("StopBackground returned unexpected error: %v", err)
 	}
+
+	// StopBackground fires the process without waiting; give it a moment to write the log.
+	time.Sleep(100 * time.Millisecond)
 
 	log := readArgsLog(t, argsFile)
 	if !strings.Contains(log, "sandbox stop my-sandbox") {

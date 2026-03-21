@@ -12,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/johnnybgoode/agency/internal/state"
 )
@@ -25,8 +27,16 @@ func ValidateSandboxName(name string) error {
 //
 //nolint:revive // SandboxInfo is intentional: avoids ambiguity when imported as sandbox.SandboxInfo.
 type SandboxInfo struct {
-	Name   string `json:"name"`
-	Status string `json:"status"` // "running", "stopped"
+	Name       string `json:"name"`
+	Status     string `json:"status"`      // "running", "stopped" — note: status alone is unreliable
+	SocketPath string `json:"socket_path"` // non-empty only when the VM is actually running
+}
+
+// IsRunning reports whether this sandbox's VM is actually running.
+// The status field can report "running" even when the VM is gone;
+// the presence of a socket_path is the reliable indicator.
+func (s *SandboxInfo) IsRunning() bool {
+	return s.SocketPath != ""
 }
 
 // Manager shells out to the docker CLI to manage Docker sandboxes.
@@ -72,14 +82,26 @@ func truncateLog(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// Ensure returns the name of a running sandbox with the given name, creating
-// one if it does not exist or is not running.
+// Ensure returns the name of a running sandbox, starting or creating as needed:
+//   - running  → return immediately
+//   - stopped  → start via `docker sandbox run`
+//   - absent   → create via `docker sandbox create`
 func (m *Manager) Ensure(ctx context.Context, name, projectDir, image string) (string, error) {
 	info, err := m.FindByName(ctx, name)
 	if err != nil {
 		return "", fmt.Errorf("finding sandbox %q: %w", name, err)
 	}
-	if info != nil && info.Status == "running" {
+
+	if info != nil {
+		if info.IsRunning() {
+			return info.Name, nil
+		}
+		// Sandbox exists but is stopped — start it detached.
+		slog.Info("starting stopped sandbox", "name", name)
+		_, err = m.docker(ctx, "sandbox", "run", "-d", name)
+		if err != nil {
+			return "", fmt.Errorf("starting sandbox %q: %w", name, err)
+		}
 		return info.Name, nil
 	}
 
@@ -96,17 +118,25 @@ type sandboxListOutput struct {
 	VMs []SandboxInfo `json:"vms"`
 }
 
+// ListRetryDelay is the delay before retrying a failed `docker sandbox ls`.
+// Exported so tests can set it to zero to avoid slow retries.
+var ListRetryDelay = 2 * time.Second
+
 // FindByName returns the SandboxInfo for the sandbox with the given name, or
 // nil if no matching sandbox is found.
+//
+// The Docker sandbox daemon can transiently fail with "socket path is empty"
+// while its internal state settles after a stop. We retry once after a short
+// delay to ride out this race.
 func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, error) {
-	out, err := m.docker(ctx, "sandbox", "ls", "--json")
+	result, err := m.listSandboxes(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing sandboxes: %w", err)
-	}
-
-	var result sandboxListOutput
-	if err := json.Unmarshal([]byte(out), &result); err != nil {
-		return nil, fmt.Errorf("parsing sandbox list JSON: %w", err)
+		slog.Warn("sandbox ls failed, retrying", "delay", ListRetryDelay, "error", err)
+		time.Sleep(ListRetryDelay)
+		result, err = m.listSandboxes(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("listing sandboxes: %w", err)
+		}
 	}
 
 	for i, vm := range result.VMs {
@@ -115,6 +145,19 @@ func (m *Manager) FindByName(ctx context.Context, name string) (*SandboxInfo, er
 		}
 	}
 	return nil, nil //nolint:nilnil // nil,nil means "not found" which is the documented API
+}
+
+// listSandboxes calls `docker sandbox ls --json` and parses the result.
+func (m *Manager) listSandboxes(ctx context.Context) (*sandboxListOutput, error) {
+	out, err := m.docker(ctx, "sandbox", "ls", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var result sandboxListOutput
+	if err := json.Unmarshal([]byte(out), &result); err != nil {
+		return nil, fmt.Errorf("parsing sandbox list JSON: %w\n%s", err, truncateLog(out, 500))
+	}
+	return &result, nil
 }
 
 // ExecArgs returns the argument slice needed to exec a command inside the named
@@ -126,18 +169,13 @@ func ExecArgs(sandboxName string, args []string) []string {
 	return out
 }
 
-// Stop stops a running sandbox.
-func (m *Manager) Stop(ctx context.Context, sandboxName string) error {
-	slog.Info("stopping sandbox", "sandbox", sandboxName)
-	_, err := m.docker(ctx, "sandbox", "stop", sandboxName)
-	return err
-}
-
 // StopBackground fires `docker sandbox stop` without waiting for it to complete.
-// The docker daemon processes the stop independently; this returns as soon as
-// the docker CLI child process has been launched.
+// The child process is started in its own process group (Setpgid) so it
+// survives the parent's exit — important because KillSession terminates the
+// sidebar process immediately after this call.
 func (m *Manager) StopBackground(ctx context.Context, sandboxName string) error {
-	cmd := exec.CommandContext(ctx, "docker", "sandbox", "stop", sandboxName)
+	cmd := exec.Command("docker", "sandbox", "stop", sandboxName)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return cmd.Start()
 }
 
@@ -150,16 +188,11 @@ func (m *Manager) Remove(ctx context.Context, sandboxName string) error {
 
 // IsRunning reports whether the sandbox is in the running state.
 func (m *Manager) IsRunning(ctx context.Context, sandboxName string) (bool, error) {
-	out, err := m.docker(ctx, "sandbox", "inspect", sandboxName)
+	info, err := m.FindByName(ctx, sandboxName)
 	if err != nil {
 		return false, err
 	}
-
-	var info SandboxInfo
-	if err := json.Unmarshal([]byte(out), &info); err != nil {
-		return false, fmt.Errorf("parsing sandbox inspect JSON: %w", err)
-	}
-	return info.Status == "running", nil
+	return info != nil && info.IsRunning(), nil
 }
 
 // ImageExists reports whether the named image is present in the local Docker

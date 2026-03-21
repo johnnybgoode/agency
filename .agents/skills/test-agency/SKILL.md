@@ -53,7 +53,8 @@ Create the directory: `mkdir -p .claude/test-findings/`
 ```bash
 TIMESTAMP=$(date +%s)
 SESSION="agency-test-${TIMESTAMP}"
-tmux new-session -d -s "$SESSION" -x 220 -y 50
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+tmux new-session -d -s "$SESSION" -x 220 -y 50 -c "$PROJECT_ROOT"
 tmux send-keys -t "$SESSION" "/tmp/agency-test" Enter
 ```
 
@@ -64,6 +65,15 @@ Run each scenario in order. After each action, call `tmux capture-pane -p -t "$S
 ### Scenario 1: Launch
 
 Poll `tmux capture-pane -p -t "$SESSION"` up to ~5s (500ms intervals) until the Agency sidebar chrome is visible (the TUI has rendered). If it never appears, record ❌ and stop.
+
+```bash
+# Poll example:
+for i in $(seq 1 10); do
+  OUTPUT=$(tmux capture-pane -p -t "$SESSION")
+  # if sidebar chrome visible, break
+  sleep 0.5
+done
+```
 
 **What to check:** The sidebar header is visible, the TUI has not crashed or exited.
 
@@ -78,12 +88,15 @@ Without creating any workspaces, capture the pane.
 Send keystrokes to open the create form, fill it in, and submit:
 
 ```bash
-tmux send-keys -t "$SESSION" "n" ""         # open create form
+tmux send-keys -t "$SESSION" "n"
 sleep 0.5
-tmux send-keys -t "$SESSION" "test-ws" ""  # workspace name
-tmux send-keys -t "$SESSION" "" ""          # tab to branch field
-tmux send-keys -t "$SESSION" "main" ""     # branch name
-tmux send-keys -t "$SESSION" "" Enter      # submit
+tmux send-keys -t "$SESSION" "test-ws"
+sleep 0.3
+tmux send-keys -t "$SESSION" "Tab"
+sleep 0.3
+tmux send-keys -t "$SESSION" "main"
+sleep 0.3
+tmux send-keys -t "$SESSION" "Enter"
 sleep 1.5
 ```
 
@@ -94,9 +107,9 @@ Capture pane.
 ### Scenario 4: Navigation
 
 ```bash
-tmux send-keys -t "$SESSION" "j" ""
+tmux send-keys -t "$SESSION" "j"
 sleep 0.3
-tmux send-keys -t "$SESSION" "k" ""
+tmux send-keys -t "$SESSION" "k"
 sleep 0.3
 ```
 
@@ -107,7 +120,7 @@ Capture pane before and after.
 ### Scenario 5: Workspace Switch
 
 ```bash
-tmux send-keys -t "$SESSION" "" Enter
+tmux send-keys -t "$SESSION" "Enter"
 sleep 0.5
 ```
 
@@ -118,7 +131,7 @@ Capture pane.
 ### Scenario 6: Quit Flow
 
 ```bash
-tmux send-keys -t "$SESSION" "q" ""
+tmux send-keys -t "$SESSION" "q"
 sleep 0.5
 ```
 
@@ -127,11 +140,11 @@ Capture pane.
 **What to check:** The quit confirmation popup is visible.
 
 ```bash
-tmux send-keys -t "$SESSION" "n" ""   # cancel
+tmux send-keys -t "$SESSION" "n"
 sleep 0.3
-tmux send-keys -t "$SESSION" "q" ""
+tmux send-keys -t "$SESSION" "q"
 sleep 0.3
-tmux send-keys -t "$SESSION" "y" ""   # confirm
+tmux send-keys -t "$SESSION" "y"
 sleep 1.0
 ```
 
@@ -152,6 +165,8 @@ tmux kill-session -t "$SESSION" 2>/dev/null || true
 The binary at `/tmp/agency-test` is left in place.
 
 ## Step 7: Write Findings File
+
+Resolve `$FINDINGS` to its actual path (e.g., `.claude/test-findings/main-abc1234.md`) before writing — the Write tool does not interpolate shell variables.
 
 Write to `$FINDINGS` (overwrite if exists):
 

@@ -524,7 +524,7 @@ func TestProvisionTmux_TrapScriptChecksSandboxExistence(t *testing.T) {
 	dir := t.TempDir()
 	argsFile := filepath.Join(dir, "calls.txt")
 
-	// Capture full send-keys arguments. new-window returns "@88", list-panes returns "%5".
+	// Capture tmux arguments. new-window returns "@88", list-panes returns "%5".
 	script := "#!/bin/sh\n" +
 		`echo "$@" >> ` + argsFile + "\n" +
 		`case "$1" in` + "\n" +

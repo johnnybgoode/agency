@@ -47,26 +47,48 @@ func mascotFrame() string {
 	return fmt.Sprintf("%s\n%s\n%s", row1, row2, row3)
 }
 
-// renderMascot returns the styled, centered mascot with "Creating workspace…"
-// text below. The frame parameter controls the bounce animation: even frames
-// have no top padding, odd frames have 1 line of top padding.
+// renderMascot returns the styled, centered mascot above a fixed-position
+// "Creating workspace…" label. The mascot bounces (vertical offset alternates
+// per frame) while the label stays pinned at the bottom of the popup.
+//
+// Layout (height = 9 lines, fitting in an 11-line popup with border):
+//
+//	Line 0:  blank (bounce padding) or mascot row 1
+//	Line 1:  mascot row 1 or 2
+//	Line 2:  mascot row 2 or 3
+//	Line 3:  mascot row 3 or blank
+//	Line 4:  blank (bounce padding) or blank
+//	...
+//	Line 7:  "Creating workspace…"
+//	Line 8:  blank (bottom padding)
 func renderMascot(frame, width int) string {
 	mascot := mascotFrame()
+	mascotLines := strings.Split(mascot, "\n")
 
 	label := loadingText.Render("Creating workspace…")
 
-	// Compose mascot + blank line + label.
-	var lines []string
-	if frame%2 == 1 {
-		lines = append(lines, "") // bounce: extra blank line at top
-	}
-	lines = append(lines, strings.Split(mascot, "\n")...)
-	lines = append(lines, "", label)
+	// Total content height: 9 lines.
+	// Mascot occupies lines 0-4 (3 mascot rows + 2 for bounce padding).
+	// Lines 5-6 are spacers, line 7 is the label, line 8 is bottom padding.
+	const totalHeight = 9
+
+	lines := make([]string, totalHeight)
+
+	// Bounce: on odd frames, shift mascot down by 1.
+	offset := 1
 	if frame%2 == 0 {
-		lines = append(lines, "") // keep total height consistent
+		offset = 0
 	}
 
-	// Center each line horizontally within the given width.
+	// Place mascot rows.
+	for i, ml := range mascotLines {
+		lines[offset+i] = ml
+	}
+
+	// Fixed label near the bottom (line 7), with 1 line of padding below (line 8).
+	lines[totalHeight-2] = label
+
+	// Center each line horizontally.
 	var centered []string
 	for _, line := range lines {
 		visWidth := lipgloss.Width(line)

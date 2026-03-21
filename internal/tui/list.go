@@ -245,7 +245,7 @@ func (m listModel) handleConfirmKey(msg tea.KeyMsg) (listModel, tea.Cmd) {
 //nolint:gocritic // bubbletea model must use value receivers
 func (m listModel) newWorkspaceCmd() tea.Cmd {
 	const popupWidth = 60
-	const popupHeight = 18
+	const popupHeight = 11
 	xPos := 0
 	if len(m.workspaces) == 0 && m.width > m.sidebarWidth() {
 		rightStart := m.sidebarWidth()

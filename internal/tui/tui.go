@@ -116,7 +116,7 @@ func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocri
 			return pw, tea.Quit
 		case spinnerTickMsg:
 			pw.frame++
-			return pw, tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+			return pw, tea.Tick(172*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
 			})
 		}
@@ -153,7 +153,7 @@ func (pw popupWrapper) Update(msg tea.Msg) (tea.Model, tea.Cmd) { //nolint:gocri
 				}
 				return popupDoneMsg{err: nil}
 			},
-			tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+			tea.Tick(172*time.Millisecond, func(t time.Time) tea.Msg {
 				return spinnerTickMsg{}
 			}),
 		)

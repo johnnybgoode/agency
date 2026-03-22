@@ -121,7 +121,7 @@ func newListModel(mgr *workspace.Manager) listModel {
 		manager:          mgr,
 		workspaces:       mgr.List(),
 		removing:         make(map[string]bool),
-		lastActiveID:     mgr.State.ActiveWorkspaceID,
+		lastActiveID:     "", // empty so the first tick detects and swaps the active workspace
 		agencyBin:        bin,
 		popup:            mgr.Tmux,
 		installerCmd:     installerCmdFor,

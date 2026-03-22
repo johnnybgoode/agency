@@ -489,6 +489,11 @@ func ensureLayout(mgr *workspace.Manager) (string, error) {
 		}
 	}
 
+	// Crash recovery failed — building a fresh layout. Clear stale
+	// WorkspacePaneID; the tick handler will recreate the split via
+	// ensureSplitOnFirstWorkspace once reconcile has resumed workspaces.
+	mgr.State.WorkspacePaneID = ""
+
 	winID, err := resolveMainWindow(mgr)
 	if err != nil {
 		return "", err

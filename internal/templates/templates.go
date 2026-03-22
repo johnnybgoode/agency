@@ -91,6 +91,7 @@ func mergeStatusline(settingsPath string) error {
 	}
 
 	settings["statusline"] = map[string]any{
+		"type":    "command",
 		"command": agencyStatuslineCommand,
 	}
 

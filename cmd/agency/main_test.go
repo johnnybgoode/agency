@@ -17,3 +17,23 @@ func TestDefaultLogLevel(t *testing.T) {
 		t.Errorf("default log-level = %q, want %q", flag.DefValue, "info")
 	}
 }
+
+func TestWorkspaceCommandHasAlias(t *testing.T) {
+	found := false
+	for _, a := range workspaceCmd.Aliases {
+		if a == "ws" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("workspace command missing 'ws' alias")
+	}
+}
+
+func TestListCommandHasJSONFlag(t *testing.T) {
+	flag := listCmd.Flags().Lookup("json")
+	if flag == nil {
+		t.Fatal("--json flag not found on list command")
+	}
+}

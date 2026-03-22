@@ -1,9 +1,9 @@
 ---
-name: sdlc-feature
+name: feature
 description: >
   Full feature development workflow: determine branch name, create worktree,
   rename session, write and review plan, implement via subagents with incremental
-  commits, verify tests, then hand off to /sdlc-code-review. Use when starting
+  commits, verify tests, then hand off to /code-review. Use when starting
   a non-trivial new capability that requires design before coding.
 ---
 
@@ -80,7 +80,7 @@ All must pass. If any fail, diagnose and fix in the application code — do not 
 
 ## Step 7 — Code review and PR
 
-**REQUIRED SUB-SKILL:** Use `/sdlc-code-review` to push the branch, create the PR, and manage review.
+**REQUIRED SUB-SKILL:** Use `/code-review` to push the branch, create the PR, and manage review.
 
 ---
 

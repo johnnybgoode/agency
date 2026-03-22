@@ -1,9 +1,9 @@
 ---
-name: sdlc-bugfix
+name: bugfix
 description: >
   Bug fix workflow: determine branch name, create worktree, rename session,
   implement fixes via the /fix skill with TDD, verify tests, then hand off to
-  /sdlc-code-review. Use when fixing a specific identified defect. Omits the
+  /code-review. Use when fixing a specific identified defect. Omits the
   planning phase.
 ---
 
@@ -66,7 +66,7 @@ All must pass. If any fail, diagnose and fix — do not proceed with failing tes
 
 ## Step 6 — Code review and PR
 
-**REQUIRED SUB-SKILL:** Use `/sdlc-code-review` to push the branch, create the PR, and manage review.
+**REQUIRED SUB-SKILL:** Use `/code-review` to push the branch, create the PR, and manage review.
 
 ---
 

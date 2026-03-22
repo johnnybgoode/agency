@@ -32,6 +32,6 @@ Agency is primarily a TUI for managing multiple parallel Claude Code sessions in
 
 | Task | Skill | When to use |
 |------|-------|-------------|
-| New feature | `/sdlc-feature` | Starting a non-trivial new capability |
-| Bug fix | `/sdlc-bugfix` | Fixing a specific identified defect |
-| Code review & PR | `/sdlc-code-review` | After implementation is complete |
+| New feature | `/feature-dev` | Starting a non-trivial new capability |
+| Bug fix | `/bugfix` | Fixing a specific identified defect |
+| Code review & PR | /code-review` | After implementation is complete |

@@ -1,10 +1,10 @@
 ---
-name: sdlc-code-review
+name: code-review
 description: >
   Code review and PR workflow: verify tests, write PR description, push to
   origin-http, create GitHub PR, optionally dispatch AI code review, and handle
   human reviewer feedback. Use after implementation is complete and all tests pass.
-  Called at the end of /sdlc-feature and /sdlc-bugfix, or directly when a branch
+  Called at the end of /feature-dev and /bugfix, or directly when a branch
   is ready for review.
 ---
 

@@ -13,6 +13,7 @@ Agency is primarily a TUI for managing multiple parallel Claude Code sessions in
 
 ## Environment Notes
 
+- Git remotes: Always push to the HTTP remote: `origin-http`. If a branch already has a remote configured, don't change it. Override with the `-u` flag instead.
 - **Worktree location:** `.worktrees/` is gitignored and ready to use. Worktrees are created at `.worktrees/<branch-name>`.
 - **LSP diagnostics can be stale.** `✘` compiler errors shown by the LSP may not reflect the actual build state — always verify with `go build ./...`.
 - **`★` linter hints are non-blocking style suggestions** (e.g. `minmax` suggesting `max` builtin). These are pre-existing and safe to ignore during refactors.

@@ -43,7 +43,9 @@ Wait for the user to confirm before continuing.
 
 **REQUIRED SUB-SKILL:** Use `superpowers:writing-plans` to produce the plan.
 
-The plan must be saved to `.claude/plans/<branch-slug>.md` (e.g. `.claude/plans/feat-session-rename.md`).
+The plan must be written to `<project_root>/.claude/plans/<branch-slug>.md` **before** starting implementation (e.g. `<project_root>/.claude/plans/feat-session-rename.md`).
+
+> **Note:** This is the one exception to the worktree-only rule. Plan files go to the project root's `.claude/plans/`, not the worktree's. This makes them accessible to other sessions and agents working on the same project.
 
 A complete plan includes:
 - All tasks broken into independent, committable units

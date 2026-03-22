@@ -9,7 +9,7 @@ Agency is primarily a TUI for managing multiple parallel Claude Code sessions in
 - **Worktrees are required.** Before writing any code, set up a worktree using `superpowers:using-git-worktrees`. Confirm the branch and path before proceeding. Do not make changes outside your worktree — this can corrupt in-progress work by other agents.
 - **Commit before moving on.** A task is not complete until its changes are committed. Subagents must commit after each individual task — never in a batch at the end.
 - **Tests must pass.** Run `go test ./...` after completing a feature, plan, or batch of tasks. Fix failures in application code — never skip or manipulate tests.
-- **Artifact hygiene.** Direct `go build` output to `/tmp`. Preserve findings, plans, and open tasks in `<project_root>/.claude` but do not commit them unless explicitly asked.
+- **Artifact hygiene.** Direct `go build` output to `/tmp`. Preserve findings, plans, and open tasks in `<project_root>/.claude` but do not commit them unless explicitly asked. **Exception:** plan `.md` files must be written to `<project_root>/.claude/plans/` before implementation begins — this is the one case where writing to the project root (not the worktree) is correct.
 
 ## Branch and Worktree Conventions
 

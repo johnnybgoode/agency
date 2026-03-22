@@ -62,7 +62,7 @@ Ask the user: **"Would you like an AI code review before human review begins?"**
 
 If **yes**, dispatch `superpowers:requesting-code-review` with:
 - `WHAT_WAS_IMPLEMENTED`: a concise summary of the feature or fix
-- `PLAN_OR_REQUIREMENTS`: path to `.claude/plans/<branch-slug>.md` (for features) or the original bug description (for fixes)
+- `PLAN_OR_REQUIREMENTS`: path to `<project_root>/.claude/plans/<branch-slug>.md` (for features) or the original bug description (for fixes)
 - `BASE_SHA`: output of `git merge-base HEAD main`
 - `HEAD_SHA`: output of `git rev-parse HEAD`
 

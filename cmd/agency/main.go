@@ -153,8 +153,9 @@ var initCmd = &cobra.Command{
 }
 
 var workspaceCmd = &cobra.Command{
-	Use:   "workspace",
-	Short: "Manage workspaces",
+	Use:     "workspace",
+	Short:   "Manage workspaces",
+	Aliases: []string{"ws"},
 }
 
 // topLevelNewCmd is the top-level "agency new" command that creates a workspace.

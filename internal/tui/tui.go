@@ -621,6 +621,38 @@ func ensureSplitOnFirstWorkspace(mgr *workspace.Manager) {
 	}
 }
 
+// swapNewActiveWorkspace detects when ActiveWorkspaceID is set but its pane
+// hasn't been swapped into the main window's right slot yet (e.g. just created
+// by a popup). If so, performs the swap and focuses the main window.
+func swapNewActiveWorkspace(mgr *workspace.Manager) {
+	activeID := mgr.State.ActiveWorkspaceID
+	if activeID == "" || mgr.State.WorkspacePaneID == "" {
+		return
+	}
+	ws, ok := mgr.State.Workspaces[activeID]
+	if !ok || ws.PaneID == "" {
+		return
+	}
+	// Check whether the workspace pane is already in the main window (already swapped).
+	panes, err := mgr.Tmux.GetWindowPanes(mgr.State.MainWindowID)
+	if err != nil {
+		return
+	}
+	for _, p := range panes {
+		if p == ws.PaneID {
+			return // already swapped in
+		}
+	}
+	// Workspace pane is not in the main window — swap it in.
+	if err := mgr.SwapActivePane(activeID); err != nil {
+		slog.Warn("swapNewActiveWorkspace: swap failed", "workspace", activeID, "error", err)
+		return
+	}
+	if mgr.State.MainWindowID != "" {
+		_ = mgr.Tmux.SelectWindow(mgr.State.MainWindowID)
+	}
+}
+
 // finalizeLayout applies common layout configuration: pane protection and
 // keybindings — all in a single batched tmux fork.
 func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {

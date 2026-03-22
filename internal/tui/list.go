@@ -705,6 +705,9 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			verifyLayoutIntegrity(m.manager)
 			// Create the right-pane split when the first workspace appears.
 			ensureSplitOnFirstWorkspace(m.manager)
+			// If the active workspace hasn't been swapped into the right pane
+			// yet (e.g. just created by a popup), do it now.
+			swapNewActiveWorkspace(m.manager)
 		}
 		// Poll pane content for each running workspace to infer agent status.
 		m = m.pollAgentStatuses()
@@ -742,30 +745,6 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.statusMsg = ""
-			// Create split + swap (sidebar is the sole owner of layout).
-			// Use SwapActivePane directly instead of activateWorkspace because
-			// Create() already set ActiveWorkspaceID — activateWorkspace would
-			// short-circuit and skip the actual swap.
-			slog.Info("workspaceCreatedMsg: before ensureSplit",
-				"activeID", m.manager.State.ActiveWorkspaceID,
-				"workspacePaneID", m.manager.State.WorkspacePaneID,
-				"mainWindowID", m.manager.State.MainWindowID)
-			ensureSplitOnFirstWorkspace(m.manager)
-			slog.Info("workspaceCreatedMsg: after ensureSplit",
-				"workspacePaneID", m.manager.State.WorkspacePaneID)
-			if activeID := m.manager.State.ActiveWorkspaceID; activeID != "" {
-				if ws, ok := m.manager.State.Workspaces[activeID]; ok {
-					slog.Info("workspaceCreatedMsg: about to swap",
-						"activeID", activeID,
-						"ws.PaneID", ws.PaneID,
-						"workspacePaneID", m.manager.State.WorkspacePaneID)
-				}
-				if err := m.manager.SwapActivePane(activeID); err != nil {
-					slog.Error("workspaceCreatedMsg: SwapActivePane failed", "error", err)
-				} else if m.manager.State.MainWindowID != "" {
-					_ = m.manager.Tmux.SelectWindow(m.manager.State.MainWindowID)
-				}
-			}
 		}
 		m = m.refreshCursorPosition()
 

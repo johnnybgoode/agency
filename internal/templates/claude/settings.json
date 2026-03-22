@@ -1,7 +1,12 @@
 {
   "hooks": {
     "Stop": [
-      { "type": "command", "command": "node .claude/hooks/write-agent-status.js" }
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node .claude/hooks/write-agent-status.js" }
+        ]
+      }
     ]
   }
 }

@@ -72,8 +72,13 @@ const agencyHookCommand = "node .claude/hooks/write-agent-status.js"
 
 // mergeStopHook ensures the agency Stop hook is registered in the settings file.
 // If the file doesn't exist, it creates it with just the hook. If it exists,
-// it parses the JSON, appends the hook entry if not already present, and writes
-// back with the rest of the file preserved.
+// it parses the JSON, adds a matcher entry for our hook if not already present,
+// and writes back with the rest of the file preserved.
+//
+// Claude Code hook schema: each event key contains an array of matcher objects,
+// where each matcher has a "matcher" string and a "hooks" array of commands:
+//
+//	{"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "..."}]}]}}
 func mergeStopHook(settingsPath string) error {
 	settings := make(map[string]any)
 
@@ -92,23 +97,35 @@ func mergeStopHook(settingsPath string) error {
 		settings["hooks"] = hooks
 	}
 
-	stopRaw, _ := hooks["Stop"].([]any)
+	stopMatchers, _ := hooks["Stop"].([]any)
 
-	// Check if our hook is already registered.
-	for _, entry := range stopRaw {
-		if m, ok := entry.(map[string]any); ok {
-			if cmd, _ := m["command"].(string); cmd == agencyHookCommand {
-				return nil // already present
+	// Check if our hook command is already registered in any matcher entry.
+	for _, matcher := range stopMatchers {
+		m, ok := matcher.(map[string]any)
+		if !ok {
+			continue
+		}
+		hooksList, _ := m["hooks"].([]any)
+		for _, h := range hooksList {
+			if entry, ok := h.(map[string]any); ok {
+				if cmd, _ := entry["command"].(string); cmd == agencyHookCommand {
+					return nil // already present
+				}
 			}
 		}
 	}
 
-	// Append our hook entry.
-	stopRaw = append(stopRaw, map[string]any{
-		"type":    "command",
-		"command": agencyHookCommand,
+	// Append a new matcher entry with our hook.
+	stopMatchers = append(stopMatchers, map[string]any{
+		"matcher": "",
+		"hooks": []any{
+			map[string]any{
+				"type":    "command",
+				"command": agencyHookCommand,
+			},
+		},
 	})
-	hooks["Stop"] = stopRaw
+	hooks["Stop"] = stopMatchers
 
 	out, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {

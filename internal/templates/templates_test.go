@@ -90,7 +90,7 @@ func TestWriteClaudeHooks_MergesIntoExistingSettings(t *testing.T) {
 	existing := []byte(`{
   "custom": true,
   "hooks": {
-    "PostToolUse": [{"type": "command", "command": "echo post"}]
+    "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo post"}]}]
   }
 }`)
 	settingsPath := filepath.Join(settingsDir, "settings.json")
@@ -123,12 +123,20 @@ func TestWriteClaudeHooks_MergesIntoExistingSettings(t *testing.T) {
 		t.Error("PostToolUse hooks were lost")
 	}
 
-	// Stop hook was added.
-	stopHooks, ok := hooks["Stop"].([]any)
-	if !ok || len(stopHooks) == 0 {
-		t.Fatal("Stop hooks not added")
+	// Stop hook was added with correct matcher+hooks schema.
+	stopMatchers, ok := hooks["Stop"].([]any)
+	if !ok || len(stopMatchers) == 0 {
+		t.Fatal("Stop matchers not added")
 	}
-	entry := stopHooks[0].(map[string]any)
+	matcher := stopMatchers[0].(map[string]any)
+	if matcher["matcher"] != "" {
+		t.Errorf("expected empty matcher, got %v", matcher["matcher"])
+	}
+	hooksList := matcher["hooks"].([]any)
+	if len(hooksList) == 0 {
+		t.Fatal("hooks array is empty")
+	}
+	entry := hooksList[0].(map[string]any)
 	if entry["command"] != "node .claude/hooks/write-agent-status.js" {
 		t.Errorf("unexpected hook command: %v", entry["command"])
 	}
@@ -137,7 +145,7 @@ func TestWriteClaudeHooks_MergesIntoExistingSettings(t *testing.T) {
 func TestWriteClaudeHooks_IdempotentMerge(t *testing.T) {
 	dir := t.TempDir()
 
-	// Run twice — should not duplicate the hook entry.
+	// Run twice — should not duplicate the matcher entry.
 	if err := templates.WriteClaudeHooks(dir); err != nil {
 		t.Fatalf("first WriteClaudeHooks() error: %v", err)
 	}
@@ -157,8 +165,8 @@ func TestWriteClaudeHooks_IdempotentMerge(t *testing.T) {
 	}
 
 	hooks := parsed["hooks"].(map[string]any)
-	stopHooks := hooks["Stop"].([]any)
-	if len(stopHooks) != 1 {
-		t.Errorf("expected 1 Stop hook entry, got %d", len(stopHooks))
+	stopMatchers := hooks["Stop"].([]any)
+	if len(stopMatchers) != 1 {
+		t.Errorf("expected 1 Stop matcher entry, got %d", len(stopMatchers))
 	}
 }

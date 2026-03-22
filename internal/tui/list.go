@@ -690,10 +690,12 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.removing) == 0 {
 			// Re-read state from disk. The sidebar holds the project flock (acquired in
 			// runSidebar), so concurrent writes from popup processes serialize correctly.
+			activeChanged := false
 			if s, err := state.Read(m.manager.StatePath); err == nil {
 				m.manager.State = s
 				m.workspaces = m.manager.List()
-				if m.manager.State.ActiveWorkspaceID != m.lastActiveID {
+				activeChanged = m.manager.State.ActiveWorkspaceID != m.lastActiveID
+				if activeChanged {
 					// Active workspace changed — snap cursor to it.
 					m = m.refreshCursorPosition()
 				} else if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
@@ -705,9 +707,15 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			verifyLayoutIntegrity(m.manager)
 			// Create the right-pane split when the first workspace appears.
 			ensureSplitOnFirstWorkspace(m.manager)
-			// If the active workspace hasn't been swapped into the right pane
-			// yet (e.g. just created by a popup), do it now.
-			swapNewActiveWorkspace(m.manager)
+			// If the active workspace changed (e.g. just created by a popup),
+			// swap its pane into the right slot. Only fires once per change.
+			if activeChanged && m.manager.State.ActiveWorkspaceID != "" {
+				if err := m.manager.SwapActivePane(m.manager.State.ActiveWorkspaceID); err != nil {
+					slog.Warn("tick: swap active pane failed", "workspace", m.manager.State.ActiveWorkspaceID, "error", err)
+				} else if m.manager.State.MainWindowID != "" {
+					_ = m.manager.Tmux.SelectWindow(m.manager.State.MainWindowID)
+				}
+			}
 		}
 		// Poll pane content for each running workspace to infer agent status.
 		m = m.pollAgentStatuses()

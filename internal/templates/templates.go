@@ -13,7 +13,7 @@ import (
 // files holds all template subdirectories embedded into the binary.
 // Only named subdirectories are embedded to avoid including Go source files.
 //
-//go:embed docker tmux
+//go:embed docker tmux claude
 var files embed.FS
 
 // Sub returns an [fs.FS] rooted at the named subdirectory (e.g. "docker").
@@ -37,4 +37,37 @@ func WriteTmuxConf(dir string) (string, error) {
 		return "", err
 	}
 	return dest, nil
+}
+
+// WriteClaudeHooks writes the embedded Claude Code hook script and settings
+// into worktreeDir/.claude/. The hook script is always overwritten; settings.json
+// is only written if it does not already exist (to preserve user customizations).
+func WriteClaudeHooks(worktreeDir string) error {
+	hooksDir := filepath.Join(worktreeDir, ".claude", "hooks")
+	if err := os.MkdirAll(hooksDir, 0o700); err != nil {
+		return err
+	}
+
+	// Always write the hook script (overwrite is safe — it's our template).
+	hookData, err := files.ReadFile("claude/hooks/write-agent-status.js")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "write-agent-status.js"), hookData, 0o600); err != nil {
+		return err
+	}
+
+	// Only write settings.json if it doesn't already exist.
+	settingsPath := filepath.Join(worktreeDir, ".claude", "settings.json")
+	if _, err := os.Stat(settingsPath); err != nil {
+		settingsData, readErr := files.ReadFile("claude/settings.json")
+		if readErr != nil {
+			return readErr
+		}
+		if err := os.WriteFile(settingsPath, settingsData, 0o600); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

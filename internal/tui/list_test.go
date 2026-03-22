@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -887,12 +888,16 @@ func TestClassifyStatus(t *testing.T) {
 
 // ----- workspaceStatusRow -----
 
+func intPtr(v int) *int { return &v }
+
 func TestWorkspaceStatusRow(t *testing.T) {
 	tests := []struct {
-		name        string
-		ws          *state.Workspace
-		status      AgentStatus
-		wantContain string
+		name           string
+		ws             *state.Workspace
+		status         AgentStatus
+		ctxPct         *int
+		wantContain    string
+		wantNotContain string
 	}{
 		{
 			name:        "running idle shows idle glyph",
@@ -930,14 +935,139 @@ func TestWorkspaceStatusRow(t *testing.T) {
 			status:      AgentStatusIdle,
 			wantContain: "   ",
 		},
+		{
+			name:        "running with context shows bar",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:      AgentStatusWorking,
+			ctxPct:      intPtr(32),
+			wantContain: "32%",
+		},
+		{
+			name:           "running without context shows no bar",
+			ws:             &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:         AgentStatusWorking,
+			wantNotContain: "▓",
+		},
+		{
+			name:           "paused ignores context data",
+			ws:             &state.Workspace{ID: "ws-1", State: state.StatePaused},
+			status:         AgentStatusUnknown,
+			ctxPct:         intPtr(50),
+			wantContain:    "paused",
+			wantNotContain: "▓",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := workspaceStatusRow(tt.ws, tt.status)
-			if !strings.Contains(got, tt.wantContain) {
+			got := workspaceStatusRow(tt.ws, tt.status, tt.ctxPct)
+			if tt.wantContain != "" && !strings.Contains(got, tt.wantContain) {
 				t.Errorf("workspaceStatusRow() = %q, want to contain %q", got, tt.wantContain)
 			}
+			if tt.wantNotContain != "" && strings.Contains(got, tt.wantNotContain) {
+				t.Errorf("workspaceStatusRow() = %q, want NOT to contain %q", got, tt.wantNotContain)
+			}
 		})
+	}
+}
+
+// ----- contextBar -----
+
+func TestContextBar(t *testing.T) {
+	tests := []struct {
+		name        string
+		pct         int
+		wantFilled  int
+		wantContain string
+	}{
+		{"0 pct", 0, 0, "0%"},
+		{"32 pct", 32, 1, "32%"},
+		{"50 pct", 50, 2, "50%"},
+		{"80 pct", 80, 4, "80%"},
+		{"100 pct", 100, 5, "100%"},
+		{"negative clamped", -5, 0, "0%"},
+		{"over 100 clamped", 150, 5, "100%"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := contextBar(tt.pct)
+			if !strings.Contains(got, tt.wantContain) {
+				t.Errorf("contextBar(%d) = %q, want to contain %q", tt.pct, got, tt.wantContain)
+			}
+			filled := strings.Count(got, "▓")
+			if filled != tt.wantFilled {
+				t.Errorf("contextBar(%d) has %d filled chars, want %d", tt.pct, filled, tt.wantFilled)
+			}
+		})
+	}
+}
+
+// ----- pollAgentStatuses reads status files -----
+
+func TestPollAgentStatuses_ReadsStatusFile(t *testing.T) {
+	dir := t.TempDir()
+
+	// Write a fresh status file.
+	statusJSON := fmt.Sprintf(`{
+		"session_id": "test-session",
+		"context_window": {"used_percentage": 42},
+		"rate_limits": {
+			"five_hour": {"used_percentage": 10},
+			"seven_day": {"used_percentage": 3}
+		},
+		"updated_at": %q
+	}`, time.Now().UTC().Format(time.RFC3339))
+	if err := os.WriteFile(dir+"/.agency-status.json", []byte(statusJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := listModel{
+		workspaces: []*state.Workspace{
+			{ID: "ws-1", State: state.StateRunning, WorktreePath: dir, PaneID: ""},
+		},
+		prevPaneContent:  make(map[string]string),
+		agentStatus:      make(map[string]AgentStatus),
+		agentContextData: make(map[string]*agentStatusFile),
+	}
+	m = m.pollAgentStatuses()
+
+	sf := m.agentContextData["ws-1"]
+	if sf == nil {
+		t.Fatal("expected agentContextData for ws-1, got nil")
+	}
+	if sf.ContextWindow.UsedPercentage != 42 {
+		t.Errorf("context pct = %d, want 42", sf.ContextWindow.UsedPercentage)
+	}
+	if sf.RateLimits.FiveHour.UsedPercentage != 10 {
+		t.Errorf("five_hour pct = %d, want 10", sf.RateLimits.FiveHour.UsedPercentage)
+	}
+}
+
+func TestPollAgentStatuses_DiscardsStaleFile(t *testing.T) {
+	dir := t.TempDir()
+
+	staleTime := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	statusJSON := fmt.Sprintf(`{
+		"session_id": "test-session",
+		"context_window": {"used_percentage": 42},
+		"rate_limits": {},
+		"updated_at": %q
+	}`, staleTime)
+	if err := os.WriteFile(dir+"/.agency-status.json", []byte(statusJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := listModel{
+		workspaces: []*state.Workspace{
+			{ID: "ws-1", State: state.StateRunning, WorktreePath: dir, PaneID: ""},
+		},
+		prevPaneContent:  make(map[string]string),
+		agentStatus:      make(map[string]AgentStatus),
+		agentContextData: make(map[string]*agentStatusFile),
+	}
+	m = m.pollAgentStatuses()
+
+	if m.agentContextData["ws-1"] != nil {
+		t.Error("expected stale data to be discarded, got non-nil")
 	}
 }
 

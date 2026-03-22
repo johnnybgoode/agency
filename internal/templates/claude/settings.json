@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "Stop": [
+      { "type": "command", "command": "node .claude/hooks/write-agent-status.js" }
+    ]
+  }
+}

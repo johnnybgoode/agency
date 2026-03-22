@@ -20,13 +20,14 @@ import (
 
 // Lipgloss styles used across the list view and create form.
 var (
-	selectedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	removingStyle = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
-	workingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
-	waitingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
-	idleStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dim
+	selectedStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	helpStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	errorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
+	removingStyle  = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
+	workingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+	waitingStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
+	idleStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dim
+	contextOkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("2")) // green
 )
 
 // --- Messages ---
@@ -107,6 +108,7 @@ type listModel struct {
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
 	prevPaneContent   map[string]string               // workspace ID → last captured pane snapshot
 	agentStatus       map[string]AgentStatus          // workspace ID → inferred agent status
+	agentContextData  map[string]*agentStatusFile     // workspace ID → hook-reported context/rate data
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -116,16 +118,17 @@ func newListModel(mgr *workspace.Manager) listModel {
 		bin = exe
 	}
 	return listModel{
-		manager:         mgr,
-		workspaces:      mgr.List(),
-		removing:        make(map[string]bool),
-		lastActiveID:    mgr.State.ActiveWorkspaceID,
-		agencyBin:       bin,
-		popup:           mgr.Tmux,
-		installerCmd:    installerCmdFor,
-		sleepFn:         time.Sleep,
-		prevPaneContent: make(map[string]string),
-		agentStatus:     make(map[string]AgentStatus),
+		manager:          mgr,
+		workspaces:       mgr.List(),
+		removing:         make(map[string]bool),
+		lastActiveID:     mgr.State.ActiveWorkspaceID,
+		agencyBin:        bin,
+		popup:            mgr.Tmux,
+		installerCmd:     installerCmdFor,
+		sleepFn:          time.Sleep,
+		prevPaneContent:  make(map[string]string),
+		agentStatus:      make(map[string]AgentStatus),
+		agentContextData: make(map[string]*agentStatusFile),
 	}
 }
 
@@ -177,6 +180,30 @@ func (m listModel) pollAgentStatuses() listModel {
 		m.agentStatus[ws.ID] = classifyStatus(content, m.prevPaneContent[ws.ID])
 		m.prevPaneContent[ws.ID] = content
 	}
+
+	// Read hook-written status files for context/rate-limit data.
+	const staleThreshold = 5 * time.Minute
+	for _, ws := range m.workspaces {
+		if ws.WorktreePath == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(ws.WorktreePath, ".agency-status.json"))
+		if err != nil {
+			delete(m.agentContextData, ws.ID)
+			continue
+		}
+		var sf agentStatusFile
+		if err := json.Unmarshal(data, &sf); err != nil {
+			delete(m.agentContextData, ws.ID)
+			continue
+		}
+		if time.Since(sf.UpdatedAt) > staleThreshold {
+			delete(m.agentContextData, ws.ID)
+			continue
+		}
+		m.agentContextData[ws.ID] = &sf
+	}
+
 	return m
 }
 
@@ -307,6 +334,23 @@ const (
 	AgentStatusWaiting
 )
 
+// agentStatusFile is the JSON structure written by the write-agent-status.js hook.
+type agentStatusFile struct {
+	SessionID     string `json:"session_id"`
+	ContextWindow struct {
+		UsedPercentage int `json:"used_percentage"`
+	} `json:"context_window"`
+	RateLimits struct {
+		FiveHour struct {
+			UsedPercentage int `json:"used_percentage"`
+		} `json:"five_hour"`
+		SevenDay struct {
+			UsedPercentage int `json:"used_percentage"`
+		} `json:"seven_day"`
+	} `json:"rate_limits"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 // classifyStatus infers the agent's activity state from captured pane content.
 //
 // Classification rules:
@@ -340,18 +384,24 @@ func classifyStatus(current, prev string) AgentStatus {
 
 // workspaceStatusRow returns the second sidebar row for a workspace, showing
 // its activity status (for running workspaces) or lifecycle state label.
-func workspaceStatusRow(ws *state.Workspace, status AgentStatus) string {
+// ctxPct is the context window usage percentage (nil when unavailable).
+func workspaceStatusRow(ws *state.Workspace, status AgentStatus, ctxPct *int) string {
 	const indent = "   " // 3 spaces to align under name column
 	switch ws.State {
 	case state.StateRunning:
+		var label string
 		switch status {
 		case AgentStatusWorking:
-			return indent + workingStyle.Render("● working")
+			label = workingStyle.Render("● working")
 		case AgentStatusWaiting:
-			return indent + waitingStyle.Render("⚠ waiting")
+			label = waitingStyle.Render("⚠ waiting")
 		default:
-			return indent + idleStyle.Render("· idle")
+			label = idleStyle.Render("· idle")
 		}
+		if ctxPct != nil {
+			label += "  " + contextBar(*ctxPct)
+		}
+		return indent + label
 	case state.StatePaused:
 		return indent + idleStyle.Render("· paused")
 	case state.StateCreating, state.StateProvisioning:
@@ -360,6 +410,22 @@ func workspaceStatusRow(ws *state.Workspace, status AgentStatus) string {
 		return indent + idleStyle.Render("· finishing")
 	default:
 		return indent + idleStyle.Render("· stopped")
+	}
+}
+
+// contextBar renders a 5-char usage bar with percentage, e.g. "▓▓▓░░ 32%".
+func contextBar(pct int) string {
+	pct = max(0, min(100, pct))
+	filled := pct * 5 / 100
+	bar := strings.Repeat("▓", filled) + strings.Repeat("░", 5-filled)
+	text := fmt.Sprintf("%s %d%%", bar, pct)
+	switch {
+	case pct >= 80:
+		return waitingStyle.Render(text)
+	case pct >= 50:
+		return workingStyle.Render(text)
+	default:
+		return contextOkStyle.Render(text)
 	}
 }
 
@@ -868,7 +934,12 @@ func (m listModel) renderSidebar() string {
 	} else {
 		for i, ws := range m.workspaces {
 			rows = append(rows, row(m.workspaceLabel(ws, i, activeID, inner)))
-			rows = append(rows, row(workspaceStatusRow(ws, m.agentStatus[ws.ID])))
+			var ctxPct *int
+			if sf := m.agentContextData[ws.ID]; sf != nil {
+				p := sf.ContextWindow.UsedPercentage
+				ctxPct = &p
+			}
+			rows = append(rows, row(workspaceStatusRow(ws, m.agentStatus[ws.ID], ctxPct)))
 		}
 	}
 
@@ -880,10 +951,24 @@ func (m listModel) renderSidebar() string {
 		rows = append(rows, blank, row(truncate(m.statusMsg, inner)))
 	}
 
+	// Aggregate rate limits (max across all agents) for footer.
+	var rateLimitRows []string
+	if len(m.agentContextData) > 0 {
+		var maxFH, maxSD int
+		for _, sf := range m.agentContextData {
+			maxFH = max(maxFH, sf.RateLimits.FiveHour.UsedPercentage)
+			maxSD = max(maxSD, sf.RateLimits.SevenDay.UsedPercentage)
+		}
+		rateLimitRows = []string{
+			row(" Rate limits:"),
+			row(fmt.Sprintf("   5h: %d%%  7d: %d%%", maxFH, maxSD)),
+		}
+	}
+
 	// Fill remaining space above help section.
 	// Fixed rows at bottom: blank + " Help:" + hint + bottom border = 4 lines.
 	helpLines := 3 // " Help:" + hint + blank before help
-	fixedRows := len(rows)
+	fixedRows := len(rows) + len(rateLimitRows)
 	// Reserve: helpLines rows + 1 bottom border row.
 	fillCount := totalRows - fixedRows - helpLines - 1
 	if fillCount < 0 {
@@ -892,6 +977,7 @@ func (m listModel) renderSidebar() string {
 	for i := 0; i < fillCount; i++ {
 		rows = append(rows, blank)
 	}
+	rows = append(rows, rateLimitRows...)
 
 	// Help section.
 	rows = append(rows, blank, row(" Help:"))

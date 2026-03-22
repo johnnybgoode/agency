@@ -50,11 +50,11 @@ func WriteClaudeHooks(worktreeDir string) error {
 	}
 
 	// Always write the script (overwrite is safe — it's our template).
-	hookData, err := files.ReadFile("claude/hooks/write-agent-status.js")
+	hookData, err := files.ReadFile("claude/hooks/write-agent-status.cjs")
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(hooksDir, "write-agent-status.js"), hookData, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(hooksDir, "write-agent-status.cjs"), hookData, 0o600); err != nil {
 		return err
 	}
 
@@ -68,7 +68,7 @@ func WriteClaudeHooks(worktreeDir string) error {
 }
 
 // agencyStatuslineCommand is the command registered as the statusline.
-const agencyStatuslineCommand = "node .claude/hooks/write-agent-status.js"
+const agencyStatuslineCommand = "node .claude/hooks/write-agent-status.cjs"
 
 // mergeStatusline ensures the agency statusline is registered in settings.json.
 // If the file doesn't exist, it creates it. If it exists but already has a

@@ -334,7 +334,7 @@ const (
 	AgentStatusWaiting
 )
 
-// agentStatusFile is the JSON structure written by the write-agent-status.js hook.
+// agentStatusFile is the JSON structure written by the write-agent-status.cjs hook.
 type agentStatusFile struct {
 	SessionID     string `json:"session_id"`
 	ContextWindow struct {

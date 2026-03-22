@@ -59,7 +59,7 @@ func TestWriteClaudeHooks_CreatesFiles(t *testing.T) {
 	}
 
 	// Hook script should exist.
-	hookPath := filepath.Join(dir, ".claude", "hooks", "write-agent-status.js")
+	hookPath := filepath.Join(dir, ".claude", "hooks", "write-agent-status.cjs")
 	data, err := os.ReadFile(hookPath)
 	if err != nil {
 		t.Fatalf("hook script not written: %v", err)
@@ -128,7 +128,7 @@ func TestWriteClaudeHooks_AddsStatuslineToExistingSettings(t *testing.T) {
 	if !ok {
 		t.Fatal("statusline not added")
 	}
-	if sl["command"] != "node .claude/hooks/write-agent-status.js" {
+	if sl["command"] != "node .claude/hooks/write-agent-status.cjs" {
 		t.Errorf("unexpected statusline command: %v", sl["command"])
 	}
 }

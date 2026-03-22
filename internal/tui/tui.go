@@ -15,6 +15,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/config"
 	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/templates"
 	"github.com/johnnybgoode/agency/internal/tmux"
 	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
@@ -206,7 +207,8 @@ func Run() error {
 func runAndAttach(projectDir string) error {
 	slog.Info("bootstrapping tmux session", "projectDir", projectDir)
 	projectName := filepath.Base(projectDir)
-	tc := tmux.New("agency-" + projectName)
+	confPath, _ := templates.WriteTmuxConf(filepath.Join(projectDir, ".agency"))
+	tc := tmux.NewWithSocket("agency-"+projectName, "agency-"+projectName, confPath)
 
 	if err := tc.EnsureSession(); err != nil {
 		return fmt.Errorf("ensuring tmux session: %w", err)
@@ -619,17 +621,12 @@ func ensureSplitOnFirstWorkspace(mgr *workspace.Manager) {
 	}
 }
 
-// finalizeLayout applies common layout configuration: status bar, pane
-// protection, keybindings, and the custom status bar — all in a single
-// batched tmux fork.
+// finalizeLayout applies common layout configuration: pane protection and
+// keybindings — all in a single batched tmux fork.
 func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {
 	sess := mgr.Tmux.SessionName
-	left, right := computeStatusBarStrings(mgr)
 
-	cmds := [][]string{
-		{"set-option", "-t", sess, "status", "on"},
-		{"set-option", "-t", sess, "status-position", "top"},
-	}
+	var cmds [][]string
 	if rightPaneID != "" {
 		// protectWorkspacePane inline
 		cmds = append(cmds, []string{"set-option", "-p", "-t", rightPaneID, "remain-on-exit", "on"})
@@ -639,50 +636,8 @@ func finalizeLayout(mgr *workspace.Manager, rightPaneID string) {
 		)
 		cmds = append(cmds, []string{"set-hook", "-t", sess, "pane-died[respawn-workspace]", hookCmd})
 	}
-	// installKeybindings inline
-	cmds = append(cmds, []string{"bind-key", "-n", "-T", "root", "C-Space", "last-pane"})
-	// applyStatusBar inline
-	cmds = append(cmds, statusBarBatchCmds(sess, left, right)...)
 
 	_ = mgr.Tmux.RunBatch(cmds)
-}
-
-// computeStatusBarStrings returns the left and right status bar strings
-// for the current workspace state. This is a pure function for caching.
-func computeStatusBarStrings(mgr *workspace.Manager) (left, right string) {
-	wsCount := len(mgr.State.Workspaces)
-
-	activeName := ""
-	if mgr.State.ActiveWorkspaceID != "" {
-		if ws, ok := mgr.State.Workspaces[mgr.State.ActiveWorkspaceID]; ok {
-			activeName = ws.DisplayName()
-		}
-	}
-
-	left = fmt.Sprintf(" agency · %s ", mgr.ProjectName)
-
-	right = fmt.Sprintf(" %d workspace(s) ", wsCount)
-	if activeName != "" {
-		right = fmt.Sprintf(" %s · %d workspace(s) ", activeName, wsCount)
-	}
-	return left, right
-}
-
-// statusBarBatchCmds returns the tmux batch commands for the status bar.
-func statusBarBatchCmds(sess, left, right string) [][]string {
-	return [][]string{
-		{"set-option", "-t", sess, "status-style", "bg=default,fg=default"},
-		{"set-option", "-t", sess, "status-left-length", "60"},
-		{"set-option", "-t", sess, "status-right-length", "60"},
-		{"set-option", "-t", sess, "status-left", left},
-		{"set-option", "-t", sess, "status-right", right},
-	}
-}
-
-// applyStatusBar configures the tmux status bar with project and workspace info.
-func applyStatusBar(mgr *workspace.Manager) {
-	left, right := computeStatusBarStrings(mgr)
-	_ = mgr.Tmux.RunBatch(statusBarBatchCmds(mgr.Tmux.SessionName, left, right))
 }
 
 // doQuitCleanup kills workspace tmux windows (stopping trap loops),

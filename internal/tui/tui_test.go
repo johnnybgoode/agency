@@ -276,27 +276,6 @@ func TestEnsureLayout_ProtectsWorkspacePane(t *testing.T) {
 	}
 }
 
-// TestEnsureLayout_InstallsKeybindings verifies that ensureLayout calls
-// bind-key for focus navigation keybindings.
-func TestEnsureLayout_InstallsKeybindings(t *testing.T) {
-	mgr, argsFile := newFakeTuiManager(t, map[string]string{
-		"list-windows": "@5 agency",
-		"list-panes":   "%1",
-		"split-window": "%2",
-	})
-	mgr.State.MainWindowID = "@5"
-	mgr.State.Workspaces["ws-test0001"] = &state.Workspace{ID: "ws-test0001", State: state.StateRunning}
-
-	if _, err := ensureLayout(mgr); err != nil {
-		t.Fatalf("ensureLayout returned error: %v", err)
-	}
-
-	calls := readTuiCalls(t, argsFile)
-	if !tuiCallsContain(calls, "bind-key") {
-		t.Errorf("ensureLayout did not call bind-key for keybindings; calls = %v", calls)
-	}
-}
-
 // TestVerifyLayoutIntegrity_CollapsesOnZeroWorkspaces verifies that
 // verifyLayoutIntegrity kills the right pane and clears WorkspacePaneID
 // when there are no workspaces remaining (zero-state collapse).

@@ -661,3 +661,98 @@ func TestSetHook(t *testing.T) {
 		})
 	}
 }
+
+func TestRunBatch_Empty(t *testing.T) {
+	c, _ := newFakeClient(t, "")
+	if err := c.RunBatch(nil); err != nil {
+		t.Fatalf("RunBatch(nil) = %v, want nil", err)
+	}
+}
+
+func TestRunBatch_MultipleCommands(t *testing.T) {
+	c, argsFile := newFakeClient(t, "")
+	cmds := [][]string{
+		{"set-option", "-t", "sess", "status", "on"},
+		{"set-option", "-t", "sess", "status-position", "top"},
+		{"bind-key", "-n", "C-Space", "last-pane"},
+	}
+	if err := c.RunBatch(cmds); err != nil {
+		t.Fatalf("RunBatch() = %v", err)
+	}
+	data, _ := os.ReadFile(argsFile)
+	args := string(data)
+	// Commands should be joined with ";" separators.
+	if !strings.Contains(args, ";") {
+		t.Errorf("RunBatch args should contain ';' separator, got: %s", args)
+	}
+	// All sub-command tokens should appear.
+	for _, want := range []string{"set-option", "bind-key", "status", "last-pane"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("RunBatch args missing %q, got: %s", want, args)
+		}
+	}
+}
+
+func TestAllEnvironments(t *testing.T) {
+	output := "FOO=bar\nBAZ=qux\n-REMOVED=val\nEMPTY=\n"
+	c, _ := newFakeClient(t, output)
+	env, err := c.AllEnvironments()
+	if err != nil {
+		t.Fatalf("AllEnvironments() = %v", err)
+	}
+	if env["FOO"] != "bar" {
+		t.Errorf("FOO = %q, want %q", env["FOO"], "bar")
+	}
+	if env["BAZ"] != "qux" {
+		t.Errorf("BAZ = %q, want %q", env["BAZ"], "qux")
+	}
+	if _, ok := env["REMOVED"]; ok {
+		t.Error("REMOVED should be omitted (prefixed with -)")
+	}
+	if env["EMPTY"] != "" {
+		t.Errorf("EMPTY = %q, want empty string", env["EMPTY"])
+	}
+}
+
+func TestAllEnvironments_ValuesWithEquals(t *testing.T) {
+	output := "PATH=/usr/bin:/bin\nURL=https://example.com?foo=bar\n"
+	c, _ := newFakeClient(t, output)
+	env, err := c.AllEnvironments()
+	if err != nil {
+		t.Fatalf("AllEnvironments() = %v", err)
+	}
+	if env["PATH"] != "/usr/bin:/bin" {
+		t.Errorf("PATH = %q, want %q", env["PATH"], "/usr/bin:/bin")
+	}
+	if env["URL"] != "https://example.com?foo=bar" {
+		t.Errorf("URL = %q, want %q", env["URL"], "https://example.com?foo=bar")
+	}
+}
+
+func TestSessionPaneIDs(t *testing.T) {
+	output := "%0\n%1\n%5\n"
+	c, _ := newFakeClient(t, output)
+	panes, err := c.SessionPaneIDs()
+	if err != nil {
+		t.Fatalf("SessionPaneIDs() = %v", err)
+	}
+	for _, id := range []string{"%0", "%1", "%5"} {
+		if !panes[id] {
+			t.Errorf("expected pane %s to be present", id)
+		}
+	}
+	if panes["%99"] {
+		t.Error("unexpected pane %99 should not be present")
+	}
+}
+
+func TestSessionPaneIDs_Empty(t *testing.T) {
+	c, _ := newFakeClient(t, "")
+	panes, err := c.SessionPaneIDs()
+	if err != nil {
+		t.Fatalf("SessionPaneIDs() = %v", err)
+	}
+	if len(panes) != 0 {
+		t.Errorf("expected empty map, got %v", panes)
+	}
+}

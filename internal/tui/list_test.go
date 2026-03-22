@@ -846,6 +846,18 @@ func TestClassifyStatus(t *testing.T) {
 			want:    AgentStatusIdle,
 		},
 		{
+			name:    "idle: unicode prompt ❯",
+			current: "Task done.\n❯",
+			prev:    "Task done.\n❯",
+			want:    AgentStatusIdle,
+		},
+		{
+			name:    "idle: unicode prompt ❯ with trailing space",
+			current: "Task done.\n❯ ",
+			prev:    "anything",
+			want:    AgentStatusIdle,
+		},
+		{
 			name:    "working: content changed and not at prompt",
 			current: "Running tests...\nStep 2",
 			prev:    "Running tests...",

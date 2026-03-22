@@ -354,9 +354,9 @@ type agentStatusFile struct {
 // classifyStatus infers the agent's activity state from captured pane content.
 //
 // Classification rules:
-//   - idle: pane shows Claude's idle prompt ("> " or ">") or is empty
+//   - idle: pane shows Claude's idle prompt (">" / "❯") or is empty
 //   - waiting: pane content matches a dialog/permission pattern (selection
-//     cursor "❯" or "[Y/n]" prompt), or content is unchanged from the previous
+//     cursor "❯ <option>" or "[Y/n]" prompt), or content is unchanged from the previous
 //     snapshot while not at the idle prompt (Claude has stopped generating but
 //     hasn't returned to the prompt — it's waiting for user action)
 //   - working: content differs from previous snapshot and is not at the prompt
@@ -371,7 +371,10 @@ func classifyStatus(current, prev string) AgentStatus {
 		start = 0
 	}
 	for _, line := range lines[start:] {
-		if strings.Contains(line, "❯") || strings.Contains(line, "[Y/n]") || strings.Contains(line, "[y/N]") {
+		trimmed := strings.TrimSpace(line)
+		// "❯ <option>" is a selection cursor in permission/dialog menus.
+		// Bare "❯" without trailing text is the idle prompt (handled above).
+		if strings.Contains(trimmed, "❯ ") || strings.Contains(trimmed, "[Y/n]") || strings.Contains(trimmed, "[y/N]") {
 			return AgentStatusWaiting
 		}
 	}
@@ -446,10 +449,10 @@ func isAtPrompt(paneContent string) bool {
 		if line == "" {
 			continue
 		}
-		// Claude Code's idle prompt is a single ">" possibly followed by
-		// whitespace (the cursor position). Some terminals append a space
-		// or two after the ">".
-		return line == ">" || line == "> "
+		// Claude Code's idle prompt is a single ">" or "❯" possibly followed
+		// by whitespace (the cursor position). Some terminals append a space
+		// or two after the prompt character.
+		return line == ">" || line == "> " || line == "❯" || line == "❯ "
 	}
 	// Completely empty pane — treat as idle.
 	return true

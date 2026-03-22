@@ -730,6 +730,10 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case workspaceCreatedMsg:
+		// Re-read state from disk to pick up popup's changes.
+		if s, err := state.Read(m.manager.StatePath); err == nil {
+			m.manager.State = s
+		}
 		m.workspaces = m.manager.List()
 		if msg.err != nil {
 			slog.Error("workspace creation failed", "error", msg.err)
@@ -738,6 +742,16 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.err = nil
 			m.statusMsg = ""
+			// Create split + swap (sidebar is the sole owner of layout).
+			// Use SwapActivePane directly instead of activateWorkspace because
+			// Create() already set ActiveWorkspaceID — activateWorkspace would
+			// short-circuit and skip the actual swap.
+			ensureSplitOnFirstWorkspace(m.manager)
+			if activeID := m.manager.State.ActiveWorkspaceID; activeID != "" {
+				if err := m.manager.SwapActivePane(activeID); err == nil && m.manager.State.MainWindowID != "" {
+					_ = m.manager.Tmux.SelectWindow(m.manager.State.MainWindowID)
+				}
+			}
 		}
 		m = m.refreshCursorPosition()
 

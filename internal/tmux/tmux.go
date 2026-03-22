@@ -26,6 +26,8 @@ const (
 // Client is a thin wrapper around the tmux CLI, scoped to a single session.
 type Client struct {
 	SessionName string
+	Socket      string // tmux -L socket name; empty = default socket
+	ConfigFile  string // tmux -f config path; passed on new server startup
 	tmuxPath    string // resolved path to the tmux binary
 }
 
@@ -37,6 +39,15 @@ func New(sessionName string) *Client {
 	return &Client{SessionName: sessionName, tmuxPath: path}
 }
 
+// NewWithSocket creates a Client that uses a dedicated tmux socket (-L) and
+// loads the given config file (-f) when the server starts. Using an isolated
+// socket ensures the agency server is completely separate from any host tmux.
+func NewWithSocket(sessionName, socket, configFile string) *Client {
+	path, _ := exec.LookPath("tmux")
+	slog.Debug("tmux client created", "session", sessionName, "socket", socket, "binary", path)
+	return &Client{SessionName: sessionName, Socket: socket, ConfigFile: configFile, tmuxPath: path}
+}
+
 // NewWithBinaryPath creates a Client that uses the supplied binaryPath instead
 // of searching PATH. Intended for tests that inject a fake tmux script.
 func NewWithBinaryPath(sessionName, binaryPath string) *Client {
@@ -45,20 +56,31 @@ func NewWithBinaryPath(sessionName, binaryPath string) *Client {
 
 // run is a shared helper that executes a tmux sub-command, returns trimmed
 // stdout, and wraps any error with the combined output for diagnostics.
+// When c.Socket is set, -L <socket> is prepended so all commands target the
+// isolated agency server.
 func (c *Client) run(args ...string) (string, error) {
 	if c.tmuxPath == "" {
 		return "", errors.New("tmux is not installed")
 	}
-	slog.Debug("tmux exec", "args", args)
-	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
+	full := c.socketArgs(args...)
+	slog.Debug("tmux exec", "args", full)
+	cmd := exec.Command(c.tmuxPath, full...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	out, err := cmd.CombinedOutput()
 	result := strings.TrimSpace(string(out))
 	if err != nil {
-		slog.Debug("tmux command failed", "args", args, "error", err)
-		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(args, " "), err, result)
+		slog.Debug("tmux command failed", "args", full, "error", err)
+		return "", fmt.Errorf("tmux %s: %w\n%s", strings.Join(full, " "), err, result)
 	}
-	slog.Debug("tmux exec done", "args", args, "output", result)
+	slog.Debug("tmux exec done", "args", full, "output", result)
 	return result, nil
+}
+
+// socketArgs prepends -L <socket> to args when a socket name is configured.
+func (c *Client) socketArgs(args ...string) []string {
+	if c.Socket == "" {
+		return args
+	}
+	return append([]string{"-L", c.Socket}, args...)
 }
 
 // SessionExists reports whether the session already exists.
@@ -66,18 +88,25 @@ func (c *Client) SessionExists() bool {
 	if c.tmuxPath == "" {
 		return false
 	}
-	err := exec.Command(c.tmuxPath, "has-session", "-t", c.SessionName).Run() //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
+	args := c.socketArgs("has-session", "-t", c.SessionName)
+	err := exec.Command(c.tmuxPath, args...).Run() //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	exists := err == nil
 	slog.Debug("session exists check", "session", c.SessionName, "exists", exists)
 	return exists
 }
 
 // EnsureSession creates the session if it does not already exist.
+// When ConfigFile is set, it is passed via -f on the new-session call so the
+// agency tmux server loads the embedded config on first start.
 func (c *Client) EnsureSession() error {
 	if c.SessionExists() {
 		return nil
 	}
 	slog.Info("creating tmux session", "session", c.SessionName)
+	if c.ConfigFile != "" {
+		_, err := c.run("-f", c.ConfigFile, "new-session", "-d", "-s", c.SessionName)
+		return err
+	}
 	_, err := c.run("new-session", "-d", "-s", c.SessionName)
 	return err
 }
@@ -280,7 +309,8 @@ func (c *Client) Attach() error {
 	if c.tmuxPath == "" {
 		return errors.New("tmux is not installed")
 	}
-	cmd := exec.Command(c.tmuxPath, "attach-session", "-t", c.SessionName) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
+	args := c.socketArgs("attach-session", "-t", c.SessionName)
+	cmd := exec.Command(c.tmuxPath, args...) //nolint:gosec // tmuxPath is validated via exec.LookPath at construction
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

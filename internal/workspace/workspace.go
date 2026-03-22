@@ -55,7 +55,8 @@ func NewManager(projectDir string, cfg *config.Config) (*Manager, error) {
 		_ = state.Write(statePath, s)
 	}
 
-	tc := tmux.New("agency-" + projectName)
+	confPath, _ := templates.WriteTmuxConf(filepath.Join(projectDir, ".agency"))
+	tc := tmux.NewWithSocket("agency-"+projectName, "agency-"+projectName, confPath)
 
 	var sbm *sandbox.Manager
 	if sm, err := sandbox.New(); err == nil {

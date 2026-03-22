@@ -43,17 +43,20 @@ var rootCmd = &cobra.Command{
 			return nil
 		}
 
+		// Determine the session timestamp for log file naming. If the state
+		// file exists, reuse its SessionStartedAt so reattach appends to the
+		// same log. Otherwise fall back to now — this keeps slog writing to
+		// a file instead of leaking to stderr via the default handler.
+		sessionTime := time.Now().UTC()
 		statePath := filepath.Join(projectDir, ".agency", "state.json")
 		s, err := state.Read(statePath)
-		if err != nil {
-			// State file doesn't exist yet — skip logging setup.
-			return nil
-		}
-
-		if s.SessionStartedAt == nil {
-			now := time.Now().UTC()
-			s.SessionStartedAt = &now
-			_ = state.Write(statePath, s)
+		if err == nil {
+			if s.SessionStartedAt == nil {
+				s.SessionStartedAt = &sessionTime
+				_ = state.Write(statePath, s)
+			} else {
+				sessionTime = *s.SessionStartedAt
+			}
 		}
 
 		levelStr, _ := cmd.Flags().GetString("log-level")
@@ -62,9 +65,11 @@ var rootCmd = &cobra.Command{
 			return err
 		}
 
-		cleanup, err := logging.Setup(projectDir, level, *s.SessionStartedAt)
+		cleanup, err := logging.Setup(projectDir, level, sessionTime)
 		if err != nil {
-			return fmt.Errorf("setting up logging: %w", err)
+			// Can't create log file (e.g. .agency/logs/ not writable) —
+			// continue without file logging rather than failing the command.
+			return nil
 		}
 		logCleanup = cleanup
 

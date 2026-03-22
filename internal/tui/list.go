@@ -746,9 +746,23 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Use SwapActivePane directly instead of activateWorkspace because
 			// Create() already set ActiveWorkspaceID — activateWorkspace would
 			// short-circuit and skip the actual swap.
+			slog.Info("workspaceCreatedMsg: before ensureSplit",
+				"activeID", m.manager.State.ActiveWorkspaceID,
+				"workspacePaneID", m.manager.State.WorkspacePaneID,
+				"mainWindowID", m.manager.State.MainWindowID)
 			ensureSplitOnFirstWorkspace(m.manager)
+			slog.Info("workspaceCreatedMsg: after ensureSplit",
+				"workspacePaneID", m.manager.State.WorkspacePaneID)
 			if activeID := m.manager.State.ActiveWorkspaceID; activeID != "" {
-				if err := m.manager.SwapActivePane(activeID); err == nil && m.manager.State.MainWindowID != "" {
+				if ws, ok := m.manager.State.Workspaces[activeID]; ok {
+					slog.Info("workspaceCreatedMsg: about to swap",
+						"activeID", activeID,
+						"ws.PaneID", ws.PaneID,
+						"workspacePaneID", m.manager.State.WorkspacePaneID)
+				}
+				if err := m.manager.SwapActivePane(activeID); err != nil {
+					slog.Error("workspaceCreatedMsg: SwapActivePane failed", "error", err)
+				} else if m.manager.State.MainWindowID != "" {
 					_ = m.manager.Tmux.SelectWindow(m.manager.State.MainWindowID)
 				}
 			}

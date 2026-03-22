@@ -366,6 +366,14 @@ func runSidebar(projectDir string) error {
 		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
+	// Initialize SessionStartedAt if not already set. The sidebar is the sole
+	// owner of this field — subprocess commands (popup, gc) only read it so
+	// all processes log to the same file.
+	if mgr.State.SessionStartedAt == nil {
+		now := time.Now().UTC()
+		mgr.State.SessionStartedAt = &now
+	}
+
 	// Persist the lock nonce so that the next startup can cross-check it
 	// against the lock file to detect PID reuse in stale-lock detection.
 	mgr.State.LockNonce = lock.Nonce()

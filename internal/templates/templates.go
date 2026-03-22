@@ -5,6 +5,7 @@ package templates
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -57,17 +58,61 @@ func WriteClaudeHooks(worktreeDir string) error {
 		return err
 	}
 
-	// Only write settings.json if it doesn't already exist.
+	// Merge our Stop hook into settings.json, preserving existing content.
 	settingsPath := filepath.Join(worktreeDir, ".claude", "settings.json")
-	if _, err := os.Stat(settingsPath); err != nil {
-		settingsData, readErr := files.ReadFile("claude/settings.json")
-		if readErr != nil {
-			return readErr
-		}
-		if err := os.WriteFile(settingsPath, settingsData, 0o600); err != nil {
-			return err
-		}
+	if err := mergeStopHook(settingsPath); err != nil {
+		return err
 	}
 
 	return nil
+}
+
+// agencyHookCommand is the command string used to identify our hook entry.
+const agencyHookCommand = "node .claude/hooks/write-agent-status.js"
+
+// mergeStopHook ensures the agency Stop hook is registered in the settings file.
+// If the file doesn't exist, it creates it with just the hook. If it exists,
+// it parses the JSON, appends the hook entry if not already present, and writes
+// back with the rest of the file preserved.
+func mergeStopHook(settingsPath string) error {
+	settings := make(map[string]any)
+
+	data, err := os.ReadFile(settingsPath)
+	if err == nil {
+		if err := json.Unmarshal(data, &settings); err != nil {
+			// Malformed JSON — don't touch it.
+			return nil
+		}
+	}
+
+	// Navigate to hooks.Stop, creating intermediate structure as needed.
+	hooks, _ := settings["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = make(map[string]any)
+		settings["hooks"] = hooks
+	}
+
+	stopRaw, _ := hooks["Stop"].([]any)
+
+	// Check if our hook is already registered.
+	for _, entry := range stopRaw {
+		if m, ok := entry.(map[string]any); ok {
+			if cmd, _ := m["command"].(string); cmd == agencyHookCommand {
+				return nil // already present
+			}
+		}
+	}
+
+	// Append our hook entry.
+	stopRaw = append(stopRaw, map[string]any{
+		"type":    "command",
+		"command": agencyHookCommand,
+	})
+	hooks["Stop"] = stopRaw
+
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(settingsPath, append(out, '\n'), 0o600)
 }

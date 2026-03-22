@@ -161,12 +161,12 @@ func TestNewWindow(t *testing.T) {
 		{
 			name:       "simple window name",
 			windowName: "editor",
-			wantSeq:    []string{"new-window", "-t", "test-session", "-n", "editor", "-P", "-F", "#{window_id}"},
+			wantSeq:    []string{"new-window", "-d", "-t", "test-session", "-n", "editor", "-P", "-F", "#{window_id}"},
 		},
 		{
 			name:       "window name with hyphen",
 			windowName: "my-window",
-			wantSeq:    []string{"new-window", "-t", "test-session", "-n", "my-window"},
+			wantSeq:    []string{"new-window", "-d", "-t", "test-session", "-n", "my-window"},
 		},
 	}
 

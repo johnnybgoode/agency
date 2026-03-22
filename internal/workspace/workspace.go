@@ -383,13 +383,6 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(fmt.Errorf("saving running state: %w", err))
 	}
 
-	// Step 5: focus the main window. NewWindowWithCommand switches tmux's
-	// active window to the new workspace window; switch back so the sidebar
-	// stays visible while the popup is still open.
-	if m.State.MainWindowID != "" {
-		_ = m.Tmux.SelectWindow(m.State.MainWindowID)
-	}
-
 	slog.Info("workspace created successfully", "workspace", ws.ID, "name", ws.Name, "branch", ws.Branch)
 	return ws, nil
 }

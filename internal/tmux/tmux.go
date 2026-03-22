@@ -352,3 +352,60 @@ func (c *Client) BindKey(key, tmuxCommand string) error {
 	_, err := c.run("bind-key", "-n", "-T", "root", key, tmuxCommand)
 	return err
 }
+
+// RunBatch executes multiple tmux sub-commands in a single fork using
+// tmux's ";" command chaining (e.g. `tmux cmd1 \; cmd2 \; cmd3`).
+// Each element of cmds is the argument slice for one sub-command.
+// Returns the first error encountered.
+func (c *Client) RunBatch(cmds [][]string) error {
+	if len(cmds) == 0 {
+		return nil
+	}
+	var args []string
+	for i, cmd := range cmds {
+		if i > 0 {
+			args = append(args, ";")
+		}
+		args = append(args, cmd...)
+	}
+	_, err := c.run(args...)
+	return err
+}
+
+// AllEnvironments returns all session-scoped environment variables as a
+// key→value map. Variables that are marked for removal (prefixed with "-")
+// are omitted.
+func (c *Client) AllEnvironments() (map[string]string, error) {
+	out, err := c.run("show-environment", "-t", c.SessionName)
+	if err != nil {
+		return nil, err
+	}
+	env := make(map[string]string)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "-") {
+			continue
+		}
+		if idx := strings.Index(line, "="); idx >= 0 {
+			env[line[:idx]] = line[idx+1:]
+		}
+	}
+	return env, nil
+}
+
+// SessionPaneIDs returns the set of all pane IDs across all windows in
+// the session. Each pane ID (e.g. "%5") maps to true.
+func (c *Client) SessionPaneIDs() (map[string]bool, error) {
+	out, err := c.run("list-panes", "-s", "-t", c.SessionName, "-F", "#{pane_id}")
+	if err != nil {
+		return nil, err
+	}
+	panes := make(map[string]bool)
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			panes[line] = true
+		}
+	}
+	return panes, nil
+}

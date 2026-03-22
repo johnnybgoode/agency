@@ -46,7 +46,7 @@ func newFakeTuiManager(t *testing.T, fakeOutputByCmd map[string]string) (mgr *wo
 	}
 
 	script := "#!/bin/sh\n" +
-		`echo "$1" >> ` + argsFile + "\n" +
+		`echo "$@" >> ` + argsFile + "\n" +
 		`case "$1" in` + "\n" +
 		cases +
 		`esac` + "\n"
@@ -73,6 +73,9 @@ func newFakeTuiManager(t *testing.T, fakeOutputByCmd map[string]string) (mgr *wo
 	return mgr, argsFile
 }
 
+// readTuiCalls reads the recorded tmux invocations. Each line is the full
+// argument list of one tmux invocation (space-joined). The returned slice
+// contains one entry per invocation.
 func readTuiCalls(t *testing.T, argsFile string) []string {
 	t.Helper()
 	data, err := os.ReadFile(argsFile)
@@ -86,6 +89,18 @@ func readTuiCalls(t *testing.T, argsFile string) []string {
 		}
 	}
 	return cmds
+}
+
+// tuiCallsContain reports whether any recorded tmux invocation contains token
+// as a substring. This handles both direct calls (token is the first word) and
+// batched calls (token appears inside a semicolon-chained invocation).
+func tuiCallsContain(calls []string, token string) bool {
+	for _, c := range calls {
+		if strings.Contains(c, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestEnsureLayout_SplitsToTwoPanes verifies that ensureLayout calls split-window
@@ -106,13 +121,7 @@ func TestEnsureLayout_SplitsToTwoPanes(t *testing.T) {
 	}
 
 	calls := readTuiCalls(t, argsFile)
-	splitFound := false
-	for _, c := range calls {
-		if c == "split-window" {
-			splitFound = true
-		}
-	}
-	if !splitFound {
+	if !tuiCallsContain(calls, "split-window") {
 		t.Errorf("ensureLayout did not call split-window to create the right workspace pane; calls = %v", calls)
 	}
 }
@@ -133,10 +142,8 @@ func TestEnsureLayout_NoSplitInZeroState(t *testing.T) {
 	}
 
 	calls := readTuiCalls(t, argsFile)
-	for _, c := range calls {
-		if c == "split-window" {
-			t.Errorf("ensureLayout called split-window in zero state; calls = %v", calls)
-		}
+	if tuiCallsContain(calls, "split-window") {
+		t.Errorf("ensureLayout called split-window in zero state; calls = %v", calls)
 	}
 }
 
@@ -183,10 +190,8 @@ func TestEnsureLayout_ReuseExistingWindow(t *testing.T) {
 
 	// new-window must NOT have been called since a suitable window existed.
 	calls := readTuiCalls(t, argsFile)
-	for _, c := range calls {
-		if c == "new-window" {
-			t.Errorf("ensureLayout created a new window even though one already existed; calls = %v", calls)
-		}
+	if tuiCallsContain(calls, "new-window") {
+		t.Errorf("ensureLayout created a new window even though one already existed; calls = %v", calls)
 	}
 
 	if mgr.State.MainWindowID != "@5" {
@@ -245,13 +250,7 @@ func TestEnsureLayout_PersistsEnvVars(t *testing.T) {
 	}
 
 	calls := readTuiCalls(t, argsFile)
-	envFound := false
-	for _, c := range calls {
-		if c == "set-environment" {
-			envFound = true
-		}
-	}
-	if !envFound {
+	if !tuiCallsContain(calls, "set-environment") {
 		t.Errorf("ensureLayout did not call set-environment to persist pane IDs; calls = %v", calls)
 	}
 }
@@ -272,13 +271,7 @@ func TestEnsureLayout_ProtectsWorkspacePane(t *testing.T) {
 	}
 
 	calls := readTuiCalls(t, argsFile)
-	hookFound := false
-	for _, c := range calls {
-		if c == "set-hook" {
-			hookFound = true
-		}
-	}
-	if !hookFound {
+	if !tuiCallsContain(calls, "set-hook") {
 		t.Errorf("ensureLayout did not call set-hook for pane-died respawn; calls = %v", calls)
 	}
 }
@@ -299,13 +292,7 @@ func TestEnsureLayout_InstallsKeybindings(t *testing.T) {
 	}
 
 	calls := readTuiCalls(t, argsFile)
-	bindFound := false
-	for _, c := range calls {
-		if c == "bind-key" {
-			bindFound = true
-		}
-	}
-	if !bindFound {
+	if !tuiCallsContain(calls, "bind-key") {
 		t.Errorf("ensureLayout did not call bind-key for keybindings; calls = %v", calls)
 	}
 }
@@ -327,13 +314,7 @@ func TestVerifyLayoutIntegrity_CollapsesOnZeroWorkspaces(t *testing.T) {
 		t.Errorf("WorkspacePaneID = %q, want empty after zero-state collapse", mgr.State.WorkspacePaneID)
 	}
 	calls := readTuiCalls(t, argsFile)
-	killFound := false
-	for _, c := range calls {
-		if c == "kill-pane" {
-			killFound = true
-		}
-	}
-	if !killFound {
+	if !tuiCallsContain(calls, "kill-pane") {
 		t.Errorf("verifyLayoutIntegrity did not call kill-pane to collapse layout; calls = %v", calls)
 	}
 }

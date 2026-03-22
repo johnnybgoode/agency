@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -153,8 +154,9 @@ var initCmd = &cobra.Command{
 }
 
 var workspaceCmd = &cobra.Command{
-	Use:   "workspace",
-	Short: "Manage workspaces",
+	Use:     "workspace",
+	Short:   "Manage workspaces",
+	Aliases: []string{"ws"},
 }
 
 // topLevelNewCmd is the top-level "agency new" command that creates a workspace.
@@ -227,6 +229,15 @@ var workspaceNewCmd = &cobra.Command{
 	},
 }
 
+type workspaceListEntry struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Branch    string `json:"branch"`
+	Directory string `json:"directory"`
+	State     string `json:"state"`
+	Created   string `json:"created"`
+}
+
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all workspaces",
@@ -236,6 +247,28 @@ var listCmd = &cobra.Command{
 			return err
 		}
 		workspaces := mgr.List()
+
+		asJSON, _ := cmd.Flags().GetBool("json")
+		if asJSON {
+			entries := make([]workspaceListEntry, 0, len(workspaces))
+			for _, ws := range workspaces {
+				entries = append(entries, workspaceListEntry{
+					ID:        ws.ID,
+					Name:      ws.Name,
+					Branch:    ws.Branch,
+					Directory: ws.WorktreePath,
+					State:     string(ws.State),
+					Created:   ws.CreatedAt.Format(time.RFC3339),
+				})
+			}
+			out, err := json.MarshalIndent(entries, "", "  ")
+			if err != nil {
+				return fmt.Errorf("marshaling JSON: %w", err)
+			}
+			fmt.Println(string(out))
+			return nil
+		}
+
 		if len(workspaces) == 0 {
 			fmt.Println("No workspaces found.")
 			return nil
@@ -463,6 +496,8 @@ func init() {
 	syncCmd.Flags().String("from", "", "Workspace name or ID to sync from (required)")
 	syncCmd.Flags().Bool("force", false, "Overwrite host files even when host is newer")
 	syncCmd.Flags().Bool("dry-run", false, "Preview changes without writing files")
+
+	listCmd.Flags().Bool("json", false, "Output in JSON format")
 
 	rootCmd.AddCommand(versionCmd, initCmd, workspaceCmd, gcCmd, topLevelNewCmd, topLevelQuitCmd, syncCmd)
 	workspaceCmd.AddCommand(workspaceNewCmd, listCmd, rmCmd)

@@ -817,6 +817,130 @@ func TestRefreshCursorPosition(t *testing.T) {
 	}
 }
 
+// ----- classifyStatus -----
+
+func TestClassifyStatus(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		prev    string
+		want    AgentStatus
+	}{
+		{
+			name:    "idle: last line is >",
+			current: "some output\n> ",
+			prev:    "some output\n> ",
+			want:    AgentStatusIdle,
+		},
+		{
+			name:    "idle: empty pane",
+			current: "",
+			prev:    "",
+			want:    AgentStatusIdle,
+		},
+		{
+			name:    "idle: bare > with trailing space",
+			current: "Task done.\n> ",
+			prev:    "anything",
+			want:    AgentStatusIdle,
+		},
+		{
+			name:    "working: content changed and not at prompt",
+			current: "Running tests...\nStep 2",
+			prev:    "Running tests...",
+			want:    AgentStatusWorking,
+		},
+		{
+			name:    "working: first content after empty prev",
+			current: "Starting...",
+			prev:    "",
+			want:    AgentStatusWorking,
+		},
+		{
+			name:    "waiting: content unchanged and not at prompt",
+			current: "Do you want to proceed?\n❯ Yes\n  No",
+			prev:    "Do you want to proceed?\n❯ Yes\n  No",
+			want:    AgentStatusWaiting,
+		},
+		{
+			name:    "waiting: dialog pattern with selection cursor",
+			current: "Allow bash command?\n❯ Yes\n  No\n  Always allow",
+			prev:    "some different content",
+			want:    AgentStatusWaiting,
+		},
+		{
+			name:    "waiting: dialog pattern with [Y/n]",
+			current: "Overwrite existing file? [Y/n]",
+			prev:    "other content",
+			want:    AgentStatusWaiting,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyStatus(tt.current, tt.prev)
+			if got != tt.want {
+				t.Errorf("classifyStatus() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// ----- workspaceStatusRow -----
+
+func TestWorkspaceStatusRow(t *testing.T) {
+	tests := []struct {
+		name        string
+		ws          *state.Workspace
+		status      AgentStatus
+		wantContain string
+	}{
+		{
+			name:        "running idle shows idle glyph",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:      AgentStatusIdle,
+			wantContain: "·",
+		},
+		{
+			name:        "running working shows working glyph",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:      AgentStatusWorking,
+			wantContain: "●",
+		},
+		{
+			name:        "running waiting shows waiting glyph",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:      AgentStatusWaiting,
+			wantContain: "⚠",
+		},
+		{
+			name:        "paused workspace shows paused label",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StatePaused},
+			status:      AgentStatusUnknown,
+			wantContain: "paused",
+		},
+		{
+			name:        "creating workspace shows creating label",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateCreating},
+			status:      AgentStatusUnknown,
+			wantContain: "creating",
+		},
+		{
+			name:        "status row is indented with 3 spaces",
+			ws:          &state.Workspace{ID: "ws-1", State: state.StateRunning},
+			status:      AgentStatusIdle,
+			wantContain: "   ",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := workspaceStatusRow(tt.ws, tt.status)
+			if !strings.Contains(got, tt.wantContain) {
+				t.Errorf("workspaceStatusRow() = %q, want to contain %q", got, tt.wantContain)
+			}
+		})
+	}
+}
+
 // ----- selectedWorkspace -----
 
 func TestSelectedWorkspace(t *testing.T) {

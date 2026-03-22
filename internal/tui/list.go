@@ -24,6 +24,9 @@ var (
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 	errorStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
 	removingStyle = lipgloss.NewStyle().Strikethrough(true).Foreground(lipgloss.Color("8"))
+	workingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("3")) // yellow
+	waitingStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("1")) // red
+	idleStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("8")) // dim
 )
 
 // --- Messages ---
@@ -102,6 +105,8 @@ type listModel struct {
 	popup             popupRunner                     // defaults to manager.Tmux; override in tests
 	installerCmd      func(sandboxName string) string // defaults to installerCmdFor; override in tests
 	sleepFn           func(time.Duration)             // defaults to time.Sleep; override in tests
+	prevPaneContent   map[string]string               // workspace ID → last captured pane snapshot
+	agentStatus       map[string]AgentStatus          // workspace ID → inferred agent status
 }
 
 // newListModel constructs the list model, pre-populating the workspace list.
@@ -111,14 +116,16 @@ func newListModel(mgr *workspace.Manager) listModel {
 		bin = exe
 	}
 	return listModel{
-		manager:      mgr,
-		workspaces:   mgr.List(),
-		removing:     make(map[string]bool),
-		lastActiveID: mgr.State.ActiveWorkspaceID,
-		agencyBin:    bin,
-		popup:        mgr.Tmux,
-		installerCmd: installerCmdFor,
-		sleepFn:      time.Sleep,
+		manager:         mgr,
+		workspaces:      mgr.List(),
+		removing:        make(map[string]bool),
+		lastActiveID:    mgr.State.ActiveWorkspaceID,
+		agencyBin:       bin,
+		popup:           mgr.Tmux,
+		installerCmd:    installerCmdFor,
+		sleepFn:         time.Sleep,
+		prevPaneContent: make(map[string]string),
+		agentStatus:     make(map[string]AgentStatus),
 	}
 }
 
@@ -150,6 +157,25 @@ func (m listModel) refreshCursorPosition() listModel {
 	m.lastActiveID = m.manager.State.ActiveWorkspaceID
 	if m.cursor >= len(m.workspaces) && len(m.workspaces) > 0 {
 		m.cursor = len(m.workspaces) - 1
+	}
+	return m
+}
+
+// pollAgentStatuses captures each running workspace's pane content and updates
+// agentStatus by comparing to the previous snapshot.
+//
+//nolint:gocritic // bubbletea model must use value receivers
+func (m listModel) pollAgentStatuses() listModel {
+	for _, ws := range m.workspaces {
+		if ws.State != state.StateRunning || ws.PaneID == "" {
+			continue
+		}
+		content, err := m.popup.CapturePane(ws.PaneID)
+		if err != nil {
+			continue
+		}
+		m.agentStatus[ws.ID] = classifyStatus(content, m.prevPaneContent[ws.ID])
+		m.prevPaneContent[ws.ID] = content
 	}
 	return m
 }
@@ -268,6 +294,73 @@ func (m listModel) newWorkspaceCmd() tea.Cmd {
 // expanding ~ before the command reaches the sandbox.
 func installerCmdFor(sandboxName string) string {
 	return fmt.Sprintf("docker sandbox exec -it %s bash -c 'bash ~/subagents/install-agents.sh --install-dir local'", sandboxName)
+}
+
+// AgentStatus represents the inferred activity state of a Claude agent pane.
+type AgentStatus int
+
+// Agent status values ordered from least to most active.
+const (
+	AgentStatusUnknown AgentStatus = iota
+	AgentStatusIdle
+	AgentStatusWorking
+	AgentStatusWaiting
+)
+
+// classifyStatus infers the agent's activity state from captured pane content.
+//
+// Classification rules:
+//   - idle: pane shows Claude's idle prompt ("> " or ">") or is empty
+//   - waiting: pane content matches a dialog/permission pattern (selection
+//     cursor "❯" or "[Y/n]" prompt), or content is unchanged from the previous
+//     snapshot while not at the idle prompt (Claude has stopped generating but
+//     hasn't returned to the prompt — it's waiting for user action)
+//   - working: content differs from previous snapshot and is not at the prompt
+func classifyStatus(current, prev string) AgentStatus {
+	if isAtPrompt(current) {
+		return AgentStatusIdle
+	}
+	// Check for dialog/permission patterns in the last few lines.
+	lines := strings.Split(current, "\n")
+	start := len(lines) - 5
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		if strings.Contains(line, "❯") || strings.Contains(line, "[Y/n]") || strings.Contains(line, "[y/N]") {
+			return AgentStatusWaiting
+		}
+	}
+	// Stale content (unchanged from last tick) and not at prompt means waiting.
+	if current == prev {
+		return AgentStatusWaiting
+	}
+	return AgentStatusWorking
+}
+
+// workspaceStatusRow returns the second sidebar row for a workspace, showing
+// its activity status (for running workspaces) or lifecycle state label.
+func workspaceStatusRow(ws *state.Workspace, status AgentStatus) string {
+	const indent = "   " // 3 spaces to align under name column
+	switch ws.State {
+	case state.StateRunning:
+		switch status {
+		case AgentStatusWorking:
+			return indent + workingStyle.Render("● working")
+		case AgentStatusWaiting:
+			return indent + waitingStyle.Render("⚠ waiting")
+		default:
+			return indent + idleStyle.Render("· idle")
+		}
+	case state.StatePaused:
+		return indent + idleStyle.Render("· paused")
+	case state.StateCreating, state.StateProvisioning:
+		return indent + idleStyle.Render("· creating")
+	case state.StateCompleting:
+		return indent + idleStyle.Render("· finishing")
+	default:
+		return indent + idleStyle.Render("· stopped")
+	}
 }
 
 // isAtPrompt reports whether the pane content looks like Claude Code is sitting
@@ -544,6 +637,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Create the right-pane split when the first workspace appears.
 			ensureSplitOnFirstWorkspace(m.manager)
 		}
+		// Poll pane content for each running workspace to infer agent status.
+		m = m.pollAgentStatuses()
 		return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg { return tickMsg{} })
 
 	case tea.WindowSizeMsg:
@@ -556,7 +651,8 @@ func (m listModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			const headerRows = 6 // top border, blank, Project:, name, blank, Workspaces:
-			idx := msg.Y - headerRows
+			// Each workspace occupies 2 rows (name + status), so divide by 2.
+			idx := (msg.Y - headerRows) / 2
 			if idx >= 0 && idx < len(m.workspaces) {
 				m.cursor = idx
 				m.activateWorkspace(m.workspaces[idx])
@@ -772,6 +868,7 @@ func (m listModel) renderSidebar() string {
 	} else {
 		for i, ws := range m.workspaces {
 			rows = append(rows, row(m.workspaceLabel(ws, i, activeID, inner)))
+			rows = append(rows, row(workspaceStatusRow(ws, m.agentStatus[ws.ID])))
 		}
 	}
 

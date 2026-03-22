@@ -573,13 +573,18 @@ func TestProvisionTmux_TrapScriptChecksSandboxExistence(t *testing.T) {
 	}
 	captured := string(data)
 
-	// The loop must NOT use "while true" — that keeps running after removal.
-	if strings.Contains(captured, "while true") {
-		t.Errorf("trapCmd uses 'while true'; it must check sandbox existence instead")
+	// The main loop uses "while true" with an inner sandbox-liveness check
+	// so it retries when the sandbox briefly disappears rather than exiting.
+	if !strings.Contains(captured, "while true") {
+		t.Errorf("trapCmd should use 'while true' with inner sandbox check; got: %s", captured)
 	}
-	// The loop must check sandbox existence via docker sandbox ls -q | grep.
-	if !strings.Contains(captured, "docker sandbox ls -q | grep -qx") {
-		t.Errorf("trapCmd does not contain 'docker sandbox ls -q | grep -qx'; got: %s", captured)
+	// The inner check must verify sandbox existence via docker sandbox ls -q | grep.
+	if !strings.Contains(captured, "docker sandbox ls -q") {
+		t.Errorf("trapCmd does not contain 'docker sandbox ls -q'; got: %s", captured)
+	}
+	// The readiness probe must use a bounded for loop (not while) to avoid hanging forever.
+	if !strings.Contains(captured, "for i in") {
+		t.Errorf("trapCmd readiness probe should use bounded 'for' loop; got: %s", captured)
 	}
 }
 
@@ -1785,9 +1790,9 @@ func TestBuildTrapScript_ResumeFlag(t *testing.T) {
 			if !strings.Contains(cmd, ws.SandboxID) {
 				t.Errorf("buildTrapScript: output does not contain sandbox ID %q\ngot: %s", ws.SandboxID, cmd)
 			}
-			// Must use docker sandbox ls -q | grep to check existence, and docker sandbox exec.
-			if !strings.Contains(cmd, "docker sandbox ls -q | grep -qx") {
-				t.Errorf("buildTrapScript: output does not contain 'docker sandbox ls -q | grep -qx'\ngot: %s", cmd)
+			// Must use docker sandbox ls -q to check existence, and docker sandbox exec.
+			if !strings.Contains(cmd, "docker sandbox ls -q") {
+				t.Errorf("buildTrapScript: output does not contain 'docker sandbox ls -q'\ngot: %s", cmd)
 			}
 			if !strings.Contains(cmd, "docker sandbox exec") {
 				t.Errorf("buildTrapScript: output does not contain 'docker sandbox exec'\ngot: %s", cmd)

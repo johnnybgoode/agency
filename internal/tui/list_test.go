@@ -485,6 +485,8 @@ func TestCursorFollowsActive_OnWorkspaceCreated(t *testing.T) {
 		"ws-1": ws1, "ws-2": ws2,
 	}
 	m.manager.State.ActiveWorkspaceID = "ws-2"
+	// Persist state so the handler's disk re-read picks it up.
+	_ = m.manager.SaveState()
 	m.workspaces = m.manager.List()
 	m.cursor = 0 // cursor at first item
 

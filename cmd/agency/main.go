@@ -46,19 +46,14 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Determine the session timestamp for log file naming. If the state
-		// file exists, reuse its SessionStartedAt so reattach appends to the
-		// same log. Otherwise fall back to now — this keeps slog writing to
-		// a file instead of leaking to stderr via the default handler.
+		// file has a SessionStartedAt, reuse it so all processes (sidebar,
+		// popup, gc) append to the same log. Otherwise fall back to now.
+		// Only the sidebar initializes SessionStartedAt (in runSidebar);
+		// subprocess commands never write it to avoid creating split logs.
 		sessionTime := time.Now().UTC()
 		statePath := filepath.Join(projectDir, ".agency", "state.json")
-		s, err := state.Read(statePath)
-		if err == nil {
-			if s.SessionStartedAt == nil {
-				s.SessionStartedAt = &sessionTime
-				_ = state.Write(statePath, s)
-			} else {
-				sessionTime = *s.SessionStartedAt
-			}
+		if s, readErr := state.Read(statePath); readErr == nil && s.SessionStartedAt != nil {
+			sessionTime = *s.SessionStartedAt
 		}
 
 		levelStr, _ := cmd.Flags().GetString("log-level")

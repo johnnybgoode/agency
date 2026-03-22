@@ -366,6 +366,14 @@ func runSidebar(projectDir string) error {
 		return fmt.Errorf("initializing workspace manager: %w", err)
 	}
 
+	// Initialize SessionStartedAt if not already set. The sidebar is the sole
+	// owner of this field — subprocess commands (popup, gc) only read it so
+	// all processes log to the same file.
+	if mgr.State.SessionStartedAt == nil {
+		now := time.Now().UTC()
+		mgr.State.SessionStartedAt = &now
+	}
+
 	// Persist the lock nonce so that the next startup can cross-check it
 	// against the lock file to detect PID reuse in stale-lock detection.
 	mgr.State.LockNonce = lock.Nonce()
@@ -480,6 +488,11 @@ func ensureLayout(mgr *workspace.Manager) (string, error) {
 			return navPane, nil
 		}
 	}
+
+	// Crash recovery failed — building a fresh layout. Clear stale
+	// WorkspacePaneID; the tick handler will recreate the split via
+	// ensureSplitOnFirstWorkspace once reconcile has resumed workspaces.
+	mgr.State.WorkspacePaneID = ""
 
 	winID, err := resolveMainWindow(mgr)
 	if err != nil {

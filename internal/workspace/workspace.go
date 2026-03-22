@@ -272,12 +272,14 @@ func (m *Manager) buildTrapScript(ws *state.Workspace, resume bool) (string, err
 			// Main loop: exec Claude inside the sandbox, restarting on crash.
 			// Use an unconditional loop with an inner sandbox-liveness check so we
 			// don't fall through and trigger gc if the sandbox briefly disappears.
-			`CMD="%s"; while true; do docker sandbox ls -q 2>/dev/null | grep -qx %s || { sleep 2; continue; }; docker sandbox exec -it -w "%s" %s claude $CMD || true; CMD="--resume %s"; sleep 1; done`,
+			// If --resume fails (non-zero exit), fall back to --session-id so a
+			// fresh session is started instead of looping on a dead session ID.
+			`CMD="%s"; while true; do docker sandbox ls -q 2>/dev/null | grep -qx %s || { sleep 2; continue; }; docker sandbox exec -it -w "%s" %s claude $CMD; RC=$?; if [ $RC -ne 0 ] && [ "$CMD" = "--resume %s" ]; then CMD="--session-id %s"; else CMD="--resume %s"; fi; sleep 1; done`,
 		shellEscapeDouble(m.ProjectDir), agencyBin, ws.ID,
 		ws.SandboxID, ws.SandboxID,
 		shellEscapeDouble(cmd), ws.SandboxID,
 		shellEscapeDouble(ws.WorktreePath), ws.SandboxID,
-		ws.SessionID,
+		ws.SessionID, ws.SessionID, ws.SessionID,
 	), nil
 }
 
@@ -312,12 +314,6 @@ func (m *Manager) openTmuxWindow(ws *state.Workspace, resume bool) error {
 // launches the agent inside the sandbox.
 func (m *Manager) provisionTmux(ws *state.Workspace) error {
 	return m.openTmuxWindow(ws, false)
-}
-
-// resumeTmux opens a new tmux window for ws and launches the agent with
-// --resume so it continues where it left off.
-func (m *Manager) resumeTmux(ws *state.Workspace) error {
-	return m.openTmuxWindow(ws, true)
 }
 
 // Create provisions a full workspace for the given name and branch: worktree → sandbox →
@@ -377,19 +373,14 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(err)
 	}
 
-	// Step 4: swap new workspace pane into the visible right slot, then mark running.
-	_ = m.SwapActivePane(ws.ID)
+	// Step 4: record the new workspace as active and mark running.
+	// The sidebar (sole owner of layout) will create the split and swap on the
+	// next tick or when it receives workspaceCreatedMsg.
+	m.State.ActiveWorkspaceID = ws.ID
 	ws.State = state.StateRunning
 	ws.UpdatedAt = time.Now().UTC()
 	if err := m.SaveState(); err != nil {
 		return fail(fmt.Errorf("saving running state: %w", err))
-	}
-
-	// Step 5: focus the main window so sidebar + workspace are both visible.
-	if m.State.MainWindowID != "" {
-		_ = m.Tmux.SelectWindow(m.State.MainWindowID)
-	} else if ws.TmuxWindow != "" {
-		_ = m.Tmux.SelectWindow(ws.TmuxWindow)
 	}
 
 	slog.Info("workspace created successfully", "workspace", ws.ID, "name", ws.Name, "branch", ws.Branch)
@@ -711,6 +702,15 @@ func (m *Manager) reconcilePaused(
 		return false
 	}
 
+	// Probe whether the sandbox still exists before ensuring it. If it was
+	// garbage-collected and recreated, old Claude session data is gone and we
+	// must start a fresh session instead of trying to --resume.
+	sandboxExisted := false
+	if m.State.SandboxID != "" {
+		info, findErr := m.Sandbox.FindByName(ctx, m.State.SandboxID)
+		sandboxExisted = (findErr == nil && info != nil)
+	}
+
 	// Ensure the shared project sandbox is running.
 	if err := m.EnsureProjectSandbox(ctx); err != nil {
 		markFailed(ws, fmt.Sprintf("ensuring project sandbox: %v", err))
@@ -720,13 +720,17 @@ func (m *Manager) reconcilePaused(
 	// Make sure this workspace references the sandbox.
 	ws.SandboxID = m.State.SandboxID
 
-	// Ensure session ID is set for resuming.
-	if ws.SessionID == "" {
+	// If sandbox was freshly created, old session data is gone.
+	// Generate a fresh session ID and start a new session.
+	if !sandboxExisted {
+		ws.SessionID = generateSessionID()
+	} else if ws.SessionID == "" {
 		ws.SessionID = generateSessionID()
 	}
 
-	// Reattach via tmux using --resume.
-	if err := m.resumeTmux(ws); err != nil {
+	// Reattach via tmux. Only use --resume when the sandbox existed (session
+	// data preserved); otherwise start a fresh session.
+	if err := m.openTmuxWindow(ws, sandboxExisted); err != nil {
 		markFailed(ws, fmt.Sprintf("resuming tmux: %v", err))
 		return true
 	}
@@ -791,28 +795,11 @@ func (m *Manager) SidebarColumns(termWidth int) int {
 	return cols
 }
 
-// resizeSidebarPane resizes the left (sidebar) pane of the main window to the
-// percentage-based sidebar width.
-func (m *Manager) resizeSidebarPane() {
-	if m.State.MainWindowID == "" {
-		return
-	}
-	panes, err := m.Tmux.GetWindowPanes(m.State.MainWindowID)
-	if err != nil || len(panes) == 0 {
-		return
-	}
-	tw, err := m.Tmux.WindowWidth(m.State.MainWindowID)
-	if err != nil {
-		return
-	}
-	_ = m.Tmux.ResizePane(panes[0], m.SidebarColumns(tw))
-}
-
 // SwapActivePane swaps the given workspace's pane into the visible right slot
 // of the main window (:0.1) using tmux swap-pane. If another workspace is
 // currently active, its pane is swapped back to its own window first.
-// No-op when ws.PaneID is empty. If WorkspacePaneID is empty (first workspace,
-// zero-state → split), the right pane is created on demand.
+// No-op when ws.PaneID is empty or WorkspacePaneID is not yet set (the
+// sidebar's ensureSplitOnFirstWorkspace is the sole owner of split creation).
 func (m *Manager) SwapActivePane(wsID string) error {
 	slog.Debug("swapping active pane", "workspace", wsID)
 	ws, ok := m.State.Workspaces[wsID]
@@ -820,28 +807,8 @@ func (m *Manager) SwapActivePane(wsID string) error {
 		return nil
 	}
 
-	// Create the right-side split on demand if it doesn't exist yet
-	// (first workspace in zero state). Re-check the actual pane count first:
-	// the sidebar's ensureSplitOnFirstWorkspace may have already created the
-	// split concurrently, in which case we reuse the existing right pane
-	// rather than creating a second split.
-	if m.State.WorkspacePaneID == "" && m.State.MainWindowID != "" {
-		existingPanes, pErr := m.Tmux.GetWindowPanes(m.State.MainWindowID)
-		if pErr == nil && len(existingPanes) >= 2 {
-			// Split already exists — adopt the right pane.
-			m.State.WorkspacePaneID = existingPanes[1]
-		} else {
-			rightPaneID, err := m.Tmux.SplitWindowHorizontalPercent(m.State.MainWindowID, DefaultWorkspaceSplitPercent)
-			if err != nil {
-				return fmt.Errorf("creating workspace pane split: %w", err)
-			}
-			m.State.WorkspacePaneID = rightPaneID
-		}
-		// Resize the left pane to the sidebar width now that we have 2 panes.
-		m.resizeSidebarPane()
-		_ = m.SaveState()
-	}
-
+	// The sidebar's ensureSplitOnFirstWorkspace owns split creation.
+	// If the split doesn't exist yet, return early and let the sidebar handle it.
 	if m.State.WorkspacePaneID == "" {
 		return nil
 	}

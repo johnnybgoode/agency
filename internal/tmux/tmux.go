@@ -112,14 +112,16 @@ func (c *Client) EnsureSession() error {
 }
 
 // NewWindow opens a new window in the session and returns its window ID.
+// The window is created detached (-d) so it doesn't steal focus.
 func (c *Client) NewWindow(name string) (string, error) {
-	return c.run("new-window", "-t", c.SessionName, "-n", name, "-P", "-F", "#{window_id}")
+	return c.run("new-window", "-d", "-t", c.SessionName, "-n", name, "-P", "-F", "#{window_id}")
 }
 
 // NewWindowWithCommand creates a new window whose pane runs the given command
 // directly (no intermediate shell). The command is executed via bash -c.
+// The window is created detached (-d) so it doesn't steal focus.
 func (c *Client) NewWindowWithCommand(name, script string) (string, error) {
-	return c.run("new-window", "-t", c.SessionName, "-n", name,
+	return c.run("new-window", "-d", "-t", c.SessionName, "-n", name,
 		"-P", "-F", "#{window_id}", "bash", "-c", script)
 }
 

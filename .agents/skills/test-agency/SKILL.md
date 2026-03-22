@@ -7,6 +7,8 @@ description: On-demand integration testing for agency's TUI. Builds the binary, 
 
 On-demand integration testing skill for agency. Drives the real TUI via tmux, uses Claude's judgment (no hardcoded assertions) to evaluate each step, and surfaces failures as tasks.
 
+**Prerequisite:** Claude must be running inside a tmux session (`$TMUX` is set). This provides client context needed for popup testing and `capture-pane`. If `$TMUX` is not set, report an error and stop.
+
 ## Argument Parsing
 
 Parse the invocation args (freetext — no strict CLI parser):
@@ -48,7 +50,7 @@ FINDINGS=".claude/test-findings/${BRANCH}-${SHA}.md"
 
 Create the directory: `mkdir -p .claude/test-findings/`
 
-## Step 3: Spawn Test Session
+## Step 3: Spawn Test Session and Attach Client
 
 Remove any existing state file first to guarantee a clean zero-state for Scenario 2:
 
@@ -57,13 +59,23 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel)
 rm -f "$PROJECT_ROOT/.agency/state.json"
 ```
 
-Then spawn the session:
+Record our own session name to avoid accidentally targeting it:
+
+```bash
+OUR_SESSION=$(tmux display-message -p '#{session_name}')
+```
+
+Then spawn the test session and attach a client pane to it. The attached client provides the tmux client context that agency needs for `display-popup` calls (create workspace, quit confirmation, etc.):
 
 ```bash
 TIMESTAMP=$(date +%s)
 SESSION="agency-test-${TIMESTAMP}"
 tmux new-session -d -s "$SESSION" -x 220 -y 50 -c "$PROJECT_ROOT"
 tmux send-keys -t "$SESSION" "/tmp/agency-test" Enter
+
+# Attach a helper pane to the test session so display-popup works.
+# This pane provides the tmux client context — popups render inside it.
+HELPER_PANE=$(tmux split-window -d -h -P -F '#{pane_id}' "tmux attach-session -t $SESSION")
 ```
 
 ## Step 4: Run Baseline Scenarios
@@ -92,13 +104,47 @@ Without creating any workspaces, capture the pane.
 
 **What to check:** A welcome panel is visible alongside the sidebar. It contains prompts like "Create [n]ew workspace..." or similar onboarding text.
 
-### Scenario 3: Pre-seed Workspace State
+### Scenario 3: Create Workspace via Popup
 
-Rather than driving the create popup (which requires an attached client), write a stub workspace directly into `.agency/state.json` and verify the sidebar reflects it.
+Since we have a client attached to the test session, the create popup flow works end-to-end. Send `n` to open the popup, fill in the form fields, and submit:
 
 ```bash
-# Write a stub workspace into state.json
-PROJECT_ROOT=$(git rev-parse --show-toplevel)
+# Open the create popup
+tmux send-keys -t "$SESSION" "n"
+sleep 1
+
+# Capture the popup content to verify it rendered
+tmux capture-pane -p -t "$SESSION"
+```
+
+**What to check (popup):** The create form is visible with name and branch input fields.
+
+```bash
+# Type a workspace name and submit (Tab moves between fields, Enter submits)
+tmux send-keys -t "$SESSION" "test-ws-alpha"
+tmux send-keys -t "$SESSION" Tab
+sleep 0.2
+tmux send-keys -t "$SESSION" "main"
+tmux send-keys -t "$SESSION" Enter
+sleep 2
+
+# Capture to verify the loading animation or completion
+tmux capture-pane -p -t "$SESSION"
+```
+
+**What to check (after submit):** Either the loading mascot animation is visible (if sandbox is booting) or the popup has closed and the workspace appears in the sidebar list. Check `state.json` to confirm the workspace was created:
+
+```bash
+python3 -c "import json; s=json.load(open('$PROJECT_ROOT/.agency/state.json')); print(json.dumps({k: v.get('name') for k,v in s.get('workspaces',{}).items()}, indent=2))"
+```
+
+**Note:** If the environment lacks Docker/sandbox support, the create flow may fail after the popup closes. Record what happened — a sandbox-related failure is expected in environments without Docker and should be noted but not counted as a TUI bug.
+
+### Scenario 3b: External State Mutation
+
+This tests a different code path from Scenario 3: the sidebar reacting to state changes made outside the TUI (e.g., another process creating a workspace).
+
+```bash
 STATE_FILE="$PROJECT_ROOT/.agency/state.json"
 
 # Wait for agency to write its initial state.json (deleted in Step 3)
@@ -112,23 +158,13 @@ python3 -c "
 import json, sys
 with open('$STATE_FILE') as f:
     s = json.load(f)
-s['workspaces'] = {
-  'ws-ab123456': {
-    'id': 'ws-ab123456',
-    'name': 'test-workspace-a',
-    'branch': 'main',
-    'state': 'running',
-    'createdAt': '2026-01-01T00:00:00Z',
-    'updatedAt': '2026-01-01T00:00:00Z'
-  },
-  'ws-cd789012': {
-    'id': 'ws-cd789012',
-    'name': 'test-workspace-b',
-    'branch': 'feat/test',
-    'state': 'running',
-    'createdAt': '2026-01-01T00:00:00Z',
-    'updatedAt': '2026-01-01T00:00:00Z'
-  }
+s.setdefault('workspaces', {})['ws-stub-ext'] = {
+  'id': 'ws-stub-ext',
+  'name': 'external-workspace',
+  'branch': 'feat/external',
+  'state': 'running',
+  'createdAt': '2026-01-01T00:00:00Z',
+  'updatedAt': '2026-01-01T00:00:00Z'
 }
 print(json.dumps(s))
 " > /tmp/agency-state-patched.json && cp /tmp/agency-state-patched.json "$STATE_FILE"
@@ -141,9 +177,7 @@ sleep 1.5
 tmux capture-pane -p -t "$SESSION"
 ```
 
-**What to check:** Both `test-workspace-a` and `test-workspace-b` appear in the sidebar list. The TUI has transitioned from zero state (welcome panel) to showing the workspace list.
-
-**Note:** The create workspace popup flow (triggered by `n`) requires an attached tmux client and cannot be driven from a detached test session. This scenario tests the equivalent result: the sidebar correctly reflects a new workspace in state.
+**What to check:** `external-workspace` appears in the sidebar list. The TUI detected the external state mutation and updated the workspace list.
 
 ### Scenario 4: Navigation
 
@@ -170,30 +204,63 @@ sleep 0.5
 Read `.agency/state.json` to verify the active workspace changed:
 
 ```bash
-cat "$PROJECT_ROOT/.agency/state.json" | python3 -c "import json,sys; s=json.load(sys.stdin); print('activeWorkspaceID:', s.get('activeWorkspaceID', '(none)'))"
+python3 -c "import json,sys; s=json.load(open('$PROJECT_ROOT/.agency/state.json')); print('activeWorkspaceID:', s.get('activeWorkspaceID', '(none)'))"
 ```
 
-**What to check:** `activeWorkspaceID` is set to the ID of the workspace that was selected (e.g. `ws-ab123456`). The stub workspaces have no real tmux windows so no visual pane change will occur — checking `state.json` is the reliable verification path.
+**What to check:** `activeWorkspaceID` is set to the ID of the workspace that was selected. The stub workspaces have no real tmux windows so no visual pane change will occur — checking `state.json` is the reliable verification path.
 
 ### Scenario 6: Quit Flow
 
-The quit confirmation popup uses `tmux display-popup`, which requires an attached client. To test quit in a detached session, pre-seed the result file that the sidebar reads after the popup closes:
-
-```bash
-# Pre-seed quit-result.json so the sidebar reads "confirmed" immediately after popup is requested
-echo '{"confirmed":true}' > "$PROJECT_ROOT/.agency/quit-result.json"
-```
-
-Then send `q`:
+Since we have a client attached, the quit confirmation popup works end-to-end:
 
 ```bash
 tmux send-keys -t "$SESSION" "q"
-sleep 1.5
+sleep 1
+
+# Capture to verify the quit confirmation popup appeared
+tmux capture-pane -p -t "$SESSION"
 ```
 
-Capture pane.
+**What to check (popup):** The quit confirmation dialog is visible, showing workspace statuses and a confirm/cancel prompt.
 
-**What to check:** Agency exits cleanly — the pane shows a shell prompt or is no longer running. The sidebar reads `quit-result.json`, finds `confirmed: true`, and proceeds with cleanup without waiting for the popup.
+```bash
+# Confirm quit
+tmux send-keys -t "$SESSION" "Enter"
+sleep 2
+
+# Capture to verify agency exited
+tmux capture-pane -p -t "$SESSION"
+```
+
+**What to check (after confirm):** Agency exits cleanly — the pane shows a shell prompt or the session has been killed.
+
+**Fallback:** If the quit popup fails to render (e.g. client attachment issues), fall back to pre-seeding the result file:
+
+```bash
+echo '{"confirmed":true}' > "$PROJECT_ROOT/.agency/quit-result.json"
+tmux send-keys -t "$SESSION" "q"
+sleep 1.5
+tmux capture-pane -p -t "$SESSION"
+```
+
+### Scenario 7: Loading Popup Rendering
+
+**Skip if:** Scenario 3 was skipped or failed before the popup rendered.
+
+If Scenario 3 captured the loading mascot animation, verify its layout:
+
+```bash
+# Capture with ANSI codes to verify styling
+tmux capture-pane -p -e -t "$SESSION"
+```
+
+**What to check:** If the loading state was captured:
+- The mascot block characters are present (█, ▄, ▀)
+- Orange color codes (ANSI 208) are applied to mascot characters
+- "Creating workspace..." text is present and centered below the mascot
+- The mascot and label are vertically centered within the popup
+
+**Note:** This scenario depends on timing — the loading animation is only visible while the sandbox boots. If the popup closed too quickly, record as ⏭️ (skipped) rather than ❌.
 
 ## Step 5: Branch-Specific Scenarios
 
@@ -201,9 +268,10 @@ If `--plan` or a freetext description was provided, derive 1–3 additional scen
 
 ## Step 6: Cleanup
 
-Kill the test session regardless of pass/fail:
+Kill the helper pane and test session regardless of pass/fail:
 
 ```bash
+tmux kill-pane -t "$HELPER_PANE" 2>/dev/null || true
 tmux kill-session -t "$SESSION" 2>/dev/null || true
 ```
 

@@ -124,7 +124,7 @@ func TestWriteClaudeHooks_AddsStatuslineToExistingSettings(t *testing.T) {
 	}
 
 	// Statusline was added.
-	sl, ok := parsed["statusline"].(map[string]any)
+	sl, ok := parsed["statusLine"].(map[string]any)
 	if !ok {
 		t.Fatal("statusline not added")
 	}
@@ -141,7 +141,7 @@ func TestWriteClaudeHooks_DoesNotOverwriteExistingStatusline(t *testing.T) {
 	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	existing := []byte(`{"statusline": {"command": "node my-custom-statusline.js"}}`)
+	existing := []byte(`{"statusLine": {"command": "node my-custom-statusline.js"}}`)
 	settingsPath := filepath.Join(settingsDir, "settings.json")
 	if err := os.WriteFile(settingsPath, existing, 0o600); err != nil {
 		t.Fatal(err)

@@ -86,11 +86,11 @@ func mergeStatusline(settingsPath string) error {
 	}
 
 	// Don't overwrite an existing statusline configuration.
-	if settings["statusline"] != nil {
+	if settings["statusLine"] != nil {
 		return nil
 	}
 
-	settings["statusline"] = map[string]any{
+	settings["statusLine"] = map[string]any{
 		"type":    "command",
 		"command": agencyStatuslineCommand,
 	}

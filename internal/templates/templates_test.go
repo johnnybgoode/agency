@@ -79,10 +79,10 @@ func TestWriteClaudeHooks_CreatesFiles(t *testing.T) {
 	}
 }
 
-func TestWriteClaudeHooks_MergesIntoExistingSettings(t *testing.T) {
+func TestWriteClaudeHooks_AddsStatuslineToExistingSettings(t *testing.T) {
 	dir := t.TempDir()
 
-	// Pre-create settings.json with existing hooks and custom fields.
+	// Pre-create settings.json with existing hooks but no statusline.
 	settingsDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -123,50 +123,60 @@ func TestWriteClaudeHooks_MergesIntoExistingSettings(t *testing.T) {
 		t.Error("PostToolUse hooks were lost")
 	}
 
-	// Stop hook was added with correct matcher+hooks schema.
-	stopMatchers, ok := hooks["Stop"].([]any)
-	if !ok || len(stopMatchers) == 0 {
-		t.Fatal("Stop matchers not added")
+	// Statusline was added.
+	sl, ok := parsed["statusline"].(map[string]any)
+	if !ok {
+		t.Fatal("statusline not added")
 	}
-	matcher := stopMatchers[0].(map[string]any)
-	if matcher["matcher"] != "" {
-		t.Errorf("expected empty matcher, got %v", matcher["matcher"])
+	if sl["command"] != "node .claude/hooks/write-agent-status.js" {
+		t.Errorf("unexpected statusline command: %v", sl["command"])
 	}
-	hooksList := matcher["hooks"].([]any)
-	if len(hooksList) == 0 {
-		t.Fatal("hooks array is empty")
+}
+
+func TestWriteClaudeHooks_DoesNotOverwriteExistingStatusline(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create settings.json with an existing statusline.
+	settingsDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(settingsDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	entry := hooksList[0].(map[string]any)
-	if entry["command"] != "node .claude/hooks/write-agent-status.js" {
-		t.Errorf("unexpected hook command: %v", entry["command"])
+	existing := []byte(`{"statusline": {"command": "node my-custom-statusline.js"}}`)
+	settingsPath := filepath.Join(settingsDir, "settings.json")
+	if err := os.WriteFile(settingsPath, existing, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := templates.WriteClaudeHooks(dir); err != nil {
+		t.Fatalf("WriteClaudeHooks() error: %v", err)
+	}
+
+	got, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// File should be unchanged — existing statusline preserved.
+	if string(got) != string(existing) {
+		t.Errorf("settings.json was modified: got %q, want %q", got, existing)
 	}
 }
 
 func TestWriteClaudeHooks_IdempotentMerge(t *testing.T) {
 	dir := t.TempDir()
 
-	// Run twice — should not duplicate the matcher entry.
+	// Run twice — settings should be identical after both runs.
 	if err := templates.WriteClaudeHooks(dir); err != nil {
 		t.Fatalf("first WriteClaudeHooks() error: %v", err)
 	}
+	first, _ := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
+
 	if err := templates.WriteClaudeHooks(dir); err != nil {
 		t.Fatalf("second WriteClaudeHooks() error: %v", err)
 	}
+	second, _ := os.ReadFile(filepath.Join(dir, ".claude", "settings.json"))
 
-	settingsPath := filepath.Join(dir, ".claude", "settings.json")
-	got, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(got, &parsed); err != nil {
-		t.Fatalf("settings.json is not valid JSON: %v", err)
-	}
-
-	hooks := parsed["hooks"].(map[string]any)
-	stopMatchers := hooks["Stop"].([]any)
-	if len(stopMatchers) != 1 {
-		t.Errorf("expected 1 Stop matcher entry, got %d", len(stopMatchers))
+	if string(first) != string(second) {
+		t.Errorf("settings.json changed on second run:\nfirst:  %s\nsecond: %s", first, second)
 	}
 }

@@ -1,5 +1,6 @@
 {
   "statusline": {
+    "type": "command",
     "command": "node .claude/hooks/write-agent-status.cjs"
   }
 }

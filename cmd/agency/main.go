@@ -17,6 +17,7 @@ import (
 	"github.com/johnnybgoode/agency/internal/logging"
 	"github.com/johnnybgoode/agency/internal/project"
 	"github.com/johnnybgoode/agency/internal/state"
+	"github.com/johnnybgoode/agency/internal/templates"
 	"github.com/johnnybgoode/agency/internal/tui"
 	"github.com/johnnybgoode/agency/internal/workspace"
 	"github.com/johnnybgoode/agency/internal/worktree"
@@ -117,9 +118,24 @@ var initCmd = &cobra.Command{
 
 		projectName := filepath.Base(cwd)
 		statePath := filepath.Join(cwd, ".agency", "state.json")
-		s := state.Default(projectName, filepath.Join(cwd, ".bare"))
-		if err := state.Write(statePath, s); err != nil {
-			return fmt.Errorf("writing initial state: %w", err)
+
+		// Read existing state if present; only write a fresh default for new projects.
+		s, readErr := state.Read(statePath)
+		if readErr != nil {
+			s = state.Default(projectName, filepath.Join(cwd, ".bare"))
+			if err := state.Write(statePath, s); err != nil {
+				return fmt.Errorf("writing initial state: %w", err)
+			}
+		}
+
+		// Provision Claude Code hooks into all existing worktrees.
+		for _, ws := range s.Workspaces {
+			if ws.WorktreePath == "" {
+				continue
+			}
+			if err := templates.WriteClaudeHooks(ws.WorktreePath); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not provision hooks for %s: %v\n", ws.DisplayName(), err)
+			}
 		}
 
 		// Enforce permissions on the global config file.

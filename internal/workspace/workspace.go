@@ -362,6 +362,11 @@ func (m *Manager) Create(ctx context.Context, name, branch string) (*state.Works
 		return fail(err)
 	}
 
+	// Step 1b: write Claude Code hooks into worktree for status reporting.
+	if err := templates.WriteClaudeHooks(ws.WorktreePath); err != nil {
+		slog.Warn("failed to write Claude hooks", "error", err)
+	}
+
 	// Step 2: ensure shared project sandbox and assign session ID.
 	if err := m.ensureSandbox(ctx, ws); err != nil {
 		return fail(err)
